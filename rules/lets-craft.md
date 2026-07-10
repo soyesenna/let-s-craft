@@ -41,10 +41,10 @@ Every commit message MUST:
 Example shape:
 
 ```
-feat: lsc- 에이전트 7종 및 RULE 주입 정의 (OMC 계약 이식)
+feat: lsc- 에이전트 7종 및 RULE 주입 정의
 
 what: agents/lsc-{7종}.md frontmatter+행동계약, rules/lets-craft.md(alwaysApply)
-why: OMC 레퍼런스 행동 계약을 omp 에이전트로 이식
+why: 파이프라인 각 단계에 전용 에이전트 행동계약을 부여하기 위함
 evidence: <구체적 근거>
 verify: <구체적 검증 방법>
 ```
