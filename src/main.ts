@@ -1,9 +1,15 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { registerCraftEnforcement } from "./craft/enforcement.js";
+import { registerHashManifestTools } from "./craft/hash-manifest.js";
+import { registerRunTestsTool } from "./craft/run-tests.js";
 import { registerPresetCommand } from "./preset/command.js";
 import { applyActivePreset } from "./preset/inject.js";
 
 export default function (pi: ExtensionAPI): void {
 	registerPresetCommand(pi);
+	registerHashManifestTools(pi);
+	registerRunTestsTool(pi);
+	registerCraftEnforcement(pi);
 
 	// Re-apply the active model preset on every session start: self-healing from
 	// models.yaml into the live session (runtime override, seen by the next task
