@@ -1,0 +1,12 @@
+{
+  "_note": "Draft interview fixture answers for lets-craft's Phase 3.5 ask seam (src/ask.ts, src/fixtures.ts). The pre-craft interview question flow itself is not implemented yet (Phase 4) -- this is a skeleton: a catch-all \"default\" so headless runs never hang, plus a handful of representative \"match\" rules guessed from the plan/spec's known question topics (feature name, worktree, goal, constraints, success criteria, plan/land confirmations). Update the \"match\" patterns once Phase 4/6's actual question wording exists, and add more once-consumed rules for any question that must be answered differently on repeat visits.",
+  "default": "yes",
+  "answers": [
+    { "match": "feature.?name|what.*(should|will).*(build|call|name)", "response": "slugify-consecutive-separators" },
+    { "match": "worktree", "response": "no" },
+    { "match": "goal", "response": "Fix slugify so it collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, matching the behavior already documented in src/slugify.ts's bug note." },
+    { "match": "constraint", "response": "Keep the CLI dependency-free (node --test only) and keep slugify/capitalize/truncate's public signatures unchanged." },
+    { "match": "success criteri", "response": "All tests under test/ pass via run_test.sh, including the currently-failing 'collapses consecutive separators' case in test/slugify.test.ts." },
+    { "match": "(approve|proceed|continue|merge|land)\\??$", "response": "yes" }
+  ]
+}

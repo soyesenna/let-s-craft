@@ -1,0 +1,13 @@
+{
+  "name": "sample-ts-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "lets-craft fixture sample: a tiny dependency-free TypeScript string-utility CLI, used to drive pre-craft/craft/post-craft E2E fixtures. Runs directly on Node's built-in TypeScript support (node --test) — no npm install required.",
+  "bin": {
+    "strutil": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
