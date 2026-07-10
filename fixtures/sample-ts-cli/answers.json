@@ -1,12 +1,13 @@
 {
-  "_note": "Draft interview fixture answers for lets-craft's Phase 3.5 ask seam (src/ask.ts, src/fixtures.ts). The pre-craft interview question flow itself is not implemented yet (Phase 4) -- this is a skeleton: a catch-all \"default\" so headless runs never hang, plus a handful of representative \"match\" rules guessed from the plan/spec's known question topics (feature name, worktree, goal, constraints, success criteria, plan/land confirmations). Update the \"match\" patterns once Phase 4/6's actual question wording exists, and add more once-consumed rules for any question that must be answered differently on repeat visits.",
+  "_note": "Interview fixture answers for lets-craft's ask seam (src/ask.ts, src/fixtures.ts), updated for the pre-craft skill's question-tagging convention (skills/pre-craft/SKILL.md §1.2): every pre-craft question starts with a bracketed English tag ([Feature Name], [Worktree], [Goal], [Constraints], [Success Criteria], [Context]), and every consensus/escalation/handoff gate question ends literally in 'Proceed?'. Anchoring on the tag prefix (rather than a loose keyword like the old 'goal'/'constraint' substrings) avoids the 'approve pattern anchor problem' flagged in the Phase 3.5 handoff -- a loose, unanchored keyword match could accidentally fire on the wrong question or on the tag of a different dimension appearing in prose. Patterns are still necessarily provisional: interview-stage question *bodies* are LLM-generated at runtime and only their tag prefix is contractually fixed, so 'default' remains the fallback for anything these rules don't anticipate (e.g. a mid-round free-form [Goal] follow-up worded differently from the first one). Real usage against the actual pre-craft skill (Phase 7 E2E) may still require refinement.",
   "default": "yes",
   "answers": [
-    { "match": "feature.?name|what.*(should|will).*(build|call|name)", "response": "slugify-consecutive-separators" },
-    { "match": "worktree", "response": "no" },
-    { "match": "goal", "response": "Fix slugify so it collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, matching the behavior already documented in src/slugify.ts's bug note." },
-    { "match": "constraint", "response": "Keep the CLI dependency-free (node --test only) and keep slugify/capitalize/truncate's public signatures unchanged." },
-    { "match": "success criteri", "response": "All tests under test/ pass via run_test.sh, including the currently-failing 'collapses consecutive separators' case in test/slugify.test.ts." },
-    { "match": "(approve|proceed|continue|merge|land)\\??$", "response": "yes" }
+    { "match": "^\\[Feature Name\\]", "response": "Fix slugify so it collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, matching the behavior already documented in src/slugify.ts's bug note." },
+    { "match": "^\\[Worktree\\]", "response": "no" },
+    { "match": "^\\[Goal\\]", "response": "Fix slugify so it collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, matching the behavior already documented in src/slugify.ts's bug note." },
+    { "match": "^\\[Constraints\\]", "response": "Keep the CLI dependency-free (node --test only) and keep slugify/capitalize/truncate's public signatures unchanged." },
+    { "match": "^\\[Success Criteria\\]", "response": "All tests under test/ pass via run_test.sh, including the currently-failing 'collapses consecutive separators' case in test/slugify.test.ts." },
+    { "match": "^\\[Context\\]", "response": "The bug is isolated to slugify() in src/slugify.ts; capitalize() and truncate() in src/text-utils.ts and the CLI wiring in src/cli.ts are unaffected and already covered by their own passing tests." },
+    { "match": "proceed\\??$", "response": "yes" }
   ]
 }
