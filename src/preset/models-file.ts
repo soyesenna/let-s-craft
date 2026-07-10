@@ -10,19 +10,9 @@
 // Loaded from the global file (`~/.omp/.lsc/models.yaml`) overlaid by the project
 // file (`<cwd>/.lsc/models.yaml`); the project layer wins (C10).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse, stringify } from "yaml";
-
-// Path roots duplicated locally (not imported from src/artifacts/paths.ts, which is
-// Phase 3 scope) so the model-preset feature has no dependency on unbuilt Phase 3
-// artifact-path machinery. Phase 3 may consolidate these once it lands.
-function globalLscDir(): string {
-	return join(homedir(), ".omp", ".lsc");
-}
-function projectLscDir(cwd: string): string {
-	return join(cwd, ".lsc");
-}
+import { globalLscDir, projectLscDir } from "../artifacts/paths.js";
 
 /** A preset maps an agent name to a model pattern `provider/model-id[:effort]`. */
 export type PresetModels = Record<string, string>;
