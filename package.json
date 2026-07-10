@@ -6,7 +6,9 @@
   "private": true,
   "license": "MIT",
   "omp": {
-    "extensions": ["./dist/main.js"]
+    "extensions": [
+      "./dist/main.js"
+    ]
   },
   "scripts": {
     "build": "tsc",
@@ -16,5 +18,8 @@
     "@oh-my-pi/pi-coding-agent": "16.4.0",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
+  },
+  "dependencies": {
+    "yaml": "^2.9.0"
   }
 }
