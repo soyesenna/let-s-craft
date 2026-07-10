@@ -36,6 +36,9 @@ The four sub-stages run in a **fixed order and none may be skipped**: `trace →
    `{feature}` is always kebab-case (Stage 0).
 5. **Tool inventory for this skill.** `lsc_ask`/`lsc_select`/`lsc_confirm` for every human-facing question; `task` (batch form) to spawn `lsc-explore`/`lsc-tracer`/`lsc-planner`/`lsc-architect`/`lsc-critic`/`lsc-test-engineer`, and the bundled (non-`lsc-`) `librarian` agent for web-facing external research workers; `bash`/`write`/`read`/`glob`/`grep` directly for git/filesystem orchestration. Do **not** call `lsc_craft_init`/`lsc_verify_hash`/`lsc_run_tests`/`lsc_craft_abort` — those activate the craft loop's hash-protection and are the `craft` skill's tools, not pre-craft's.
 6. **Interruption / resume.** State lives entirely in what has already been written to `.lsc/crafts/{feature}/`. If this skill is invoked again for a feature that already has some artifacts, do not restart from scratch: check which of trace.md → spec.md → plan.md → test/ already exist (in that order) and resume at the first missing one. Tell the user which stage you are resuming at.
+7. **Fixture mode bounding.** Check `[ -n "$LSC_FIXTURE" ]` (bash) once, at Stage 0, and reuse that answer for the rest of the run rather than re-checking per stage. When true, this run must stay cost/time-bounded for CI, on top of (never instead of) the fixture-mode branch already specified for external research (Stage 1 step 5):
+   - **Consensus loop iteration cap (Stage 3's "The loop", reused by Stage 4): 2, not 10.** The number "10" that appears there is the live-mode cap (C17) — in fixture mode, substitute 2 everywhere that section says 10, including in the `[Consensus Escalation]` question text you compose (state "2 iterations", not "10 iterations", so the fixture's `proceed\??$` default answer ("yes" — see `fixtures/sample-ts-cli/answers.json`) resolves it correctly instead of being asked about a cap that was never actually 10 for this run).
+   - **Interview hard cap (Stage 2) stays 20 — do not reduce it**, but expect and design for fast convergence: the bundled fixture answers (`fixtures/sample-ts-cli/answers.json`) give complete, specific `[Goal]`/`[Constraints]`/`[Success Criteria]`/`[Context]` answers up front precisely so the ambiguity gate should clear in well under 20 rounds; if a fixture run is burning many rounds, that is a fixture-content bug to fix (better-anchored answer rules), not a reason to shrink the cap itself.
 
 ## 2. Stage 0 — Initialization (C14)
 
@@ -93,50 +96,55 @@ Do **not** collapse into: a generic fix-it coding loop, a generic debugger summa
 
    **Premise audit (mandatory when the problem statement has a cross-entity discrepancy shape).** If the feature/bug idea says something like "X is empty but Y is not", "N streams differ", or "values mismatch across entities": lane 3 must test the verification premise FIRST. Enumerate entity dimensions (cohort IDs, tenant IDs, partition keys, dimensional keys per stream) via a metadata table or schema introspection **before** treating a zero-row result or mismatch as a system defect. The result may turn out to be a verification-methodology defect, not a system defect — don't foreclose that outcome by skipping the audit.
 4. **Spawn one `lsc-tracer` per lane**, via a single `task` batch call (`agent: "lsc-tracer"`, one `tasks[]` item per lane). Each item's `assignment` must: state the feature idea, state which lane this worker owns verbatim, and instruct it to follow its own Lane_Discipline contract (already baked into `agents/lsc-tracer.md` — you do not need to re-explain evidence-for/against or the critical-unknown/discriminating-probe requirement, just assign the lane). Each worker owns exactly one lane and must: restate its lane's hypothesis explicitly; gather evidence **for**; gather evidence **against** / gaps; rank evidence strength using a 6-tier hierarchy (controlled reproduction > primary artifact with tight provenance > multiple independent sources > single-source code-path inference > weak circumstantial clues > intuition/speculation); name the lane's critical unknown; recommend the lane's best discriminating probe; avoid collapsing into implementation. A worker must never claim convergence with another lane on its own initiative — that judgment belongs only to the synthesis step (step 6 below), which you (the main session) perform, not a spawned agent. Expected per-worker return shape: Lane / Hypothesis / Evidence For / Evidence Against-Gaps / Evidence Strength / Critical Unknown / Best Discriminating Probe / Confidence.
-5. **External research — always run it live** (C15) — never skip or shortcut the protocol just because it's expensive; unlimited waves is the point. This step runs independently of (and typically concurrently with) the codebase lanes in step 4. Follow the full protocol below:
+5. **External research.** This step runs independently of (and typically concurrently with) the codebase lanes in step 4.
+   - **Live mode (default): always run it live** (C15) — never skip or shortcut the protocol just because it's expensive; unlimited waves is the point. Follow the full protocol below:
 
-   **Session directory.** Create, before spawning anyone:
-   ```
-   .lsc/crafts/{feature}/research/
-   ├── intent-diff.md          # what's actually being asked vs. what a lazy read would assume
-   ├── claim-graph.md          # orchestrator-owned; claims + their sourcing/verification state (workers: read-only)
-   ├── observation-manifest.md # raw findings as they come in, worker-attributed
-   ├── verification-economics.md
-   ├── cause-disappearance.md  # tracked alternative explanations that got ruled out, and why
-   ├── waves/
-   │   └── wave-N.md           # one file per wave: worker roster + EXPAND tail entries
-   └── SYNTHESIS.md            # final output — trace.md links here, does not inline it
-   ```
-   `intent-diff.md` should capture, in a sentence or two, what the feature idea actually needs researched externally (library behavior, API contracts, prior art, known pitfalls) — distinct from what the codebase lanes above already cover internally.
+     **Session directory.** Create, before spawning anyone:
+     ```
+     .lsc/crafts/{feature}/research/
+     ├── intent-diff.md          # what's actually being asked vs. what a lazy read would assume
+     ├── claim-graph.md          # orchestrator-owned; claims + their sourcing/verification state (workers: read-only)
+     ├── observation-manifest.md # raw findings as they come in, worker-attributed
+     ├── verification-economics.md
+     ├── cause-disappearance.md  # tracked alternative explanations that got ruled out, and why
+     ├── waves/
+     │   └── wave-N.md           # one file per wave: worker roster + EXPAND tail entries
+     └── SYNTHESIS.md            # final output — trace.md links here, does not inline it
+     ```
+     `intent-diff.md` should capture, in a sentence or two, what the feature idea actually needs researched externally (library behavior, API contracts, prior art, known pitfalls) — distinct from what the codebase lanes above already cover internally.
 
-   **Saturation wave (first wave).** Scaling floor — do not under-staff this: a single narrow web topic still gets a floor of 6 workers (4 `librarian`, 1 general-purpose web worker, 1 repo-dive-style worker). A multi-facet research need scales to 14; full due-diligence scope scales to 15. Role breakdown for the first wave:
-   - **Codebase-facing** (3-4 workers): spawn `lsc-explore`. Use this only for research questions that need *this* repo's code re-examined from a different angle than the trace lanes already covered — not a duplicate of step 4's lane spawns.
-   - **Web librarian** (3-6 workers): spawn the bundled `librarian` agent (`agent: "librarian"` — an omp built-in agent, distinct from any `lsc-` agent, and the correct choice for every web-facing role below). Do not use `lsc-explore` for this — it is codebase-only per its own contract and explicitly declines external-doc/literature requests.
-   - **Browsing** (0-3 workers): also `librarian` — deeper, more exploratory web browsing than a targeted lookup.
-   - **Repo-dive** (0-2 workers): also `librarian` — diving into *other* (external, e.g. GitHub) repositories for prior art, not this project's own repo (that's the codebase-facing role above).
+     **Saturation wave (first wave).** Scaling floor — do not under-staff this: a single narrow web topic still gets a floor of 6 workers (4 `librarian`, 1 general-purpose web worker, 1 repo-dive-style worker). A multi-facet research need scales to 14; full due-diligence scope scales to 15. Role breakdown for the first wave:
+     - **Codebase-facing** (3-4 workers): spawn `lsc-explore`. Use this only for research questions that need *this* repo's code re-examined from a different angle than the trace lanes already covered — not a duplicate of step 4's lane spawns.
+     - **Web librarian** (3-6 workers): spawn the bundled `librarian` agent (`agent: "librarian"` — an omp built-in agent, distinct from any `lsc-` agent, and the correct choice for every web-facing role below). Do not use `lsc-explore` for this — it is codebase-only per its own contract and explicitly declines external-doc/literature requests.
+     - **Browsing** (0-3 workers): also `librarian` — deeper, more exploratory web browsing than a targeted lookup.
+     - **Repo-dive** (0-2 workers): also `librarian` — diving into *other* (external, e.g. GitHub) repositories for prior art, not this project's own repo (that's the codebase-facing role above).
 
-   Each worker's `assignment` must follow this contract template:
-   ```
-   TASK: <role>. AXIS: <angle>.
-   This is an explicit exhaustive-research assignment. Your default retrieval budget and
-   stop-when-answered rules do not apply — run the full protocol below and report every lead.
-   SCOPE: <axis, sources, expected completeness>
-   PROTOCOL: <role-specific instructions>
-   ## EXPAND
-   - LEAD: <discovery> — WHY: <why it matters> — ANGLE: <next search direction>
-   (or: none — <reason nothing further to expand>)
-   ```
-   Every worker's final report must end with an `## EXPAND` section in exactly this shape — the convergence check below parses it.
+     Each worker's `assignment` must follow this contract template:
+     ```
+     TASK: <role>. AXIS: <angle>.
+     This is an explicit exhaustive-research assignment. Your default retrieval budget and
+     stop-when-answered rules do not apply — run the full protocol below and report every lead.
+     SCOPE: <axis, sources, expected completeness>
+     PROTOCOL: <role-specific instructions>
+     ## EXPAND
+     - LEAD: <discovery> — WHY: <why it matters> — ANGLE: <next search direction>
+     (or: none — <reason nothing further to expand>)
+     ```
+     Every worker's final report must end with an `## EXPAND` section in exactly this shape — the convergence check below parses it.
 
-   **Iterate to convergence.** After each wave, read every worker's `## EXPAND` tail and log new leads into `.lsc/crafts/{feature}/research/waves/wave-N.md`. Convergence requires all of: at least 2 expansion waves have run (the first saturation wave does not count as an expansion wave on its own), AND (zero unconfirmed leads remain, OR 3 consecutive waves produced zero new leads). **Depth limit:** at 5 waves without convergence, stop and ask the user via `lsc_confirm` whether to extend further — do not silently keep spawning waves past this point.
+     **Iterate to convergence.** After each wave, read every worker's `## EXPAND` tail and log new leads into `.lsc/crafts/{feature}/research/waves/wave-N.md`. Convergence requires all of: at least 2 expansion waves have run (the first saturation wave does not count as an expansion wave on its own), AND (zero unconfirmed leads remain, OR 3 consecutive waves produced zero new leads). **Depth limit:** at 5 waves without convergence, stop and ask the user via `lsc_confirm` whether to extend further — do not silently keep spawning waves past this point.
 
-   **Code verification.** For any competing/undocumented/performance claim that can be settled by running code: pin the version, record the environment, and mark each as `CONFIRMED` / `REFUTED` / `PARTIAL`. Record these in `claim-graph.md`.
+     **Code verification.** For any competing/undocumented/performance claim that can be settled by running code: pin the version, record the environment, and mark each as `CONFIRMED` / `REFUTED` / `PARTIAL`. Record these in `claim-graph.md`.
 
-   **Lock non-code claims.** A non-code claim only enters the "verified" set in `claim-graph.md` once it has: ≥2 independent source domains, ≥2 independent observation groups, at least one countersearch pass, primary-source backing, and time-relevance evidence (not stale). `claim-graph.md` is orchestrator-owned — workers read it, they do not edit it directly; you (the orchestrating session) are the one integrating worker reports into it.
+     **Lock non-code claims.** A non-code claim only enters the "verified" set in `claim-graph.md` once it has: ≥2 independent source domains, ≥2 independent observation groups, at least one countersearch pass, primary-source backing, and time-relevance evidence (not stale). `claim-graph.md` is orchestrator-owned — workers read it, they do not edit it directly; you (the orchestrating session) are the one integrating worker reports into it.
 
-   **Synthesis.** Write `research/SYNTHESIS.md` by reading `intent-diff.md`, `claim-graph.md`, and `observation-manifest.md` and re-authoring (not concatenating) into a coherent narrative. **Every claim gets an inline `[Source N]` citation.** Only claims that made it into the verified set may be cited for high-risk non-code assertions. `trace.md`'s "External Research Summary" section (step 7 below) should summarize this file's conclusions in a few paragraphs and link to `research/SYNTHESIS.md` for the full citation trail — do not inline the whole research journal into trace.md (keeps trace.md focused and avoids re-reading the entire research corpus on every later reference to it).
+     **Synthesis.** Write `research/SYNTHESIS.md` by reading `intent-diff.md`, `claim-graph.md`, and `observation-manifest.md` and re-authoring (not concatenating) into a coherent narrative. **Every claim gets an inline `[Source N]` citation.** Only claims that made it into the verified set may be cited for high-risk non-code assertions. `trace.md`'s "External Research Summary" section (step 7 below) should summarize this file's conclusions in a few paragraphs and link to `research/SYNTHESIS.md` for the full citation trail — do not inline the whole research journal into trace.md (keeps trace.md focused and avoids re-reading the entire research corpus on every later reference to it).
 
-   **Asset production: skip it.** This stage's research output is an internal pipeline artifact consumed by the interview/plan stages, not a polished external deliverable — no export/chart/diagram assembly step. `research/SYNTHESIS.md` as markdown is the final form.
+     **Asset production: skip it.** This stage's research output is an internal pipeline artifact consumed by the interview/plan stages, not a polished external deliverable — no export/chart/diagram assembly step. `research/SYNTHESIS.md` as markdown is the final form.
+   - **Fixture mode (CI harness seam).** Check first: `[ -n "$LSC_FIXTURE" ]` (bash). When true, do **not** spawn any external research wave (no `librarian` workers, no web calls of any kind) — CI must stay unattended and cost-bounded. Instead, look for `recorded-research.md` next to the fixture's answers file (`dirname "$LSC_FIXTURE"`/`recorded-research.md` — e.g. `LSC_FIXTURE=fixtures/sample-ts-cli/answers.json` → `fixtures/sample-ts-cli/recorded-research.md`):
+     - If it exists, `read` it and adopt its content as this step's research output verbatim — do not re-verify, re-run any part of the protocol against it, or spawn workers to "double check" it.
+     - If it does not exist, state explicitly in trace.md's "External Research Summary" section that external research was **"stubbed in fixture mode"** (this exact phrase) and proceed without it.
+     - Either way, this step's `trace.md` contribution is a **structural stand-in**, not a claim that research was actually performed.
 6. **Rebuttal, convergence, synthesis — done by you, the main session, not a spawned agent.** There is no separate lead agent for this in lets-craft's single-main-session architecture — the session executing this skill performs the synthesis role directly. Once all lane workers and research workers have reported:
    - **Rebuttal round (mandatory, before you write anything down as final):** let the strongest non-leading lane present its best rebuttal to the current leader. Force the leader to answer with evidence, not assertion. If the rebuttal materially weakens the leader, re-rank. If two "different" hypotheses turn out to reduce to the same underlying mechanism, merge them and say so explicitly. If two hypotheses still imply different next probes, keep them separate even if they sound similar in prose.
    - **Convergence detection.** Do NOT claim convergence just because multiple workers happen to use similar language. Convergence requires either: the same root causal mechanism, or independent evidence streams that happen to point to the same explanation. Anything short of that stays a ranked shortlist, not a single verdict.
@@ -265,7 +273,7 @@ This loop runs **twice** in pre-craft: once over `plan.md` (this stage) and once
 3. **Critic reviews** (after architect only). Required investigation depth per `agents/lsc-critic.md`: pre-commitment predictions, full verification of every referenced file/claim, multi-perspective review (executor/stakeholder/skeptic angles for a plan; the equivalent code-review angles for test assets), explicit gap analysis ("what's missing"), self-audit, realist check. For this consensus context specifically, it must also gate: principle-option consistency, fairness of alternatives explored, risk-mitigation clarity, testable acceptance criteria, concrete verification steps — and, in deliberate mode, pre-mortem quality (3+ scenarios) and expanded test-plan coverage (unit/integration/e2e/observability). Read the `**VERDICT:**` line per the vocabulary section.
 4. **Consensus = architect not-blocking AND critic ACCEPT/ACCEPT-WITH-RESERVATIONS, in the same iteration.** A critic pass that only happened because an earlier architect blocking issue was silently skipped does not count.
 5. **Re-review loop.** Any non-passing outcome (architect blocking, or critic REVISE/REJECT) sends the author back to revise, then back through architect, then critic again — the full closed loop, not a partial re-check.
-6. **Iteration cap: 10.** One iteration = one full (author-revise → architect-review → critic-review) cycle.
+6. **Iteration cap: 10** — **2 in fixture mode** (§1.7). One iteration = one full (author-revise → architect-review → critic-review) cycle.
 7. **On reaching the cap without consensus**, present the best version to the user for a decision:
 
    `[Consensus Escalation] plan.md did not reach architect/critic consensus after 10 iterations. Unresolved: {summary of the latest architect antithesis + critic findings}. Proceed with the current plan.md as-is?`
@@ -279,7 +287,7 @@ This loop runs **twice** in pre-craft: once over `plan.md` (this stage) and once
 2. **Spawn 4 base testers via `lsc-test-engineer`** in one `task` batch, each scoped to one category: `unit`, `integration`, `full-e2e`, `regression`. Add more testers beyond these 4 whenever the feature's risk profile calls for it (there is no upper bound) — this is an orchestrator judgment call, not something the testers decide for themselves.
 3. Every tester's `assignment` must state explicitly: these test assets become **hash-protected and immutable** the moment the `craft` skill starts (`src/craft/hash-manifest.ts`, `src/craft/enforcement.ts` — a `tool_call` block plus a SHA-256 manifest check) — get them correct and complete before handoff, because neither the tester nor `lsc-executor` can edit them afterward without the platform's confirm-and-diff escalation gate. This is already in `agents/lsc-test-engineer.md`'s Constraints, but restate it in the assignment so it is not missed under time pressure.
 4. **`run_test.sh` must be a single, working entry point** that runs every heterogeneous suite (gradle/pytest/node --test/shell/…) and reports a combined pass/fail plus a per-failure reason. Verify this yourself before moving on — actually invoke it (via `bash`, since the craft loop's trusted-exec tool `lsc_run_tests` is not available to this skill) and confirm it runs cleanly end-to-end, including any test cases that are *supposed* to fail at this stage (a feature built test-first will often have intentionally-failing tests — that is correct; verify the *harness* runs and reports correctly, not that everything passes).
-5. **Run the same architect/critic consensus loop from Stage 3 against the produced `test/` directory.** Mechanically identical to Stage 3's loop — same sequential architect-then-critic order, same real verdict vocabulary, same cap of 10, same escalation pattern (tag the escalation question `[Consensus Escalation] ... Proceed?` exactly as before, scoped to `test/` instead of `plan.md`).
+5. **Run the same architect/critic consensus loop from Stage 3 against the produced `test/` directory.** Mechanically identical to Stage 3's loop — same sequential architect-then-critic order, same real verdict vocabulary, same cap of 10 (**2 in fixture mode, §1.7**), same escalation pattern (tag the escalation question `[Consensus Escalation] ... Proceed?` exactly as before, scoped to `test/` instead of `plan.md`).
 
 ## 7. Finalization
 
