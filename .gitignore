@@ -4,3 +4,6 @@ lazycodex/
 .gjc/
 oh-my-claudecode/
 pi/
+dist/
+node_modules/
+.lsc/worktrees/

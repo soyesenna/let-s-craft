@@ -1,0 +1,20 @@
+{
+  "name": "lets-craft",
+  "version": "0.1.0",
+  "description": "lets-craft — omp Extension plugin for the pre-craft / craft / post-craft development pipeline",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "omp": {
+    "extensions": ["./dist/main.js"]
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "16.4.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
