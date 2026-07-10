@@ -7,6 +7,16 @@
 // therefore cover the pure transformations of the injection primitive against a
 // fake store that satisfies the same `AgentModelStore` seam the real `Settings`
 // singleton does (see src/preset/spike.ts).
+//
+// The real-runtime, Bun-only verifications (clobber-race timing, global/project
+// write-location matrix, and the real subagent spawn check) live in two rerunnable
+// scripts instead of here, since they need the actual `Settings` class / `omp`
+// binary, not the fake store:
+//   - scripts/spike-clover-race.ts   (isolated, zero-cost)
+//   - scripts/spike-e2e-verify.sh    (Part A isolated/zero-cost; Part B opt-in,
+//                                      spends real tokens — see its header for the
+//                                      <agentId>.jsonl methodology this spike's
+//                                      earlier, incorrect measurement missed)
 import { describe, expect, it } from "vitest";
 import {
 	AGENT_MODEL_OVERRIDES_KEY,

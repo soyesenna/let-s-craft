@@ -16,14 +16,48 @@
 //      bundled single-file binary, module identity is only shared through the
 //      injected `pi.pi` SDK — NOT through bare imports. So all injection MUST go
 //      through `pi.pi.settings` (ExtensionContext exposes no settings setter).
-//   4. `Settings.set()` is clobber-safe: the debounced `#saveNow` re-reads
-//      config.yml under a file lock and re-applies only the paths it modified,
-//      preserving concurrent external edits (settings.ts:1336-1349). For a
-//      purely session-scoped injection that must not touch global config.yml,
-//      prefer `settings.override()` (runtime `#overrides` layer, live-reflected,
-//      never persisted) and re-inject on `session_start` from models.yaml.
+//   4. `Settings.set()` is clobber-safe WITHIN a single process: the debounced
+//      `#saveNow` re-reads config.yml under a file lock and re-applies only the
+//      paths it modified, preserving concurrent external edits (settings.ts:1336-1349).
+//      Precise single-process timeline (scripts/spike-clover-race.ts, isolated,
+//      zero-cost, rerunnable): a raw external write made AFTER a session already
+//      loaded settings is invisible to that session until ANY unrelated `.set()`
+//      fires — at that point `#saveNow`'s read-modify-write pulls the raw write into
+//      memory too (PULL-IN), and the file retains BOTH values (no data loss). This
+//      refutes the plan's original "#saveNow overwrites #global wholesale" model.
+//   5. Multi-process contention is a REAL, separate risk from (4): two independent
+//      `omp` processes racing on the SAME real `~/.omp/agent/config.yml` — each with
+//      its own in-memory `#global` and its own debounced `#saveNow` — can revert
+//      each other's raw writes depending on flush ordering. This was observed live
+//      during this spike (a key written by one headless `omp` invocation vanished
+//      after a second one flushed). This is the concrete reason to prefer
+//      `settings.override()` (in-memory only, never persisted, so it cannot race a
+//      concurrent process's file write) over any raw config.yml write for `/lsc-preset`.
+//   6. Write-location matrix (scripts/spike-e2e-verify.sh Part A, isolated `--profile`,
+//      zero-cost): both the global config.yml layer and the project layer
+//      (`<cwd>/.omp/settings.json`) are read correctly by a fresh `omp` process, and
+//      merge per-key — a project-layer key wins over a conflicting global key while a
+//      global-only key survives (not a whole-record replace). Superseded by finding 5
+//      for Phase 2's actual design (no raw writes at all), but documents why a
+//      project-layer *fallback* would have been clobber-safe by construction had one
+//      been needed (the Settings class never writes back to the project layer files).
+//   7. Verification methodology correction (the most operationally important finding
+//      of this spike): a spawned subagent's OWN API calls do NOT appear in the parent
+//      session's `--mode=json` stdout — they are written to a separate
+//      `<parent-session-dir>/<agentId>.jsonl` file (executor.ts:1897). Checking only
+//      the parent's stdout for the override model gives a FALSE NEGATIVE (this spike
+//      initially concluded, incorrectly, that overrides were not applying, purely from
+//      this measurement error). Phase 7's E2E harness must resolve and inspect the
+//      per-agent session file — see scripts/spike-e2e-verify.sh Part B for the
+//      reusable resolution procedure (locate the session dir from the parent's
+//      session id, then the first `*.jsonl` inside it).
 //
-// These helpers are the primitive that Phase 2 (`preset/inject.ts`) builds on.
+// These helpers are the primitive that Phase 2 (`preset/inject.ts`) builds on. Given
+// finding 5, Phase 2's actual design uses `applySessionAgentModelOverrides` (live,
+// `settings.override()`) re-applied from models.yaml at `session_start` and on
+// `/lsc-preset` switch — `applyAgentModelOverrides`/`setAgentModelOverride` (the
+// persisted `settings.set()` path) remain available but are not the primary path,
+// since avoiding config.yml writes entirely sidesteps finding 5's multi-process risk.
 
 import type { Settings } from "@oh-my-pi/pi-coding-agent";
 
