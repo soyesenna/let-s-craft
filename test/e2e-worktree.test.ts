@@ -15,13 +15,13 @@ import { E2E_MAIN_MODEL, debugSummary, listCraftFeatures, runOmpPrint, setupFixt
 
 const RUN_E2E = process.env.LSC_E2E === "1";
 
-// Sized identically to e2e-full-cycle.test.ts — see its comment for the actual timed-out run
-// this is based on and the sequential-execution fix (`--no-file-parallelism`, package.json)
-// that goes with it.
-const PRE_CRAFT_TIMEOUT_MS = 40 * 60_000;
-const CRAFT_TIMEOUT_MS = 30 * 60_000;
-const POST_CRAFT_TIMEOUT_MS = 20 * 60_000;
-const TEST_TIMEOUT_MS = 105 * 60_000;
+// Sized identically to e2e-full-cycle.test.ts — see its comment for the sequence of actual
+// timed-out runs and fixes (file-level sequencing, synchronous task spawns, main model upgrade)
+// these numbers are based on.
+const PRE_CRAFT_TIMEOUT_MS = 90 * 60_000;
+const CRAFT_TIMEOUT_MS = 40 * 60_000;
+const POST_CRAFT_TIMEOUT_MS = 25 * 60_000;
+const TEST_TIMEOUT_MS = 170 * 60_000;
 
 const cleanupDirs: string[] = [];
 afterEach(() => {

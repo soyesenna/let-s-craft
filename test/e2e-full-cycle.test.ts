@@ -33,15 +33,18 @@ const RUN_E2E = process.env.LSC_E2E === "1";
 // test-engineer spawns). All bounded per plan §Phase 7 (b)(c) — see the cheap-model preset
 // setupFixtureProject() seeds and the fixture-mode caps documented in the SKILL.md files.
 //
-// Sized from an actual timed-out run: pre-craft was still validly progressing (writing Stage 4's
-// 4 tester assets) at the 25-minute mark, not stuck — it just needed more wall-clock budget than
-// that first estimate gave it. `npm run e2e` also runs the 3 E2E files sequentially now
-// (`--no-file-parallelism`, package.json) rather than in parallel, since running them concurrently
-// was independently found to rate-limit/slow down every turn across all three pipelines at once.
-const PRE_CRAFT_TIMEOUT_MS = 40 * 60_000;
-const CRAFT_TIMEOUT_MS = 30 * 60_000;
-const POST_CRAFT_TIMEOUT_MS = 20 * 60_000;
-const TEST_TIMEOUT_MS = 105 * 60_000;
+// Sized and re-sized across three actual timed-out runs, each still validly progressing (not
+// stuck) at the moment it ran out of budget: (1) pre-craft was writing Stage 4's 4 tester assets
+// at 25 minutes; (2) after bumping to 40 minutes and fixing 3-way file-level contention
+// (`--no-file-parallelism`, package.json), pre-craft reached Stage 3's consensus loop (planner →
+// architect x3 reviews + 2 revisions) before running out; (3) after fixing `task` spawns to run
+// synchronously (async.enabled=false, this file's `syncModeConfigPath()`) and upgrading the main
+// orchestrator model (E2E_MAIN_MODEL, e2e-helpers.ts), each stage should need meaningfully less
+// wall-clock than before — these numbers stay generous rather than tight to that expectation.
+const PRE_CRAFT_TIMEOUT_MS = 90 * 60_000;
+const CRAFT_TIMEOUT_MS = 40 * 60_000;
+const POST_CRAFT_TIMEOUT_MS = 25 * 60_000;
+const TEST_TIMEOUT_MS = 170 * 60_000;
 
 const cleanupDirs: string[] = [];
 afterEach(() => {

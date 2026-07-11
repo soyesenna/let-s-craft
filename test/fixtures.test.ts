@@ -146,17 +146,17 @@ describe("FixtureAnswerSet", () => {
 			"t.json",
 		);
 		const set = new FixtureAnswerSet(file);
-		expect(set.match("please confirm")).toBe("yes");
-		expect(set.match("please confirm")).toBe("no");
-		expect(set.match("please confirm")).toBe("no");
+		expect(set.match("please confirm").response).toBe("yes");
+		expect(set.match("please confirm").response).toBe("no");
+		expect(set.match("please confirm").response).toBe("no");
 	});
 
 	it("keeps independent consumption state per instance", () => {
 		const file = parseFixtureAnswerFile({ answers: [{ match: "q", response: "once-answer", once: true }], default: "fallback" }, "t.json");
 		const a = new FixtureAnswerSet(file);
 		const b = new FixtureAnswerSet(file);
-		expect(a.match("q")).toBe("once-answer");
-		expect(b.match("q")).toBe("once-answer");
+		expect(a.match("q").response).toBe("once-answer");
+		expect(b.match("q").response).toBe("once-answer");
 	});
 });
 
@@ -206,14 +206,14 @@ describe("detectFixturePath", () => {
 describe("getFixtureAnswerSet", () => {
 	it("caches by path, preserving once-consumption state across calls", () => {
 		const path = tmpAnswersFile({ answers: [{ match: "q", response: "first", once: true }], default: "fallback" });
-		expect(getFixtureAnswerSet(path).match("q")).toBe("first");
-		expect(getFixtureAnswerSet(path).match("q")).toBe("fallback");
+		expect(getFixtureAnswerSet(path).match("q").response).toBe("first");
+		expect(getFixtureAnswerSet(path).match("q").response).toBe("fallback");
 	});
 
 	it("reloads from disk after resetFixtureCache", () => {
 		const path = tmpAnswersFile({ answers: [{ match: "q", response: "first", once: true }], default: "fallback" });
-		expect(getFixtureAnswerSet(path).match("q")).toBe("first");
+		expect(getFixtureAnswerSet(path).match("q").response).toBe("first");
 		resetFixtureCache();
-		expect(getFixtureAnswerSet(path).match("q")).toBe("first");
+		expect(getFixtureAnswerSet(path).match("q").response).toBe("first");
 	});
 });

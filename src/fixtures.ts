@@ -22,6 +22,16 @@ export interface FixtureAnswerRule {
 	response: string;
 	/** When true, this rule is consumed after its first match and skipped afterward. */
 	once?: boolean;
+	/**
+	 * For `lsc_select` only: when set, and `response` doesn't resolve to exactly one offered
+	 * option via text matching (see `resolveSelectOption` in ask.ts), use `options[optionIndex]`
+	 * directly instead of erroring. Ignored by `lsc_ask`/`lsc_confirm`, which have no options
+	 * list to index into. An explicit escape hatch for interview-stage questions, where the
+	 * model chooses `lsc_select` vs `lsc_ask` on its own judgment and invents its own option
+	 * labels — a free-text dimension answer authored for `lsc_ask` can land against a select
+	 * whose labels are an unpredictable paraphrase no text tier can be trusted to match.
+	 */
+	optionIndex?: number;
 }
 
 export interface FixtureAnswerFile {
@@ -58,12 +68,12 @@ export function matchFixtureAnswer(
 	file: FixtureAnswerFile,
 	question: string,
 	consumedOnce: ReadonlySet<number>,
-): { response: string; consumeIndex?: number } {
+): { response: string; optionIndex?: number; consumeIndex?: number } {
 	for (let i = 0; i < file.answers.length; i++) {
 		const rule = file.answers[i];
 		if (rule.once && consumedOnce.has(i)) continue;
 		if (matchesRule(rule.match, question)) {
-			return { response: rule.response, consumeIndex: rule.once ? i : undefined };
+			return { response: rule.response, optionIndex: rule.optionIndex, consumeIndex: rule.once ? i : undefined };
 		}
 	}
 	if (file.default !== undefined) return { response: file.default };
@@ -73,17 +83,23 @@ export function matchFixtureAnswer(
 	);
 }
 
+/** What matching a question against the fixture resolves to: the scripted free-text answer, plus an optional `lsc_select`-only option-index hint. */
+export interface FixtureMatch {
+	response: string;
+	optionIndex?: number;
+}
+
 /** Stateful wrapper around matchFixtureAnswer that tracks which `once` rules have fired, for the lifetime of one fixture run. */
 export class FixtureAnswerSet {
 	private readonly consumed = new Set<number>();
 
 	constructor(private readonly file: FixtureAnswerFile) {}
 
-	/** Resolve one question to its scripted response, consuming any matched `once` rule. */
-	match(question: string): string {
-		const { response, consumeIndex } = matchFixtureAnswer(this.file, question, this.consumed);
+	/** Resolve one question to its scripted response (+ optionIndex hint, if the rule set one), consuming any matched `once` rule. */
+	match(question: string): FixtureMatch {
+		const { response, optionIndex, consumeIndex } = matchFixtureAnswer(this.file, question, this.consumed);
 		if (consumeIndex !== undefined) this.consumed.add(consumeIndex);
-		return response;
+		return { response, optionIndex };
 	}
 }
 
@@ -103,7 +119,10 @@ export function parseFixtureAnswerFile(raw: unknown, path: string): FixtureAnswe
 		if (typeof e.match !== "string") fail(path, `answers[${i}].match must be a string.`);
 		if (typeof e.response !== "string") fail(path, `answers[${i}].response must be a string.`);
 		if (e.once !== undefined && typeof e.once !== "boolean") fail(path, `answers[${i}].once must be a boolean when present.`);
-		return { match: e.match, response: e.response, once: e.once as boolean | undefined };
+		if (e.optionIndex !== undefined && (typeof e.optionIndex !== "number" || !Number.isInteger(e.optionIndex) || e.optionIndex < 0)) {
+			fail(path, `answers[${i}].optionIndex must be a non-negative integer when present.`);
+		}
+		return { match: e.match, response: e.response, once: e.once as boolean | undefined, optionIndex: e.optionIndex as number | undefined };
 	});
 
 	if (obj.default !== undefined && typeof obj.default !== "string") fail(path, '"default" must be a string when present.');

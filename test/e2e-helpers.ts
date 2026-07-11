@@ -8,11 +8,17 @@
 // as a child process and assert on its `--mode=json` NDJSON event stream and the filesystem
 // state it produces, exactly the technique `scripts/spike-e2e-verify.sh` established.
 //
-// Boundedness (plan §Phase 7 (b)(c)): every helper here defaults to the cheapest authenticated
-// model verified reachable during harness development (`zai/glm-4.5-flash:low` — confirmed via
-// `omp models list` and used successfully for both the orchestrating main session and every
-// lsc-* subagent override in manual smoke runs), and every spawn is wrapped in a hard kill
-// timeout so a hung/looping model can never stall `npm run e2e` indefinitely.
+// Boundedness (plan §Phase 7 (b)(c)): every spawn is wrapped in a hard kill timeout so a
+// hung/looping model can never stall `npm run e2e` indefinitely. Main-session vs. subagent
+// models are deliberately split, found necessary from an actual run's evidence: the cheapest
+// model (`zai/glm-4.5-flash:low`) is fine for the many short, narrowly-scoped lsc-* subagent
+// spawns (still the default for E2E_SUBAGENT_MODEL, applied via the .lsc/models.yaml preset
+// setupFixtureProject() seeds), but as the *orchestrating* main session it struggled to reliably
+// follow pre-craft/craft/post-craft's long SKILL.md instructions — observed repeating the same
+// lsc_ask question 3 times, misreading a subagent's JSON result and attempting to `read` a file
+// that was never written, and several `lsc_select` fixture-matching failures compounding the
+// slowdown. E2E_MAIN_MODEL is now `zai/glm-4.6` (next tier up, same authenticated provider,
+// confirmed via `omp models list`) for the orchestrating session only.
 import { execFileSync } from "node:child_process";
 import { type ChildProcess, spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -51,7 +57,7 @@ function syncModeConfigPath(): string {
 }
 
 /** Cheapest authenticated model verified during harness development (see module header). Overridable for local runs against a different provider. */
-export const E2E_MAIN_MODEL = process.env.LSC_E2E_MAIN_MODEL ?? "zai/glm-4.5-flash:low";
+export const E2E_MAIN_MODEL = process.env.LSC_E2E_MAIN_MODEL ?? "zai/glm-4.6:low";
 export const E2E_SUBAGENT_MODEL = process.env.LSC_E2E_SUBAGENT_MODEL ?? "zai/glm-4.5-flash:low";
 
 export interface OmpEvent {
@@ -232,7 +238,18 @@ function extractMessageText(content: unknown): string {
 	return "";
 }
 
-/** Debug context attached to a failed assertion: last assistant text + tool execution summary, so a failing E2E run is diagnosable from vitest output alone without re-running it. Called unconditionally from every `expect(..., debugSummary(result))` call site (JS evaluates it eagerly regardless of pass/fail) — it must never throw on malformed/partial events, which is exactly what an early-killed (SIGKILL) process can leave behind mid-stream. */
+/**
+ * Debug context attached to a failed assertion: last assistant text + tool execution summary, so
+ * a failing E2E run is diagnosable from vitest output alone without re-running it. Called
+ * unconditionally from every `expect(..., debugSummary(result))` call site (JS evaluates it
+ * eagerly regardless of pass/fail) — it must never throw on malformed/partial events, which is
+ * exactly what an early-killed (SIGKILL) process can leave behind mid-stream.
+ *
+ * Error tool executions get their FULL text, not the same 150-char cap as everything else — a
+ * prior version truncated `lsc_select (ERROR)` results so aggressively that the actual scripted
+ * response / offered options (exactly what's needed to fix a fixture-matching failure) were cut
+ * off, and the only way to see them was to go find and re-read the raw log by hand.
+ */
 export function debugSummary(result: OmpRunResult): string {
 	const lastTexts = result.events
 		.filter(e => e.type === "message_end")
@@ -240,12 +257,13 @@ export function debugSummary(result: OmpRunResult): string {
 		.filter((m): m is { role?: string; content?: unknown } => m !== undefined)
 		.slice(-4)
 		.map(m => `[${m.role}] ${extractMessageText(m.content).slice(0, 400)}`);
-	const tools = toolExecutions(result)
-		.slice(-15)
-		.map(t => `${t.toolName}${t.isError ? " (ERROR)" : ""}: ${t.text.slice(0, 150)}`);
+	const executions = toolExecutions(result);
+	const tools = executions.slice(-15).map(t => `${t.toolName}${t.isError ? " (ERROR)" : ""}: ${t.isError ? t.text : t.text.slice(0, 150)}`);
+	const errors = executions.filter(t => t.isError).map(t => `${t.toolName}: ${t.text}`);
 	return [
 		`exitCode=${result.exitCode} timedOut=${result.timedOut}`,
 		`stderr(tail): ${result.stderr.slice(-500)}`,
+		`all tool errors (full text, ${errors.length} total):\n${errors.join("\n---\n")}`,
 		`last tool executions:\n${tools.join("\n")}`,
 		`last messages:\n${lastTexts.join("\n")}`,
 	].join("\n\n");

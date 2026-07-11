@@ -57,7 +57,7 @@ export async function performAsk(
 	if (channel.kind === "fixture") {
 		let response: string;
 		try {
-			response = channel.answers.match(params.question);
+			response = channel.answers.match(params.question).response;
 		} catch (error) {
 			return fixtureErrorResult(error);
 		}
@@ -85,6 +85,54 @@ export interface SelectUI {
 	select(title: string, options: string[]): Promise<string | undefined>;
 }
 
+/** Escape a string for literal use inside a RegExp source. */
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** True iff `needle` appears in `haystack` as a whole-word/whole-phrase match (bounded by non-word characters or string edges), case-insensitive. Deliberately stricter than a raw substring check — see resolveSelectOption's tier 3 for why. */
+function containsAsWord(haystack: string, needle: string): boolean {
+	if (needle.length === 0) return false;
+	return new RegExp(`\\b${escapeRegExp(needle)}\\b`, "i").test(haystack);
+}
+
+/**
+ * Multi-tier fixture-mode option resolution for `lsc_select`, exported for direct unit testing.
+ * Interview-stage questions are LLM-generated and choose `lsc_select` vs `lsc_ask` on their own
+ * judgment (pre-craft's SKILL.md: "lsc_select ... preferred when the answer space is
+ * enumerable") — a fixture answer authored as a free-text dimension answer (`[Goal]`,
+ * `[Constraints]`, ...) can land against a select whose option labels are the model's own short
+ * paraphrase, which a strict equality check can never match. Tiers, in order, first hit wins:
+ *
+ *   1. Exact match.
+ *   2. Case-insensitive exact match.
+ *   3. Unique whole-word/whole-phrase containment (either direction) — only when exactly one
+ *      offered option qualifies; an ambiguous (2+) match is treated as no match rather than
+ *      guessing, since a wrong pick here silently steers the interview down the wrong branch.
+ *      Whole-word bounded (not a raw substring check) on purpose: a long free-text answer like
+ *      "...non-alphanumeric separators..." contains "no" as a raw substring, which would
+ *      false-positive against a plain ["yes","no"] option pair if checked naively.
+ *   4. `optionIndex`, if the rule set one and it is a valid index into `options` — a fixture
+ *      author's explicit escape hatch when no text-based tier can be trusted to be unique.
+ *
+ * Returns undefined (not an error) when nothing resolves — the caller decides how to report that.
+ */
+export function resolveSelectOption(scripted: { response: string; optionIndex?: number }, options: string[]): string | undefined {
+	const { response, optionIndex } = scripted;
+	if (options.includes(response)) return response;
+
+	const lowerResponse = response.toLowerCase();
+	const caseInsensitive = options.find(o => o.toLowerCase() === lowerResponse);
+	if (caseInsensitive !== undefined) return caseInsensitive;
+
+	const containment = options.filter(o => o.length > 0 && (containsAsWord(response, o) || containsAsWord(o, response)));
+	if (containment.length === 1) return containment[0];
+
+	if (optionIndex !== undefined && optionIndex >= 0 && optionIndex < options.length) return options[optionIndex];
+
+	return undefined;
+}
+
 export async function performSelect(
 	channel: AskChannel,
 	ui: SelectUI,
@@ -93,26 +141,29 @@ export async function performSelect(
 	if (channel.kind === "unavailable") return { isError: true, content: [{ type: "text", text: HEADLESS_ERROR }] };
 
 	if (channel.kind === "fixture") {
-		let response: string;
+		let scripted: { response: string; optionIndex?: number };
 		try {
-			response = channel.answers.match(params.question);
+			scripted = channel.answers.match(params.question);
 		} catch (error) {
 			return fixtureErrorResult(error);
 		}
-		if (!params.options.includes(response)) {
+		const resolved = resolveSelectOption(scripted, params.options);
+		if (resolved === undefined) {
 			return {
 				isError: true,
 				content: [
 					{
 						type: "text",
 						text:
-							`lets-craft fixture: scripted response ${JSON.stringify(response)} for question ${JSON.stringify(params.question)} ` +
-							`does not match any offered option (${params.options.join(", ")}). Fix the fixture's response text to match an option label exactly.`,
+							`lets-craft fixture: scripted response ${JSON.stringify(scripted.response)} for question ${JSON.stringify(params.question)} ` +
+							"does not match any offered option via exact/case-insensitive/whole-word-containment matching, and no (valid) " +
+							`"optionIndex" was set (options: ${params.options.join(", ")}). Fix the fixture's response text to match an option ` +
+							'label, or add an "optionIndex" to that rule.',
 					},
 				],
 			};
 		}
-		return { content: [{ type: "text", text: response }], details: { question: params.question, response, source: "fixture" } };
+		return { content: [{ type: "text", text: resolved }], details: { question: params.question, response: resolved, source: "fixture" } };
 	}
 
 	const response = await ui.select(params.question, params.options);
@@ -154,7 +205,7 @@ export async function performConfirm(
 	if (channel.kind === "fixture") {
 		let response: string;
 		try {
-			response = channel.answers.match(params.question);
+			response = channel.answers.match(params.question).response;
 		} catch (error) {
 			return fixtureErrorResult(error);
 		}
