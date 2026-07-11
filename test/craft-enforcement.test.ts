@@ -108,6 +108,88 @@ describe("evaluateToolCallForActiveCraft", () => {
 		);
 		expect(result).toBeUndefined();
 	});
+
+	// The `edit` tool's default mode ("hashline") has a `{ input: string }`-only schema — no
+	// top-level `path`/`paths` field. Confirmed against a real E2E run: a hashline `edit` call
+	// against a protected test file went straight through the block undetected before this
+	// extraction was added. These cases lock the fix (src/craft/enforcement.ts's
+	// extractEditPayloadPaths, scanning `input.input` for `[path#TAG]` header lines /
+	// `*** Update File: path` apply_patch markers).
+	describe("edit tool — hashline/apply_patch payload path extraction (input.input, no top-level path field)", () => {
+		it("blocks a hashline edit call whose header targets the protected test tree", () => {
+			const result = evaluateToolCallForActiveCraft(
+				{ toolName: "edit", input: { input: `[${TEST_DIR}/run_test.sh#1A2B]\nreplace 5.=7:\n+new content` }, cwd: "/repo" },
+				CRAFT,
+			);
+			expect(result?.block).toBe(true);
+		});
+
+		it("blocks a hashline edit call whose header has no hash tag (bare [path])", () => {
+			const result = evaluateToolCallForActiveCraft(
+				{ toolName: "edit", input: { input: `[${TEST_DIR}/run_test.sh]\nreplace 5.=7:\n+new content` }, cwd: "/repo" },
+				CRAFT,
+			);
+			expect(result?.block).toBe(true);
+		});
+
+		it("blocks a hashline edit call using a cwd-relative header path", () => {
+			const result = evaluateToolCallForActiveCraft(
+				{ toolName: "edit", input: { input: "[.lsc/crafts/my-feature/test/unit.test.ts#C223]\nreplace 1.=1:\n+x" }, cwd: "/repo" },
+				CRAFT,
+			);
+			expect(result?.block).toBe(true);
+		});
+
+		it("does not block a hashline edit call targeting a file outside the protected tree", () => {
+			const result = evaluateToolCallForActiveCraft(
+				{ toolName: "edit", input: { input: "[/repo/src/app.ts#1A2B]\nreplace 5.=7:\n+new content" }, cwd: "/repo" },
+				CRAFT,
+			);
+			expect(result).toBeUndefined();
+		});
+
+		it("blocks a multi-file hashline edit when only one of several headers targets the protected tree", () => {
+			const result = evaluateToolCallForActiveCraft(
+				{
+					toolName: "edit",
+					input: {
+						input: `[/repo/src/app.ts#1A2B]\nreplace 1.=1:\n+x\n\n[${TEST_DIR}/run_test.sh#C223]\nreplace 1.=1:\n+y`,
+					},
+					cwd: "/repo",
+				},
+				CRAFT,
+			);
+			expect(result?.block).toBe(true);
+		});
+
+		it("blocks an apply_patch-mode edit call (*** Update File: marker) targeting the protected tree", () => {
+			const result = evaluateToolCallForActiveCraft(
+				{
+					toolName: "edit",
+					input: { input: `*** Begin Patch\n*** Update File: ${TEST_DIR}/run_test.sh\n@@\n-old\n+new\n*** End Patch` },
+					cwd: "/repo",
+				},
+				CRAFT,
+			);
+			expect(result?.block).toBe(true);
+		});
+
+		it("blocks an apply_patch-mode *** Move to: marker targeting the protected tree", () => {
+			const result = evaluateToolCallForActiveCraft(
+				{ toolName: "edit", input: { input: `*** Update File: /repo/src/app.ts\n*** Move to: ${TEST_DIR}/run_test.sh\n` }, cwd: "/repo" },
+				CRAFT,
+			);
+			expect(result?.block).toBe(true);
+		});
+
+		it("does not false-positive on ordinary payload text that merely contains bracketed prose", () => {
+			const result = evaluateToolCallForActiveCraft(
+				{ toolName: "edit", input: { input: "[/repo/src/app.ts#1A2B]\nreplace 1.=1:\n+see [the docs] for details" }, cwd: "/repo" },
+				CRAFT,
+			);
+			expect(result).toBeUndefined();
+		});
+	});
 });
 
 describe("shouldContinueCraftLoop", () => {

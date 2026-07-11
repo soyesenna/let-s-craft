@@ -41,12 +41,43 @@ function isPathWithin(parent: string, child: string): boolean {
 // false-positive against the protected `test/` dir.
 const GLOB_CHARS_RE = /[*?[\]{}]/;
 
+// The `edit` tool's default mode ("hashline") has a schema of `{ input: string }` only — no
+// top-level `path`/`paths` field exists for this mode, so extractPathCandidates's `path`/`paths`
+// checks alone silently never block a hashline `edit` call. This was found to be a REAL bypass
+// (not a hypothetical): a real E2E run had a subagent's `edit` call against a hash-protected
+// test file go straight through the block undetected. The target path instead lives inside
+// `input.input`'s text, as one or more `[path#TAG]` header lines (TAG = 4 hex chars, optional).
+// The less common `apply_patch` mode (also `{ input: string }`-only) instead marks paths with
+// `*** Add/Delete/Update File: path` / `*** Move to: path` lines. Both formats are replicated
+// here as self-contained regexes rather than importing omp-internal packages (not part of the
+// stable extension API) — the same "mirror the platform's own conventions by hand" pattern this
+// plugin already uses elsewhere (every skills/*/SKILL.md replicates src/artifacts/paths.ts's
+// path conventions without importing it).
+const HASHLINE_HEADER_RE = /^[ \t]*\[([^\r\n\]]+)\][ \t]*$/gm;
+const HASHLINE_HASH_TAG_RE = /^(.*)#[0-9a-fA-F]{4}$/;
+const APPLY_PATCH_FILE_RE = /^\*\*\* (?:Add|Delete|Update) File: (.+)$/gm;
+const APPLY_PATCH_MOVE_RE = /^\*\*\* Move to: (.+)$/gm;
+
+/** Extract every file path referenced by an `edit` tool's payload text, regardless of which edit mode wrote it (hashline header lines or apply_patch markers — see the block comment above). */
+function extractEditPayloadPaths(text: string): string[] {
+	const out: string[] = [];
+	for (const match of text.matchAll(HASHLINE_HEADER_RE)) {
+		const body = match[1];
+		const hashTag = HASHLINE_HASH_TAG_RE.exec(body);
+		out.push(hashTag ? hashTag[1] : body);
+	}
+	for (const match of text.matchAll(APPLY_PATCH_FILE_RE)) out.push(match[1]);
+	for (const match of text.matchAll(APPLY_PATCH_MOVE_RE)) out.push(match[1]);
+	return out;
+}
+
 function extractPathCandidates(input: Record<string, unknown>): string[] {
 	const out: string[] = [];
 	if (typeof input.path === "string") out.push(input.path);
 	if (Array.isArray(input.paths)) {
 		for (const entry of input.paths) if (typeof entry === "string") out.push(entry);
 	}
+	if (typeof input.input === "string") out.push(...extractEditPayloadPaths(input.input));
 	return out;
 }
 
