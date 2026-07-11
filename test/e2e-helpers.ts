@@ -9,16 +9,18 @@
 // state it produces, exactly the technique `scripts/spike-e2e-verify.sh` established.
 //
 // Boundedness (plan §Phase 7 (b)(c)): every spawn is wrapped in a hard kill timeout so a
-// hung/looping model can never stall `npm run e2e` indefinitely. Main-session vs. subagent
-// models are deliberately split, found necessary from an actual run's evidence: the cheapest
-// model (`zai/glm-4.5-flash:low`) is fine for the many short, narrowly-scoped lsc-* subagent
-// spawns (still the default for E2E_SUBAGENT_MODEL, applied via the .lsc/models.yaml preset
-// setupFixtureProject() seeds), but as the *orchestrating* main session it struggled to reliably
-// follow pre-craft/craft/post-craft's long SKILL.md instructions — observed repeating the same
-// lsc_ask question 3 times, misreading a subagent's JSON result and attempting to `read` a file
-// that was never written, and several `lsc_select` fixture-matching failures compounding the
-// slowdown. E2E_MAIN_MODEL is now `zai/glm-4.6` (next tier up, same authenticated provider,
-// confirmed via `omp models list`) for the orchestrating session only.
+// hung/looping model can never stall `npm run e2e` indefinitely. Both the main-session model and
+// the lsc-* subagent model (applied via the .lsc/models.yaml preset setupFixtureProject() seeds)
+// were raised a tier from the original cheapest pick (`zai/glm-4.5-flash:low`), each from
+// separate real-run evidence: the main session struggled to reliably follow pre-craft/craft/
+// post-craft's long SKILL.md instructions (repeating the same lsc_ask question 3 times,
+// misreading a subagent's JSON result and attempting to `read` a file that was never written,
+// several `lsc_select` fixture-matching failures) — E2E_MAIN_MODEL is now `zai/glm-4.6`. The
+// subagent tier struggled specifically as `lsc-executor`: a first attempt failed outright after
+// ~26 minutes on a small, well-specified bug fix, and a second attempt modified a protected test
+// file instead of fixing the implementation (the real trigger for the hash-violation deadlock
+// Fix 1 above addresses) rather than admit it couldn't solve the task — E2E_SUBAGENT_MODEL is
+// now also `zai/glm-4.6` (still the same low-cost tier, just no longer the very cheapest).
 import { execFileSync } from "node:child_process";
 import { type ChildProcess, spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -56,9 +58,9 @@ function syncModeConfigPath(): string {
 	return cachedSyncModeConfigPath;
 }
 
-/** Cheapest authenticated model verified during harness development (see module header). Overridable for local runs against a different provider. */
+/** Authenticated, low-cost models verified during harness development (see module header for why both moved off the very cheapest tier). Overridable for local runs against a different provider. */
 export const E2E_MAIN_MODEL = process.env.LSC_E2E_MAIN_MODEL ?? "zai/glm-4.6:low";
-export const E2E_SUBAGENT_MODEL = process.env.LSC_E2E_SUBAGENT_MODEL ?? "zai/glm-4.5-flash:low";
+export const E2E_SUBAGENT_MODEL = process.env.LSC_E2E_SUBAGENT_MODEL ?? "zai/glm-4.6:low";
 
 export interface OmpEvent {
 	type: string;

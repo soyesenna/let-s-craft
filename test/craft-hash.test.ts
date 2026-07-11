@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { computeManifest, diffManifests, loadManifest, saveManifest } from "../src/craft/hash-manifest";
+import { computeManifest, diffManifests, loadManifest, restoreFromSnapshots, saveManifest, writeSnapshots } from "../src/craft/hash-manifest";
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -99,5 +99,114 @@ describe("save/load manifest round-trip", () => {
 		const dir = mkdtempSync(join(tmpdir(), "lsc-hash-io-"));
 		tempDirs.push(dir);
 		expect(loadManifest(join(dir, "missing.json"))).toBeUndefined();
+	});
+});
+
+// A bash-based restore against the protected test tree deadlocks against the tool_call block
+// it's trying to work around (discovered from a real craft-loop run: the approved-restore
+// branch of C23b tried `git checkout`, which the block correctly refused, forever). These lock
+// the fix: an internal fs-only restore path (never through write/edit/bash, so tool_call never
+// sees it) that lsc_restore_tests (hash-manifest.ts's registerRestoreTestsTool) wraps.
+describe("writeSnapshots / restoreFromSnapshots", () => {
+	function tmpSnapshotDir(testDir: string): string {
+		const dir = join(testDir, ".snapshots");
+		return dir;
+	}
+
+	it("writeSnapshots copies every manifested file into snapshotDir, preserving relative structure", () => {
+		const testDir = tmpTestDir();
+		const snapshotDir = tmpSnapshotDir(testDir);
+		const manifest = computeManifest("f", testDir);
+
+		writeSnapshots(testDir, snapshotDir, manifest);
+
+		expect(readFileSync(join(snapshotDir, "run_test.sh"), "utf8")).toBe(readFileSync(join(testDir, "run_test.sh"), "utf8"));
+		expect(readFileSync(join(snapshotDir, "unit", "a.test.ts"), "utf8")).toBe(readFileSync(join(testDir, "unit", "a.test.ts"), "utf8"));
+	});
+
+	it("writeSnapshots clears a stale snapshot from a prior craft run before writing the new one", () => {
+		const testDir = tmpTestDir();
+		const snapshotDir = tmpSnapshotDir(testDir);
+		writeSnapshots(testDir, snapshotDir, computeManifest("f", testDir));
+		expect(existsSync(join(snapshotDir, "unit", "a.test.ts"))).toBe(true);
+
+		// A second craft run over a test/ dir that no longer has unit/a.test.ts (e.g. pre-craft
+		// re-authored the suite) must not leave the old snapshot file behind.
+		rmSync(join(testDir, "unit", "a.test.ts"));
+		writeFileSync(join(testDir, "unit", "b.test.ts"), "replacement\n");
+		writeSnapshots(testDir, snapshotDir, computeManifest("f", testDir));
+
+		expect(existsSync(join(snapshotDir, "unit", "a.test.ts"))).toBe(false);
+		expect(existsSync(join(snapshotDir, "unit", "b.test.ts"))).toBe(true);
+	});
+
+	it("restores a modified file to its exact original content and reports it in restoredPaths", () => {
+		const testDir = tmpTestDir();
+		const snapshotDir = tmpSnapshotDir(testDir);
+		const recorded = computeManifest("f", testDir);
+		writeSnapshots(testDir, snapshotDir, recorded);
+
+		writeFileSync(join(testDir, "unit", "a.test.ts"), "tampered content\n");
+		const result = restoreFromSnapshots("f", testDir, snapshotDir, recorded);
+
+		expect(readFileSync(join(testDir, "unit", "a.test.ts"), "utf8")).toBe("test content\n");
+		expect(result.restoredPaths).toContain("unit/a.test.ts");
+		expect(result.passed).toBe(true);
+		expect(result.violations).toEqual([]);
+	});
+
+	it("restores a deleted file from its snapshot", () => {
+		const testDir = tmpTestDir();
+		const snapshotDir = tmpSnapshotDir(testDir);
+		const recorded = computeManifest("f", testDir);
+		writeSnapshots(testDir, snapshotDir, recorded);
+
+		rmSync(join(testDir, "unit", "a.test.ts"));
+		const result = restoreFromSnapshots("f", testDir, snapshotDir, recorded);
+
+		expect(existsSync(join(testDir, "unit", "a.test.ts"))).toBe(true);
+		expect(readFileSync(join(testDir, "unit", "a.test.ts"), "utf8")).toBe("test content\n");
+		expect(result.passed).toBe(true);
+	});
+
+	it("removes a file that was added after lsc_craft_init and reports it in removedPaths", () => {
+		const testDir = tmpTestDir();
+		const snapshotDir = tmpSnapshotDir(testDir);
+		const recorded = computeManifest("f", testDir);
+		writeSnapshots(testDir, snapshotDir, recorded);
+
+		writeFileSync(join(testDir, "unit", "sneaked-in.test.ts"), "not part of the original suite\n");
+		const result = restoreFromSnapshots("f", testDir, snapshotDir, recorded);
+
+		expect(existsSync(join(testDir, "unit", "sneaked-in.test.ts"))).toBe(false);
+		expect(result.removedPaths).toContain("unit/sneaked-in.test.ts");
+		expect(result.passed).toBe(true);
+	});
+
+	it("handles modified + added + removed violations together in a single call", () => {
+		const testDir = tmpTestDir();
+		const snapshotDir = tmpSnapshotDir(testDir);
+		const recorded = computeManifest("f", testDir);
+		writeSnapshots(testDir, snapshotDir, recorded);
+
+		writeFileSync(join(testDir, "run_test.sh"), "#!/bin/sh\necho hacked\n"); // modified
+		rmSync(join(testDir, "unit", "a.test.ts")); // removed
+		writeFileSync(join(testDir, "unit", "extra.test.ts"), "sneaked in\n"); // added
+
+		const result = restoreFromSnapshots("f", testDir, snapshotDir, recorded);
+
+		expect(result.passed).toBe(true);
+		expect(result.violations).toEqual([]);
+		expect(readFileSync(join(testDir, "run_test.sh"), "utf8")).toBe("#!/bin/sh\necho ok\n");
+		expect(existsSync(join(testDir, "unit", "a.test.ts"))).toBe(true);
+		expect(existsSync(join(testDir, "unit", "extra.test.ts"))).toBe(false);
+	});
+
+	it("skips (does not throw) when a recorded file's snapshot is unexpectedly missing", () => {
+		const testDir = tmpTestDir();
+		const snapshotDir = tmpSnapshotDir(testDir);
+		const recorded = computeManifest("f", testDir);
+		// Deliberately never call writeSnapshots — simulates a missing/corrupted snapshot dir.
+		expect(() => restoreFromSnapshots("f", testDir, snapshotDir, recorded)).not.toThrow();
 	});
 });

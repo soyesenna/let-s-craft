@@ -11,10 +11,11 @@
 // and the two bookkeeping files below record craft/hash state itself. Including
 // either in the fingerprint would make every iteration report a false violation.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { craftHashManifestPath, craftTestDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
+import { craftHashManifestPath, craftSnapshotDir, craftTestDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
+import { ensureSnapshotsGitignored } from "../artifacts/gitignore.js";
 import { setActiveCraft } from "./state.js";
 
 // `pi.registerTool<TParams, TDetails>({ parameters: z.object({...}), async execute(...) {...} })`
@@ -40,7 +41,18 @@ export interface VerifyHashDetails {
 	violations: HashViolation[];
 }
 
-const EXCLUDED_TOP_LEVEL_DIRS = new Set(["logs"]);
+export interface RestoreTestsDetails {
+	feature: string;
+	/** Paths restored to their lsc_craft_init-recorded content. */
+	restoredPaths: string[];
+	/** Paths present in test/ that were never in the recorded manifest — deleted as unauthorized additions. */
+	removedPaths: string[];
+	/** True iff a post-restore re-verify against the recorded manifest found zero violations. */
+	passed: boolean;
+	violations: HashViolation[];
+}
+
+const EXCLUDED_TOP_LEVEL_DIRS = new Set(["logs", ".snapshots"]);
 const EXCLUDED_FILES = new Set([".hash-manifest.json", ".craft-state.json"]);
 
 export interface HashManifest {
@@ -108,6 +120,59 @@ export function saveManifest(manifestPath: string, manifest: HashManifest): void
 	writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 }
 
+/**
+ * Copy every manifested file's current bytes into `snapshotDir`, mirroring test/'s relative
+ * tree structure, so lsc_restore_tests can restore exact original content later without going
+ * through the LLM's own write/edit/bash tools (which the C20 tool_call block gates against the
+ * very same protected tree — a bash-based restore is a structural deadlock, not just a
+ * discipline issue). Called once, from lsc_craft_init, right after computeManifest/saveManifest.
+ * Clears any stale snapshot from a prior craft run for this feature first.
+ */
+export function writeSnapshots(testDir: string, snapshotDir: string, manifest: HashManifest): void {
+	rmSync(snapshotDir, { recursive: true, force: true });
+	for (const relPath of Object.keys(manifest.files)) {
+		const segments = relPath.split("/");
+		const src = join(testDir, ...segments);
+		const dst = join(snapshotDir, ...segments);
+		mkdirSync(dirname(dst), { recursive: true });
+		copyFileSync(src, dst);
+	}
+}
+
+/**
+ * Restore every file recorded in `recorded` to its snapshotted content, and delete any file
+ * currently under `testDir` that was NOT in `recorded` (an "added" violation — introduced after
+ * lsc_craft_init, so restoring means removing it, not preserving it). Re-verifies via the same
+ * diff logic lsc_verify_hash uses, so the caller doesn't need a separate verify call to confirm
+ * success. Pure with respect to craft/tool-registration state — the tool wrapper below is the
+ * only thing that touches those.
+ */
+export function restoreFromSnapshots(feature: string, testDir: string, snapshotDir: string, recorded: HashManifest): RestoreTestsDetails {
+	const restoredPaths: string[] = [];
+	for (const relPath of Object.keys(recorded.files)) {
+		const segments = relPath.split("/");
+		const src = join(snapshotDir, ...segments);
+		if (!existsSync(src)) continue; // defensive: skip rather than throw mid-restore if a snapshot is somehow missing
+		const dst = join(testDir, ...segments);
+		mkdirSync(dirname(dst), { recursive: true });
+		copyFileSync(src, dst);
+		restoredPaths.push(relPath);
+	}
+
+	const removedPaths: string[] = [];
+	for (const file of walkTestFiles(testDir)) {
+		const relPath = toPosixRelative(testDir, file);
+		if (!(relPath in recorded.files)) {
+			rmSync(file, { force: true });
+			removedPaths.push(relPath);
+		}
+	}
+
+	const current = computeManifest(feature, testDir);
+	const violations = diffManifests(recorded, current);
+	return { feature, restoredPaths, removedPaths, passed: violations.length === 0, violations };
+}
+
 function registerCraftInitTool(pi: ExtensionAPI): void {
 	const z = pi.zod;
 	const parameters = z.object({
@@ -120,9 +185,10 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 		label: "Craft: init hash manifest",
 		description:
 			"Start a craft loop for a pre-craft feature: record a SHA-256 manifest of .lsc/crafts/{feature}/test/ " +
-			"(run_test.sh + test assets, excluding logs/) and register it as the active craft. Call once at the " +
-			"start of the craft skill, before the first executor iteration — this activates the tool_call block " +
-			"on the protected test tree and the session_stop backstop until the craft loop ends.",
+			"(run_test.sh + test assets, excluding logs/) plus a full content snapshot for lsc_restore_tests to " +
+			"restore from later, and register it as the active craft. Call once at the start of the craft skill, " +
+			"before the first executor iteration — this activates the tool_call block on the protected test tree " +
+			"and the session_stop backstop until the craft loop ends.",
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<CraftInitDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
@@ -150,6 +216,8 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 
 			const manifest = computeManifest(feature, testDir);
 			saveManifest(craftHashManifestPath(ctx.cwd, feature), manifest);
+			writeSnapshots(testDir, craftSnapshotDir(ctx.cwd, feature), manifest);
+			ensureSnapshotsGitignored(ctx.cwd);
 			setActiveCraft({
 				feature,
 				projectRoot: ctx.cwd,
@@ -208,8 +276,53 @@ function registerVerifyHashTool(pi: ExtensionAPI): void {
 	});
 }
 
-/** Register `lsc_craft_init` and `lsc_verify_hash`. */
+function registerRestoreTestsTool(pi: ExtensionAPI): void {
+	const z = pi.zod;
+	const parameters = z.object({
+		feature_dir: z.string().describe("Feature name or a path under .lsc/crafts/{feature}/, same as lsc_craft_init."),
+	});
+
+	pi.registerTool<typeof parameters, RestoreTestsDetails>({
+		name: "lsc_restore_tests",
+		label: "Craft: restore protected test assets from snapshot",
+		description:
+			"Restore .lsc/crafts/{feature}/test/ (run_test.sh + test assets) to the exact content lsc_craft_init " +
+			"recorded, undoing a hash violation. This is an internal fs operation — it does not go through the " +
+			"LLM's own write/edit/bash tools, so unlike a bash-based restore it is NOT itself subject to the " +
+			"tool_call block those trigger against the protected test tree (C20); a bash `git checkout`-style " +
+			"restore against that same tree would deadlock against the very block it's trying to work around. " +
+			"Call this only after the user has explicitly approved a restore via lsc_confirm on a [Hash Violation] " +
+			"prompt (C23b) — never call it unprompted. Re-verifies via the same diff logic as lsc_verify_hash and " +
+			"reports the result directly (details.passed / details.violations), so a separate lsc_verify_hash call " +
+			"afterward is optional.",
+		parameters,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<RestoreTestsDetails>> {
+			const feature = resolveFeatureName(params.feature_dir);
+			const testDir = craftTestDir(ctx.cwd, feature);
+			const manifestPath = craftHashManifestPath(ctx.cwd, feature);
+			const recorded = loadManifest(manifestPath);
+			if (!recorded) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: `lets-craft: no hash manifest at ${manifestPath}. Call lsc_craft_init first.` }],
+				};
+			}
+
+			const details = restoreFromSnapshots(feature, testDir, craftSnapshotDir(ctx.cwd, feature), recorded);
+			const text = details.passed
+				? `lets-craft: restored ${details.restoredPaths.length} test asset(s) from snapshot` +
+					(details.removedPaths.length > 0 ? ` and removed ${details.removedPaths.length} unauthorized addition(s)` : "") +
+					" — hash verification now passes."
+				: `lets-craft: restore attempted but ${details.violations.length} violation(s) remain — this should not happen; escalate to the user rather than retrying silently.`;
+
+			return { content: [{ type: "text", text }], details };
+		},
+	});
+}
+
+/** Register `lsc_craft_init`, `lsc_verify_hash`, and `lsc_restore_tests`. */
 export function registerHashManifestTools(pi: ExtensionAPI): void {
 	registerCraftInitTool(pi);
 	registerVerifyHashTool(pi);
+	registerRestoreTestsTool(pi);
 }
