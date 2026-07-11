@@ -25,6 +25,31 @@ import { LSC_AGENT_NAMES } from "../src/preset/models-file";
 export const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const FIXTURE_SAMPLE_DIR = join(REPO_ROOT, "fixtures", "sample-ts-cli");
 
+// `task` spawns run as background jobs by default (`async.enabled = true`, confirmed via
+// `omp config list`): the orchestrating model gets a job handle back immediately and has to
+// poll a separate `job` tool ("## Still Running (1)" / "Spawned agent ... result delivered
+// when it yields") until the subagent finishes, rather than the `task` call itself blocking
+// until the result is ready. Under a cheap/fast model this polling burns real wall-clock time
+// for no benefit in a headless, single-threaded E2E harness that has nothing else to do while
+// waiting — found to be the actual reason full-cycle pre-craft ran out of its stage budget
+// mid-consensus-loop despite otherwise making valid progress. `--config <overlay>` (repeatable,
+// documented in `omp --help`) loads an extra config.yml-style layer for the run; empirically
+// confirmed (before/after smoke comparison during harness development) that `async: {enabled:
+// false}` makes every `task` call block synchronously — zero `job` tool calls, zero "Still
+// Running" text, vs. 2 job-poll calls / 10 "Still Running"/"Spawned agent" occurrences for the
+// same single-subagent prompt with the default. Written once per process (content is static,
+// no per-test isolation needed) and reused by every runOmpPrint call below.
+let cachedSyncModeConfigPath: string | undefined;
+function syncModeConfigPath(): string {
+	if (!cachedSyncModeConfigPath) {
+		const dir = mkdtempSync(join(tmpdir(), "lsc-e2e-config-"));
+		const path = join(dir, "sync-mode.yml");
+		writeFileSync(path, "async:\n  enabled: false\n");
+		cachedSyncModeConfigPath = path;
+	}
+	return cachedSyncModeConfigPath;
+}
+
 /** Cheapest authenticated model verified during harness development (see module header). Overridable for local runs against a different provider. */
 export const E2E_MAIN_MODEL = process.env.LSC_E2E_MAIN_MODEL ?? "zai/glm-4.5-flash:low";
 export const E2E_SUBAGENT_MODEL = process.env.LSC_E2E_SUBAGENT_MODEL ?? "zai/glm-4.5-flash:low";
@@ -79,6 +104,8 @@ export function runOmpPrint(args: {
 			"--auto-approve",
 			"--session-dir",
 			args.sessionDir,
+			"--config",
+			syncModeConfigPath(),
 			...(args.extraArgs ?? []),
 			args.prompt,
 		];
