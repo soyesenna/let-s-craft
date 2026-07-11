@@ -12,7 +12,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "npm run build && LSC_E2E=1 vitest run test/e2e-full-cycle.test.ts test/e2e-worktree.test.ts test/enforcement-rules.test.ts --no-file-parallelism --testTimeout=6300000 --hookTimeout=120000"
   },
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": "16.4.0",
