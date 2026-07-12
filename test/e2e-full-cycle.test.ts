@@ -21,7 +21,9 @@ import {
 	E2E_MAIN_MODEL,
 	debugSummary,
 	listCraftFeatures,
+	preCraftArtifactsComplete,
 	runOmpPrint,
+	runToCompletion,
 	setupFixtureProject,
 } from "./e2e-helpers";
 
@@ -44,7 +46,14 @@ const RUN_E2E = process.env.LSC_E2E === "1";
 const PRE_CRAFT_TIMEOUT_MS = 90 * 60_000;
 const CRAFT_TIMEOUT_MS = 40 * 60_000;
 const POST_CRAFT_TIMEOUT_MS = 25 * 60_000;
-const TEST_TIMEOUT_MS = 170 * 60_000;
+// A resume only has to finish whatever pre-craft's initial attempt left undone (see
+// runToCompletion in e2e-helpers.ts), never the whole heavy stage from scratch — sized like
+// POST_CRAFT_TIMEOUT_MS, not PRE_CRAFT_TIMEOUT_MS, on that basis.
+const PRE_CRAFT_RESUME_TIMEOUT_MS = 20 * 60_000;
+const PRE_CRAFT_MAX_RESUMES = 3;
+// Worst case (every stage maxes its budget, plus all PRE_CRAFT_MAX_RESUMES resumes each also
+// maxing PRE_CRAFT_RESUME_TIMEOUT_MS) plus the pre-existing 15-minute slack.
+const TEST_TIMEOUT_MS = PRE_CRAFT_TIMEOUT_MS + PRE_CRAFT_MAX_RESUMES * PRE_CRAFT_RESUME_TIMEOUT_MS + CRAFT_TIMEOUT_MS + POST_CRAFT_TIMEOUT_MS + 15 * 60_000;
 
 const cleanupDirs: string[] = [];
 afterEach(() => {
@@ -63,6 +72,16 @@ const FIXTURE_NOTE =
 	"already configured with scripted answers, so just call those tools normally and use whatever they return; do not " +
 	"address me directly and do not wait for a reply outside those tools.";
 
+// Sent (via --continue, runToCompletion) if pre-craft's initial attempt stops before all four
+// Stage 1-4 artifacts exist — see runToCompletion's own comment in e2e-helpers.ts for why this can
+// happen at all under `-p` mode. Explicitly told not to redo existing work, since re-running an
+// earlier sub-stage from scratch (e.g. a second trace.md) would violate C14's fixed sub-stage
+// order this same test asserts via mtime below.
+const PRE_CRAFT_RESUME_PROMPT =
+	"이전 pre-craft 세션이 trace.md/spec.md/plan.md/test/run_test.sh를 모두 만들기 전에 멈췄다. " +
+	"이미 존재하는 파일은 절대 다시 쓰지 말고, .lsc/crafts/ 아래 현재 상태를 확인해 아직 없는 부분부터 " +
+	`이어서 pre-craft를 끝까지 진행하라. ${FIXTURE_NOTE}`;
+
 describe.skipIf(!RUN_E2E)("full cycle E2E (AC7): pre-craft → craft → post-craft", () => {
 	it(
 		"produces trace.md → spec.md → plan.md → test/ in order, a passing run_test.sh after craft, and audit-0.md with a verdict line after post-craft",
@@ -72,15 +91,24 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC7): pre-craft → craft → post-cr
 			const fixtureEnv = { LSC_FIXTURE: answersPath };
 
 			// ---- Stage 1: pre-craft ----
-			const preCraftResult = await runOmpPrint({
+			const preCraftRun = await runToCompletion({
 				cwd: projectDir,
 				sessionDir,
 				model: E2E_MAIN_MODEL,
 				env: fixtureEnv,
 				timeoutMs: PRE_CRAFT_TIMEOUT_MS,
 				prompt: `/skill:pre-craft ${FEATURE_DESCRIPTION} Do not use a worktree. ${FIXTURE_NOTE}`,
+				isComplete: () => preCraftArtifactsComplete(projectDir),
+				continuationPrompt: PRE_CRAFT_RESUME_PROMPT,
+				resumeTimeoutMs: PRE_CRAFT_RESUME_TIMEOUT_MS,
+				maxResumes: PRE_CRAFT_MAX_RESUMES,
 			});
-			expect(preCraftResult.timedOut, `pre-craft timed out.\n${debugSummary(preCraftResult)}`).toBe(false);
+			const preCraftResult = preCraftRun.last;
+			expect(preCraftResult.timedOut, `pre-craft timed out (attempt ${preCraftRun.attempts.length}).\n${debugSummary(preCraftResult)}`).toBe(false);
+			expect(
+				preCraftRun.completed,
+				`pre-craft never produced all of trace.md/spec.md/plan.md/test/run_test.sh, even after ${preCraftRun.attempts.length - 1} resume(s).\n${debugSummary(preCraftResult)}`,
+			).toBe(true);
 
 			const features = listCraftFeatures(projectDir);
 			expect(features.length, `expected exactly one .lsc/crafts/{feature} dir, found ${JSON.stringify(features)}.\n${debugSummary(preCraftResult)}`).toBe(1);
@@ -93,6 +121,8 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC7): pre-craft → craft → post-cr
 			const testDir = join(craftDir, "test");
 			const runTestPath = join(testDir, "run_test.sh");
 
+			// Individually, for a precise failure message pinpointing which one — `preCraftRun.completed`
+			// above already guarantees all four exist, so none of these can actually fail on their own.
 			expect(existsSync(tracePath), `trace.md missing.\n${debugSummary(preCraftResult)}`).toBe(true);
 			expect(existsSync(specPath), `spec.md missing.\n${debugSummary(preCraftResult)}`).toBe(true);
 			expect(existsSync(planPath), `plan.md missing.\n${debugSummary(preCraftResult)}`).toBe(true);

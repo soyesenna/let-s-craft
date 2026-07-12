@@ -11,7 +11,15 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { E2E_MAIN_MODEL, debugSummary, listCraftFeatures, runOmpPrint, setupFixtureProject } from "./e2e-helpers";
+import {
+	E2E_MAIN_MODEL,
+	debugSummary,
+	listCraftFeatures,
+	preCraftArtifactsComplete,
+	runOmpPrint,
+	runToCompletion,
+	setupFixtureProject,
+} from "./e2e-helpers";
 
 const RUN_E2E = process.env.LSC_E2E === "1";
 
@@ -21,7 +29,11 @@ const RUN_E2E = process.env.LSC_E2E === "1";
 const PRE_CRAFT_TIMEOUT_MS = 90 * 60_000;
 const CRAFT_TIMEOUT_MS = 40 * 60_000;
 const POST_CRAFT_TIMEOUT_MS = 25 * 60_000;
-const TEST_TIMEOUT_MS = 170 * 60_000;
+// See e2e-full-cycle.test.ts's identical constants for why a resume gets its own, much shorter
+// budget and why TEST_TIMEOUT_MS below accounts for the worst case of all of them.
+const PRE_CRAFT_RESUME_TIMEOUT_MS = 20 * 60_000;
+const PRE_CRAFT_MAX_RESUMES = 3;
+const TEST_TIMEOUT_MS = PRE_CRAFT_TIMEOUT_MS + PRE_CRAFT_MAX_RESUMES * PRE_CRAFT_RESUME_TIMEOUT_MS + CRAFT_TIMEOUT_MS + POST_CRAFT_TIMEOUT_MS + 15 * 60_000;
 
 const cleanupDirs: string[] = [];
 afterEach(() => {
@@ -53,6 +65,21 @@ function git(cwd: string, args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
+/** preCraftArtifactsComplete plus the worktree itself — the extra thing this test's pre-craft stage must produce that e2e-full-cycle.test.ts's does not. */
+function preCraftWorktreeComplete(projectDir: string): boolean {
+	if (!preCraftArtifactsComplete(projectDir)) return false;
+	const features = listCraftFeatures(projectDir);
+	return features.length === 1 && existsSync(join(projectDir, ".lsc", "worktrees", features[0]));
+}
+
+// Sent (via --continue, runToCompletion) if pre-craft's initial attempt stops before the worktree
+// and all four Stage 1-4 artifacts exist — see runToCompletion's own comment in e2e-helpers.ts for
+// why this can happen at all under `-p` mode. Explicitly told not to redo existing work.
+const PRE_CRAFT_RESUME_PROMPT =
+	"이전 pre-craft --worktree 세션이 .lsc/worktrees/{feature}/와 trace.md/spec.md/plan.md/test/run_test.sh를 " +
+	"모두 만들기 전에 멈췄다. 이미 존재하는 것은 절대 다시 만들지 말고, 현재 상태를 확인해 아직 없는 부분부터 " +
+	`이어서 pre-craft를 끝까지 진행하라. ${FIXTURE_NOTE}`;
+
 describe.skipIf(!RUN_E2E)("worktree E2E (AC3e): --worktree add → craft in worktree → land merge+remove+prune", () => {
 	it(
 		"creates .lsc/worktrees/{feature}/, gitignores it, implements against the worktree, and merges+removes+prunes it on a Land approval",
@@ -65,15 +92,24 @@ describe.skipIf(!RUN_E2E)("worktree E2E (AC3e): --worktree add → craft in work
 			const baseBranch = git(projectDir, ["rev-parse", "--abbrev-ref", "HEAD"]);
 
 			// ---- Stage 1: pre-craft --worktree ----
-			const preCraftResult = await runOmpPrint({
+			const preCraftRun = await runToCompletion({
 				cwd: projectDir,
 				sessionDir,
 				model: E2E_MAIN_MODEL,
 				env: fixtureEnv,
 				timeoutMs: PRE_CRAFT_TIMEOUT_MS,
 				prompt: `/skill:pre-craft ${FEATURE_DESCRIPTION} Use an isolated git worktree (.lsc/worktrees/{feature}/) for this feature — answer the worktree question "yes". ${FIXTURE_NOTE}`,
+				isComplete: () => preCraftWorktreeComplete(projectDir),
+				continuationPrompt: PRE_CRAFT_RESUME_PROMPT,
+				resumeTimeoutMs: PRE_CRAFT_RESUME_TIMEOUT_MS,
+				maxResumes: PRE_CRAFT_MAX_RESUMES,
 			});
-			expect(preCraftResult.timedOut, `pre-craft timed out.\n${debugSummary(preCraftResult)}`).toBe(false);
+			const preCraftResult = preCraftRun.last;
+			expect(preCraftResult.timedOut, `pre-craft timed out (attempt ${preCraftRun.attempts.length}).\n${debugSummary(preCraftResult)}`).toBe(false);
+			expect(
+				preCraftRun.completed,
+				`pre-craft never produced the worktree plus all of trace.md/spec.md/plan.md/test/run_test.sh, even after ${preCraftRun.attempts.length - 1} resume(s).\n${debugSummary(preCraftResult)}`,
+			).toBe(true);
 
 			const features = listCraftFeatures(projectDir);
 			expect(features.length, `expected exactly one .lsc/crafts/{feature} dir, found ${JSON.stringify(features)}.\n${debugSummary(preCraftResult)}`).toBe(1);
@@ -81,6 +117,8 @@ describe.skipIf(!RUN_E2E)("worktree E2E (AC3e): --worktree add → craft in work
 			const craftDir = join(projectDir, ".lsc", "crafts", feature);
 			const worktreePath = join(projectDir, ".lsc", "worktrees", feature);
 
+			// Individually, for a precise failure message pinpointing which one — `preCraftRun.completed`
+			// above already guarantees all of these exist, so none of these can actually fail on their own.
 			expect(existsSync(worktreePath), `worktree not created at ${worktreePath}.\n${debugSummary(preCraftResult)}`).toBe(true);
 			expect(existsSync(join(craftDir, "trace.md")), debugSummary(preCraftResult)).toBe(true);
 			expect(existsSync(join(craftDir, "spec.md")), debugSummary(preCraftResult)).toBe(true);

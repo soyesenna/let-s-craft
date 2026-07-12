@@ -316,6 +316,119 @@ export function listCraftFeatures(projectDir: string): string[] {
 		.map(e => e.name);
 }
 
+/**
+ * Generic driver for a headless `-p` stage that must reach some filesystem-observable completion
+ * state before the next pipeline stage can run — tolerates the same platform limitation
+ * enforcement-rules.test.ts's session_stop test documents: `omp -p` never invokes the
+ * `session_stop` backstop for the turn that ends a headless run, so nothing stops the model from
+ * stopping itself early (a plain text turn, `exitCode: 0`, no timeout) partway through a
+ * multi-stage skill. Observed for real on pre-craft in a worktree E2E run: the session ended
+ * cleanly after producing trace.md/spec.md/plan.md but before test/run_test.sh (Stage 4) — not a
+ * hang, not a crash, just an ordinary `-p` stop with work left undone. `isComplete` is checked
+ * after the initial run and after every resume; each resume re-invokes the SAME session via
+ * `--continue` (verified empirically against a real run: paired with the same `--session-dir`,
+ * `--continue` resumes exactly the one session this call created and the model correctly recalls
+ * context from the prior turn) so the model can see its own prior progress and pick up from
+ * wherever it actually stopped, instead of restarting the whole stage from scratch. Resuming stops
+ * as soon as `isComplete()` is true, after `maxResumes` attempts, or the moment any attempt itself
+ * times out (a real timeout is a different failure mode than a premature clean stop, and burning
+ * more of the budget retrying it is not this helper's job).
+ */
+export interface RunToCompletionArgs {
+	cwd: string;
+	sessionDir: string;
+	model?: string;
+	env?: NodeJS.ProcessEnv;
+	timeoutMs: number;
+	prompt: string;
+	/** Checked after the initial run and after each resume; once true, no further resumes run. */
+	isComplete: () => boolean;
+	/** Sent via `--continue` on each resume attempt — must tell the model not to redo what's already there (it can also just inspect the filesystem itself to see what's missing). */
+	continuationPrompt: string;
+	/** Per-resume-attempt kill timeout; defaults to `timeoutMs`. */
+	resumeTimeoutMs?: number;
+	/** Max resume attempts after the initial run. Default 3. */
+	maxResumes?: number;
+}
+
+export interface RunToCompletionResult {
+	/** Every runOmpPrint result in order — index 0 is the initial run, the rest are resumes. */
+	attempts: OmpRunResult[];
+	/** `isComplete()` evaluated after the final attempt. */
+	completed: boolean;
+	/** The final attempt's result — same shape single-call sites already assert `timedOut` against and pass to `debugSummary`. */
+	last: OmpRunResult;
+}
+
+/** The one piece of `runOmpPrint`'s signature `runToCompletionWith` actually calls — narrowed so tests can inject a fake without spawning a real `omp` process. */
+type OmpPrintFn = (args: {
+	cwd: string;
+	prompt: string;
+	sessionDir: string;
+	model?: string;
+	env?: NodeJS.ProcessEnv;
+	timeoutMs: number;
+	extraArgs?: string[];
+}) => Promise<OmpRunResult>;
+
+/**
+ * The loop control extracted out of `runToCompletion` so it — the part with actual branching logic
+ * (when to resume, when to stop, what flag to resume with) — is directly unit-testable against a
+ * fake `spawn` function, the same reasoning `attachOmpRunHandlers` was split out of `runOmpPrint`
+ * for. `runToCompletion` below is just this bound to the real `runOmpPrint`.
+ */
+export async function runToCompletionWith(args: RunToCompletionArgs, spawn: OmpPrintFn): Promise<RunToCompletionResult> {
+	const maxResumes = args.maxResumes ?? 3;
+	const attempts: OmpRunResult[] = [
+		await spawn({ cwd: args.cwd, sessionDir: args.sessionDir, model: args.model, env: args.env, timeoutMs: args.timeoutMs, prompt: args.prompt }),
+	];
+
+	let resumes = 0;
+	while (!attempts[attempts.length - 1].timedOut && !args.isComplete() && resumes < maxResumes) {
+		resumes++;
+		attempts.push(
+			await spawn({
+				cwd: args.cwd,
+				sessionDir: args.sessionDir,
+				model: args.model,
+				env: args.env,
+				timeoutMs: args.resumeTimeoutMs ?? args.timeoutMs,
+				prompt: args.continuationPrompt,
+				// Resumes the exact session the initial (or a prior resume) call in this same
+				// sessionDir just produced — never a fresh session, and never the wrong one, since
+				// this whole sessionDir is exclusive to a single test run (setupFixtureProject's own
+				// fresh mkdtemp per call).
+				extraArgs: ["--continue"],
+			}),
+		);
+	}
+
+	return { attempts, completed: args.isComplete(), last: attempts[attempts.length - 1] };
+}
+
+export function runToCompletion(args: RunToCompletionArgs): Promise<RunToCompletionResult> {
+	return runToCompletionWith(args, runOmpPrint);
+}
+
+/**
+ * Whether pre-craft's four Stage 1-4 artifacts all exist under the (LLM-derived) single
+ * `.lsc/crafts/{feature}/` directory — the `isComplete` predicate `runToCompletion` callers use
+ * for the pre-craft stage. False (never a throw) when the craft dir doesn't exist yet at all, or
+ * when more than one exists (ambiguous — not "complete" either way, mirroring the pre-existing
+ * `listCraftFeatures` length-1 assertions in e2e-full-cycle.test.ts/e2e-worktree.test.ts).
+ */
+export function preCraftArtifactsComplete(projectDir: string): boolean {
+	const features = listCraftFeatures(projectDir);
+	if (features.length !== 1) return false;
+	const craftDir = join(projectDir, ".lsc", "crafts", features[0]);
+	return (
+		existsSync(join(craftDir, "trace.md")) &&
+		existsSync(join(craftDir, "spec.md")) &&
+		existsSync(join(craftDir, "plan.md")) &&
+		existsSync(join(craftDir, "test", "run_test.sh"))
+	);
+}
+
 export function readTextIfExists(path: string): string | undefined {
 	return existsSync(path) ? readFileSync(path, "utf8") : undefined;
 }

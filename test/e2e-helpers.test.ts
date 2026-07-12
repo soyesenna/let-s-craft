@@ -5,9 +5,23 @@
 // or bounded the accumulated string. These tests exercise the fix directly (appendBounded's cap
 // logic, attachOmpRunHandlers' settle-then-cleanup behavior) against a fake, `EventEmitter`-based
 // child process double — no real `omp` process, no LSC_E2E gate, runs as part of `npm test`.
+//
+// Also covers runToCompletionWith/preCraftArtifactsComplete (the pre-craft headless-early-stop
+// resume logic) — same no-real-process, `npm test`-runs philosophy: the loop control is exercised
+// against a fake `spawn` function, never a real `omp` child.
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
-import { appendBounded, attachOmpRunHandlers, type OmpRunResult, type RunnableChild } from "./e2e-helpers";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+	appendBounded,
+	attachOmpRunHandlers,
+	type OmpRunResult,
+	preCraftArtifactsComplete,
+	type RunnableChild,
+	runToCompletionWith,
+} from "./e2e-helpers";
 
 describe("appendBounded", () => {
 	it("appends normally when the combined length is under the cap", () => {
@@ -186,5 +200,168 @@ describe("attachOmpRunHandlers", () => {
 		child.emitClose();
 		child.emitClose();
 		expect(resolveCount).toBe(1);
+	});
+});
+
+function fakeResult(overrides: Partial<OmpRunResult> = {}): OmpRunResult {
+	return { exitCode: 0, timedOut: false, stdout: "", stderr: "", events: [], ...overrides };
+}
+
+describe("runToCompletionWith", () => {
+	it("runs once and never resumes when isComplete() is already true after the initial run", async () => {
+		const calls: Array<{ prompt: string; extraArgs?: string[] }> = [];
+		const spawn = async (args: { prompt: string; extraArgs?: string[] }) => {
+			calls.push({ prompt: args.prompt, extraArgs: args.extraArgs });
+			return fakeResult();
+		};
+		const result = await runToCompletionWith(
+			{ cwd: "/x", sessionDir: "/y", timeoutMs: 1000, prompt: "initial", isComplete: () => true, continuationPrompt: "resume" },
+			spawn,
+		);
+		expect(calls.length).toBe(1);
+		expect(calls[0].prompt).toBe("initial");
+		expect(result.attempts.length).toBe(1);
+		expect(result.completed).toBe(true);
+		expect(result.last).toBe(result.attempts[0]);
+	});
+
+	it("resumes with --continue and the continuation prompt while incomplete, stopping the instant isComplete() flips true", async () => {
+		const calls: Array<{ prompt: string; extraArgs?: string[] }> = [];
+		const spawn = async (args: { prompt: string; extraArgs?: string[] }) => {
+			calls.push({ prompt: args.prompt, extraArgs: args.extraArgs });
+			return fakeResult();
+		};
+		// Driven by the real side effect (spawn calls made so far), not an invocation counter for
+		// isComplete() itself — the loop is free to check isComplete() any number of times per
+		// attempt without changing this test's outcome.
+		const isComplete = () => calls.length >= 2;
+		const result = await runToCompletionWith(
+			{ cwd: "/x", sessionDir: "/y", timeoutMs: 1000, prompt: "initial", isComplete, continuationPrompt: "resume please" },
+			spawn,
+		);
+		expect(calls.length).toBe(2);
+		expect(calls[0].extraArgs).toBeUndefined();
+		expect(calls[1].prompt).toBe("resume please");
+		expect(calls[1].extraArgs).toEqual(["--continue"]);
+		expect(result.completed).toBe(true);
+		expect(result.attempts.length).toBe(2);
+	});
+
+	it("stops after maxResumes even if isComplete() never becomes true", async () => {
+		const spawn = async () => fakeResult();
+		const result = await runToCompletionWith(
+			{ cwd: "/x", sessionDir: "/y", timeoutMs: 1000, prompt: "initial", isComplete: () => false, continuationPrompt: "resume", maxResumes: 2 },
+			spawn,
+		);
+		expect(result.attempts.length).toBe(3); // 1 initial + 2 resumes
+		expect(result.completed).toBe(false);
+	});
+
+	it("stops resuming the instant an attempt times out, without spending further resume budget on a hang", async () => {
+		let calls = 0;
+		const spawn = async () => {
+			calls++;
+			return fakeResult({ timedOut: calls === 2 });
+		};
+		const result = await runToCompletionWith(
+			{ cwd: "/x", sessionDir: "/y", timeoutMs: 1000, prompt: "initial", isComplete: () => false, continuationPrompt: "resume", maxResumes: 3 },
+			spawn,
+		);
+		expect(calls).toBe(2);
+		expect(result.attempts.length).toBe(2);
+		expect(result.last.timedOut).toBe(true);
+		expect(result.completed).toBe(false);
+	});
+
+	it("uses resumeTimeoutMs for resume attempts when given, independent of the initial timeoutMs", async () => {
+		const timeouts: number[] = [];
+		const spawn = async (args: { timeoutMs: number }) => {
+			timeouts.push(args.timeoutMs);
+			return fakeResult();
+		};
+		await runToCompletionWith(
+			{
+				cwd: "/x",
+				sessionDir: "/y",
+				timeoutMs: 1000,
+				resumeTimeoutMs: 50,
+				prompt: "initial",
+				isComplete: () => timeouts.length >= 2,
+				continuationPrompt: "resume",
+			},
+			spawn,
+		);
+		expect(timeouts).toEqual([1000, 50]);
+	});
+
+	it("defaults resumeTimeoutMs to timeoutMs when not given", async () => {
+		const timeouts: number[] = [];
+		const spawn = async (args: { timeoutMs: number }) => {
+			timeouts.push(args.timeoutMs);
+			return fakeResult();
+		};
+		await runToCompletionWith(
+			{ cwd: "/x", sessionDir: "/y", timeoutMs: 777, prompt: "initial", isComplete: () => timeouts.length >= 2, continuationPrompt: "resume" },
+			spawn,
+		);
+		expect(timeouts).toEqual([777, 777]);
+	});
+});
+
+describe("preCraftArtifactsComplete", () => {
+	const tempDirs: string[] = [];
+	afterEach(() => {
+		while (tempDirs.length > 0) {
+			const dir = tempDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function tmpProjectDir(): string {
+		const dir = mkdtempSync(join(tmpdir(), "lsc-e2e-helpers-precraft-"));
+		tempDirs.push(dir);
+		return dir;
+	}
+
+	function seedCraftDir(projectDir: string, feature: string, files: { trace?: boolean; spec?: boolean; plan?: boolean; runTest?: boolean }): void {
+		const craftDir = join(projectDir, ".lsc", "crafts", feature);
+		mkdirSync(craftDir, { recursive: true });
+		if (files.trace) writeFileSync(join(craftDir, "trace.md"), "");
+		if (files.spec) writeFileSync(join(craftDir, "spec.md"), "");
+		if (files.plan) writeFileSync(join(craftDir, "plan.md"), "");
+		if (files.runTest) {
+			const testDir = join(craftDir, "test");
+			mkdirSync(testDir, { recursive: true });
+			writeFileSync(join(testDir, "run_test.sh"), "");
+		}
+	}
+
+	it("is false when no .lsc/crafts/{feature} directory exists yet", () => {
+		expect(preCraftArtifactsComplete(tmpProjectDir())).toBe(false);
+	});
+
+	it("is false when more than one .lsc/crafts/{feature} directory exists (ambiguous, never treated as complete)", () => {
+		const projectDir = tmpProjectDir();
+		seedCraftDir(projectDir, "feature-a", { trace: true, spec: true, plan: true, runTest: true });
+		seedCraftDir(projectDir, "feature-b", { trace: true, spec: true, plan: true, runTest: true });
+		expect(preCraftArtifactsComplete(projectDir)).toBe(false);
+	});
+
+	it("is false when the craft dir exists but test/run_test.sh is missing (the actually observed real-run failure)", () => {
+		const projectDir = tmpProjectDir();
+		seedCraftDir(projectDir, "demo", { trace: true, spec: true, plan: true, runTest: false });
+		expect(preCraftArtifactsComplete(projectDir)).toBe(false);
+	});
+
+	it("is false when any single one of trace.md/spec.md/plan.md is missing, even with run_test.sh present", () => {
+		const projectDir = tmpProjectDir();
+		seedCraftDir(projectDir, "demo", { trace: true, spec: false, plan: true, runTest: true });
+		expect(preCraftArtifactsComplete(projectDir)).toBe(false);
+	});
+
+	it("is true once trace.md, spec.md, plan.md, and test/run_test.sh all exist", () => {
+		const projectDir = tmpProjectDir();
+		seedCraftDir(projectDir, "demo", { trace: true, spec: true, plan: true, runTest: true });
+		expect(preCraftArtifactsComplete(projectDir)).toBe(true);
 	});
 });
