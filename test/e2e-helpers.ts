@@ -78,6 +78,91 @@ export interface OmpRunResult {
 	events: OmpEvent[];
 }
 
+// 32MB rolling-tail cap for accumulated stdout/stderr text. Discovered necessary from an actual
+// ~51-minute worktree E2E run: every test assertion had already passed, but the harness itself
+// crashed afterward with `RangeError: Invalid string length` at the `stdout += chunk.toString()`
+// line — the raw `--mode=json` transcript of a run that long, with several subagent spawns each
+// echoing their own JSON event stream, grew past V8's max string length. Both earlyExit matching
+// and debugSummary only ever need the most recent tail of output (the behavior being asserted on,
+// or the last few messages/tool calls before a failure), never the full multi-hour transcript, so
+// truncating the head is safe. Exported (with an explicit `maxBytes` parameter, not hardcoded) so
+// the truncation behavior itself can be unit tested with a small cap instead of megabytes of data.
+export const MAX_BUFFERED_OUTPUT_BYTES = 32 * 1024 * 1024;
+
+/** Append `chunk` to `current`, keeping only the trailing `maxBytes` characters if the result would exceed it. See MAX_BUFFERED_OUTPUT_BYTES for why this exists. */
+export function appendBounded(current: string, chunk: string, maxBytes: number): string {
+	const next = current + chunk;
+	return next.length > maxBytes ? next.slice(next.length - maxBytes) : next;
+}
+
+/** A minimal Node-`EventEmitter`-shaped stream — just the two methods `attachOmpRunHandlers` actually calls. Satisfied by a real `ChildProcess`'s `stdout`/`stderr` (a `Readable`, which is an `EventEmitter`) or, in tests, a plain `node:events` `EventEmitter` double. */
+export interface DataEmitter {
+	on(event: "data", listener: (chunk: Buffer | string) => void): unknown;
+	removeListener(event: "data", listener: (chunk: Buffer | string) => void): unknown;
+}
+
+/**
+ * The minimal shape `attachOmpRunHandlers` needs from a child process — satisfied by a real
+ * `ChildProcess` (from `spawn`) or, in tests, a plain `EventEmitter`-based double. Kept separate
+ * from `node:child_process`'s own types so tests never need to construct or mock a real
+ * `ChildProcess`.
+ */
+export interface RunnableChild {
+	stdout: DataEmitter | null;
+	stderr: DataEmitter | null;
+	on(event: "close", listener: () => void): unknown;
+	kill(signal?: string): unknown;
+	readonly killed: boolean;
+	readonly exitCode: number | null;
+}
+
+/**
+ * Wires stdout/stderr accumulation, the timeout kill, `earlyExit`, and settle-once resolution for
+ * a spawned `omp` process. Extracted out of `runOmpPrint` so this — the part that actually had the
+ * bug — is directly unit-testable against a fake `RunnableChild` double, without needing to spawn
+ * a real process. **On settle** (natural close, timeout, or `earlyExit`), the stdout/stderr `data`
+ * listeners are removed via `removeListener` — the actual fix for the crash: the previous version
+ * kept `stdout += chunk.toString()` running forever after the promise had already resolved, since
+ * `finish()` only guarded the early-exit *check*, never the append itself or the listener that
+ * triggered it. A SIGKILL child can still emit buffered trailing chunks for a while as OS pipes
+ * drain; without listener removal, those chunks kept accumulating into an already-resolved (and
+ * therefore never read again) string, purely wasting memory until it crashed the process.
+ */
+export function attachOmpRunHandlers(
+	child: RunnableChild,
+	args: { timeoutMs: number; earlyExit?: (accumulatedStdout: string) => boolean; maxBufferedBytes?: number },
+	resolve: (result: OmpRunResult) => void,
+): void {
+	const maxBytes = args.maxBufferedBytes ?? MAX_BUFFERED_OUTPUT_BYTES;
+	let stdout = "";
+	let stderr = "";
+	let settled = false;
+
+	const onStdoutData = (chunk: Buffer | string) => {
+		stdout = appendBounded(stdout, chunk.toString(), maxBytes);
+		if (!settled && args.earlyExit?.(stdout)) finish(false);
+	};
+	const onStderrData = (chunk: Buffer | string) => {
+		stderr = appendBounded(stderr, chunk.toString(), maxBytes);
+	};
+
+	const finish = (timedOut: boolean) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(killTimer);
+		child.stdout?.removeListener("data", onStdoutData);
+		child.stderr?.removeListener("data", onStderrData);
+		resolve({ exitCode: child.exitCode, timedOut, stdout, stderr, events: parseNdjson(stdout) });
+		if (!child.killed) child.kill("SIGKILL");
+	};
+
+	const killTimer = setTimeout(() => finish(true), args.timeoutMs);
+
+	child.stdout?.on("data", onStdoutData);
+	child.stderr?.on("data", onStderrData);
+	child.on("close", () => finish(false));
+}
+
 /**
  * Spawn `omp -p --mode=json` against `cwd` with the given prompt, killing it if it runs past
  * `timeoutMs`. Never throws on a non-zero exit or a timeout kill — callers assert on the
@@ -125,29 +210,7 @@ export function runOmpPrint(args: {
 			env: { ...process.env, ...args.env },
 		});
 
-		let stdout = "";
-		let stderr = "";
-		let settled = false;
-
-		const finish = (timedOut: boolean) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(killTimer);
-			resolve({ exitCode: child.exitCode, timedOut, stdout, stderr, events: parseNdjson(stdout) });
-			if (!child.killed) child.kill("SIGKILL");
-		};
-
-		const killTimer = setTimeout(() => finish(true), args.timeoutMs);
-
-		child.stdout?.on("data", chunk => {
-			stdout += chunk.toString();
-			if (!settled && args.earlyExit?.(stdout)) finish(false);
-		});
-		child.stderr?.on("data", chunk => {
-			stderr += chunk.toString();
-		});
-
-		child.on("close", () => finish(false));
+		attachOmpRunHandlers(child as unknown as RunnableChild, args, resolve);
 	});
 }
 

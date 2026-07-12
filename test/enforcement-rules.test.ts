@@ -149,7 +149,12 @@ describe.skipIf(!RUN_E2E)("enforcement rules (AC5, real omp integration)", () =>
 				earlyExit: stdout => /marked aborted/.test(stdout),
 			});
 
-			await waitForFile(sentinelReady, 30_000);
+			// Generous relative to the earlier 30s: zai/glm-5.2 (this round's model bump) is
+			// noticeably slower per-turn than zai/glm-4.6 was — observed elsewhere in this same
+			// suite (session_stop's continuation test alone took 70s on glm-5.2 vs ~10s before) —
+			// so getting through "call lsc_craft_init, then touch the sentinel" can plausibly take
+			// longer than the model-invariant PER_RUN_TIMEOUT_MS safety net (300s) would suggest.
+			await waitForFile(sentinelReady, 120_000);
 			// External tamper — simulates a modification that did not go through the gated
 			// write/edit/bash tools inside the omp session (e.g. a separate process/editor).
 			writeFileSync(scriptPath, "#!/bin/bash\necho TAMPERED\nexit 1\n");
