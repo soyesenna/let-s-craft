@@ -110,7 +110,8 @@ Write `.lsc/crafts/{feature}/audit/audit-{N}.md` with (no length limit, C9):
 5. **Code Quality & Regression Risk** (§3.3) — findings with severity + file:line evidence, mirroring `lsc-critic`'s own evidence discipline.
 6. **Test Re-verification** (§3.4) — pass/fail, exit code, log excerpt or path.
 7. **Full `lsc-explore` report** and **full `lsc-critic` report**, verbatim (not summarized away — C9).
-8. **Required Fix** (only when the verdict is `APPROVE-WITH-CHANGE`) — precise enough that `craft` can implement it without asking clarifying questions, and precise enough that the fix-verification cycle (§5) knows exactly what to check.
+8. **Required Fix** (only when the verdict is `APPROVE-WITH-CHANGE`) — precise enough that `craft` can implement it without asking clarifying questions, and precise enough that the fix-verification cycle (§5) knows exactly what to check. Note in this section that the *next* audit cycle verifying this fix will be narrower in scope than a full audit (§5) — that narrowing is this pipeline's own deliberate, spec-sanctioned design, not a corner being cut.
+
 9. **Rejection Rationale** (only when the verdict is `REJECT`) — why the issues are broad/severe enough that a scoped fix can't be prescribed here; what a fresh implementation attempt needs to address.
 10. **Non-blocking Considerations** (only when the verdict is `APPROVE-WITH-COMMENT`) — optional improvements the audit is explicitly *not* requiring before merge.
 11. **Proposed Spec/Plan Amendments**, if any (§6.2) — listed here even before the user has approved/rejected/deferred them individually; the audit doc is the durable record of what was proposed, regardless of outcome.
@@ -192,7 +193,7 @@ via `lsc_confirm`. This is not optional or skippable under any circumstance — 
 
 ### 7.4 On approval — merge, then clean up
 
-1. **Worktree mode**: from the project root, `git checkout {base}` if not already on it, then `git merge --no-ff {implementation branch}` with a structured commit message following `rules/lets-craft.md`'s `what:`/`why:`/`evidence:`/`verify:` format (reference the feature and the final `AUDIT VERDICT`) — a merge commit, not a fast-forward, keeps a clear audit-trail boundary consistent with this project's feature-granularity commit discipline. The worktree's own checkout is untouched by this — it shares the same `.git`, so merging by branch name doesn't require being inside the worktree.
+1. **Worktree mode**: from the project root, `git checkout {base}` if not already on it, then `git merge --no-ff {implementation branch}` with a structured commit message following this project's own RULE's `what:`/`why:`/`evidence:`/`verify:` format (reference the feature and the final `AUDIT VERDICT`) — a merge commit, not a fast-forward, keeps a clear audit-trail boundary consistent with this project's feature-granularity commit discipline. The worktree's own checkout is untouched by this — it shares the same `.git`, so merging by branch name doesn't require being inside the worktree.
 2. **Non-worktree mode**: the current working tree *is* on the implementation branch (§2.3) — `git checkout {base}` (this switches the working tree away from the implementation branch; say so plainly in the final report, since it's a visible side effect), then `git merge --no-ff {implementation branch}` with the same structured message.
 3. **Worktree cleanup, worktree mode only** — replicate `removeWorktree()`/`pruneWorktrees()` (`src/artifacts/worktree.ts`) by hand, exactly as pre-craft replicates `addWorktree()` by hand (no tool wraps these for skill use — `src/main.ts` never registers one):
    ```bash
@@ -209,8 +210,8 @@ via `lsc_confirm`. This is not optional or skippable under any circumstance — 
 
 ## 8. Finalization
 
-1. Stage and commit `.lsc/crafts/{feature}/audit/audit-{N}.md` (and `spec.md`/`plan.md` if §6.2 amended them) per the project RULE (`rules/lets-craft.md`): Korean subject line with a conventional-commit prefix, structured `what:`/`why:`/`evidence:`/`verify:` body. Commit this **before** asking the §6.1/§7.3 gate questions — the audit record should exist regardless of what the user decides next.
-2. If land (§7) ran and produced a merge commit, that is a separate commit from the audit commit above — do not combine them (feature-granularity discipline, `rules/lets-craft.md` §2).
+1. Stage and commit `.lsc/crafts/{feature}/audit/audit-{N}.md` (and `spec.md`/`plan.md` if §6.2 amended them) per this project's own RULE (already part of your system prompt — no need to `read` it as a file; the plugin bundles it as a capability, not a project-tree file): Korean subject line with a conventional-commit prefix, structured `what:`/`why:`/`evidence:`/`verify:` body. Commit this **before** asking the §6.1/§7.3 gate questions — the audit record should exist regardless of what the user decides next.
+2. If land (§7) ran and produced a merge commit, that is a separate commit from the audit commit above — do not combine them (feature-granularity discipline, per this project's own RULE).
 3. Tell the user plainly, in text: the verdict, the audit doc's path, and whichever of §6.1/§7 actually ran (and its outcome).
 
 ## 9. Context management (R2)
