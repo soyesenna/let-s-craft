@@ -53,7 +53,14 @@ export function setActiveCraft(state: CraftState): void {
 	persist(state);
 }
 
-/** Restore a persisted craft state from disk (e.g. after a process restart mid-craft). */
+/**
+ * Load a persisted craft state from disk into the in-memory singleton. A primitive for direct
+ * testing and for callers that want to inspect a feature's last-recorded state without becoming
+ * its active-craft owner — not the mechanism that recovers active-craft after a process restart
+ * mid-craft-loop. That recovery is skill-driven: `craft/SKILL.md`'s own "Resume note" has the
+ * skill re-call `lsc_craft_init` itself, which recomputes the manifest and re-registers the
+ * singleton from scratch. Nothing in this extension calls this function automatically.
+ */
 export function loadActiveCraft(projectRoot: string, feature: string): CraftState | undefined {
 	const path = craftStatePath(projectRoot, feature);
 	if (!existsSync(path)) return undefined;
@@ -75,7 +82,7 @@ export function markCraftAborted(): void {
 	persist(activeCraft);
 }
 
-/** Clear the in-memory active craft. The persisted file is left in place — a later lsc_craft_init or loadActiveCraft re-attaches it. */
+/** Clear the in-memory active craft. The persisted file is left in place — a later `lsc_craft_init` call (craft/SKILL.md's own resume flow) re-attaches it; nothing does so automatically. */
 export function clearActiveCraft(): void {
 	activeCraft = undefined;
 }

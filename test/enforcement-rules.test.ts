@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { E2E_MAIN_MODEL, type OmpRunResult, debugSummary, runOmpPrint, toolExecutions } from "./e2e-helpers";
+import { debugSummary, runOmpPrint, toolExecutions } from "./e2e-helpers";
 
 const RUN_E2E = process.env.LSC_E2E === "1";
 // Safety-net kill timeout per omp invocation — in practice every test below exits far sooner via

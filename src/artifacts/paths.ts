@@ -104,19 +104,23 @@ export function worktreePath(cwd: string, feature: string): string {
  * path that includes `.lsc/crafts/{feature}/...` — the pre-craft directory itself,
  * or a deeper path like a post-craft `audit/audit-2.md` (C22: craft's input is
  * "pre-craft 산출물 디렉터리 경로 또는 post-craft audit 문서 경로").
+ *
+ * Matches `crafts` as a whole path segment (via a split array's exact-equality
+ * `indexOf`, not a raw substring search) so an ancestor directory that merely
+ * contains "crafts" as a substring — e.g. `.../aircrafts/foo/.lsc/crafts/my-feature`
+ * — can never be mistaken for the real marker segment and yield the wrong feature
+ * name (`foo` instead of `my-feature`).
  */
 export function resolveFeatureName(input: string): string {
 	const normalized = input.split(sep).join("/");
-	const marker = "crafts/";
-	const markerIndex = normalized.indexOf(marker);
-	if (markerIndex === -1) {
-		const segments = normalized.split("/").filter(Boolean);
-		const last = segments[segments.length - 1];
-		if (!last) throw new Error(`lets-craft: could not resolve a feature name from "${input}"`);
-		return last;
+	const segments = normalized.split("/").filter(Boolean);
+	const markerIndex = segments.indexOf("crafts");
+	if (markerIndex !== -1) {
+		const feature = segments[markerIndex + 1];
+		if (!feature) throw new Error(`lets-craft: could not resolve a feature name from "${input}"`);
+		return feature;
 	}
-	const rest = normalized.slice(markerIndex + marker.length);
-	const feature = rest.split("/").filter(Boolean)[0];
-	if (!feature) throw new Error(`lets-craft: could not resolve a feature name from "${input}"`);
-	return feature;
+	const last = segments[segments.length - 1];
+	if (!last) throw new Error(`lets-craft: could not resolve a feature name from "${input}"`);
+	return last;
 }

@@ -22,9 +22,9 @@ afterEach(() => {
 describe("parseModelsFile", () => {
 	it("parses a well-formed models.yaml", () => {
 		const file = parseModelsFile(
-			["active: codex-glm", "presets:", "  codex-glm:", "    explore: openai-codex/gpt-5.6-luna:medium", ""].join("\n"),
+			["active: fast-glm", "presets:", "  fast-glm:", "    explore: zai/glm-4.6:medium", ""].join("\n"),
 		);
-		expect(file).toEqual({ active: "codex-glm", presets: { "codex-glm": { explore: "openai-codex/gpt-5.6-luna:medium" } } });
+		expect(file).toEqual({ active: "fast-glm", presets: { "fast-glm": { explore: "zai/glm-4.6:medium" } } });
 	});
 
 	it("treats empty/null content as no presets", () => {

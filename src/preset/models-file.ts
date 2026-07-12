@@ -1,11 +1,11 @@
 // models.yaml: named model presets for the lets-craft agents.
 //
 // Layout (spec §Agent 별 모델 할당):
-//   active: codex-glm
+//   active: fast-glm
 //   presets:
-//     codex-glm:
-//       explore: openai-codex/gpt-5.6-luna:medium
-//       tracer:  zai-coding/glm-5.2:xhigh
+//     fast-glm:
+//       explore: zai/glm-4.6:medium
+//       tracer:  zai/glm-5.2:xhigh
 //
 // Loaded from the global file (`~/.omp/.lsc/models.yaml`) overlaid by the project
 // file (`<cwd>/.lsc/models.yaml`); the project layer wins (C10).

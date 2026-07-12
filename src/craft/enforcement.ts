@@ -81,7 +81,26 @@ function extractPathCandidates(input: Record<string, unknown>): string[] {
 	return out;
 }
 
-/** Conservative substring match for bash: we can't parse arbitrary shell, so fail closed (plan §Phase 3 (4)). */
+/**
+ * Substring match for bash: we can't parse arbitrary shell, so this checks only the two most
+ * common ways a command's text would reference the protected path (the absolute `testDir`, and
+ * `testDir` written relative to the event's own `cwd`). This is a best-effort first line of
+ * defense, not a guarantee — it has known fail-OPEN gaps a determined or merely differently-
+ * phrased command can slip through: a `cd`-chain that changes directory mid-command before
+ * touching a bare relative filename (`cd .lsc/crafts/f/test && rm run_test.sh` is caught since
+ * the literal segment still appears in the text, but a multi-hop `cd ../../x && cd y/test-dir`
+ * that never spells out the real path as a substring is not); a relative path computed via shell
+ * expansion/variables rather than literal text; or a symlink located outside `testDir` whose
+ * target resolves inside it (the command text referencing the symlink's own path won't contain
+ * `testDir` as a substring at all). None of these are hypothetical hardening for its own sake —
+ * they are the deliberate reason this function is a *first* line of defense, not the *only* one:
+ * `lsc_verify_hash`'s content-hash comparison (hash-manifest.ts) is authoritative regardless of
+ * which tool or shell trick produced a change, because it re-reads the actual file bytes on disk
+ * (following symlinks, oblivious to how the write happened) rather than trying to predict every
+ * way a write could be expressed. Any gap here is caught there on the next verify (C23b) — this
+ * function existing at all is purely to fail fast and give the LLM an immediate, actionable
+ * `{block, reason}` for the common cases, not to be a complete guarantee (plan §Phase 3 (4)).
+ */
 function containsProtectedPath(text: string, cwd: string, testDir: string): boolean {
 	if (text.includes(testDir)) return true;
 	const rel = relative(cwd, testDir);

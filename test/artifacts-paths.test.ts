@@ -67,4 +67,9 @@ describe("resolveFeatureName", () => {
 		expect(() => resolveFeatureName("")).toThrow();
 		expect(() => resolveFeatureName(".lsc/crafts/")).toThrow();
 	});
+
+	it("does not mistake an ancestor directory that merely contains 'crafts' as a substring (e.g. 'aircrafts') for the real marker segment", () => {
+		expect(resolveFeatureName("/repo/aircrafts/foo/.lsc/crafts/my-feature")).toBe("my-feature");
+		expect(resolveFeatureName("aircrafts/foo/.lsc/crafts/my-feature/plan.md")).toBe("my-feature");
+	});
 });
