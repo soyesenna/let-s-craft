@@ -89,6 +89,18 @@ export interface OmpRunResult {
 // the truncation behavior itself can be unit tested with a small cap instead of megabytes of data.
 export const MAX_BUFFERED_OUTPUT_BYTES = 32 * 1024 * 1024;
 
+// Grace window after an `earlyExit` match before the child is actually killed and the promise
+// settles. Found necessary from a real enforcement-rules.test.ts failure: the blocked write's own
+// error text ("hash protection") legitimately appeared in the accumulated stdout (the enforcement
+// worked), but `earlyExit` fired and killed the child mid-chunk, before the NDJSON line carrying
+// that `tool_execution_end` event had been terminated by its trailing newline — `parseNdjson`
+// splits on "\n" and silently drops an unterminated trailing line, so `toolExecutions(result)`
+// came back without the very `write` call the test was asserting on. 1200ms is comfortably inside
+// a single `write()` syscall's flush latency on a local pipe (typically sub-millisecond to a few
+// ms) while staying negligible against the multi-second-per-turn real-model runs these tests
+// already budget for.
+export const EARLY_EXIT_DRAIN_MS = 1200;
+
 /** Append `chunk` to `current`, keeping only the trailing `maxBytes` characters if the result would exceed it. See MAX_BUFFERED_OUTPUT_BYTES for why this exists. */
 export function appendBounded(current: string, chunk: string, maxBytes: number): string {
 	const next = current + chunk;
@@ -120,27 +132,41 @@ export interface RunnableChild {
  * Wires stdout/stderr accumulation, the timeout kill, `earlyExit`, and settle-once resolution for
  * a spawned `omp` process. Extracted out of `runOmpPrint` so this — the part that actually had the
  * bug — is directly unit-testable against a fake `RunnableChild` double, without needing to spawn
- * a real process. **On settle** (natural close, timeout, or `earlyExit`), the stdout/stderr `data`
- * listeners are removed via `removeListener` — the actual fix for the crash: the previous version
- * kept `stdout += chunk.toString()` running forever after the promise had already resolved, since
- * `finish()` only guarded the early-exit *check*, never the append itself or the listener that
- * triggered it. A SIGKILL child can still emit buffered trailing chunks for a while as OS pipes
- * drain; without listener removal, those chunks kept accumulating into an already-resolved (and
- * therefore never read again) string, purely wasting memory until it crashed the process.
+ * a real process. **On settle** (natural close, timeout, or `earlyExit` after its drain grace —
+ * see EARLY_EXIT_DRAIN_MS), the stdout/stderr `data` listeners are removed via `removeListener` —
+ * the actual fix for the crash: the previous version kept `stdout += chunk.toString()` running
+ * forever after the promise had already resolved, since `finish()` only guarded the early-exit
+ * *check*, never the append itself or the listener that triggered it. A SIGKILL child can still
+ * emit buffered trailing chunks for a while as OS pipes drain; without listener removal, those
+ * chunks kept accumulating into an already-resolved (and therefore never read again) string,
+ * purely wasting memory until it crashed the process.
  */
 export function attachOmpRunHandlers(
 	child: RunnableChild,
-	args: { timeoutMs: number; earlyExit?: (accumulatedStdout: string) => boolean; maxBufferedBytes?: number },
+	args: {
+		timeoutMs: number;
+		earlyExit?: (accumulatedStdout: string) => boolean;
+		maxBufferedBytes?: number;
+		earlyExitDrainMs?: number;
+	},
 	resolve: (result: OmpRunResult) => void,
 ): void {
 	const maxBytes = args.maxBufferedBytes ?? MAX_BUFFERED_OUTPUT_BYTES;
+	const drainMs = args.earlyExitDrainMs ?? EARLY_EXIT_DRAIN_MS;
 	let stdout = "";
 	let stderr = "";
 	let settled = false;
+	// Set the instant `earlyExit` first matches — from then on we're just waiting out the drain
+	// grace (or a natural close, whichever comes first), not re-checking earlyExit every chunk.
+	let draining = false;
+	let drainTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const onStdoutData = (chunk: Buffer | string) => {
 		stdout = appendBounded(stdout, chunk.toString(), maxBytes);
-		if (!settled && args.earlyExit?.(stdout)) finish(false);
+		if (!settled && !draining && args.earlyExit?.(stdout)) {
+			draining = true;
+			drainTimer = setTimeout(() => finish(false), drainMs);
+		}
 	};
 	const onStderrData = (chunk: Buffer | string) => {
 		stderr = appendBounded(stderr, chunk.toString(), maxBytes);
@@ -150,6 +176,7 @@ export function attachOmpRunHandlers(
 		if (settled) return;
 		settled = true;
 		clearTimeout(killTimer);
+		clearTimeout(drainTimer);
 		child.stdout?.removeListener("data", onStdoutData);
 		child.stderr?.removeListener("data", onStderrData);
 		resolve({ exitCode: child.exitCode, timedOut, stdout, stderr, events: parseNdjson(stdout) });

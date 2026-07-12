@@ -120,9 +120,11 @@ describe("attachOmpRunHandlers", () => {
 		expect(result.stdout).toBe("b".repeat(15));
 	});
 
-	it("invokes earlyExit and resolves immediately once it returns true, killing the child without waiting for close", async () => {
+	it("invokes earlyExit and, after its drain grace, resolves and kills the child without waiting for close", async () => {
 		const child = createFakeChild();
-		const resultPromise = run(child, { timeoutMs: 60_000, earlyExit: stdout => stdout.includes("DONE") });
+		// earlyExitDrainMs: 0 — this test only cares that earlyExit eventually triggers finish, not
+		// about the drain window's own timing (covered separately below), so keep it instant.
+		const resultPromise = run(child, { timeoutMs: 60_000, earlyExitDrainMs: 0, earlyExit: stdout => stdout.includes("DONE") });
 		child.stdout.emit("data", "working...");
 		child.stdout.emit("data", "DONE");
 		const result = await resultPromise;
@@ -130,6 +132,42 @@ describe("attachOmpRunHandlers", () => {
 		expect(result.stdout).toBe("working...DONE");
 		expect(child.killCalls).toContain("SIGKILL");
 		expect(child.stdout.listenerCount("data")).toBe(0);
+	});
+
+	it("waits out earlyExitDrainMs after an earlyExit match instead of settling immediately, so a chunk still in flight is not lost (the enforcement-rules.test.ts drain-race fix)", async () => {
+		const child = createFakeChild();
+		const resultPromise = run(child, { timeoutMs: 60_000, earlyExitDrainMs: 20, earlyExit: stdout => stdout.includes("hash protection") });
+		child.stdout.emit("data", "...hash protection...");
+		// Not settled yet: the drain grace hasn't elapsed, so the child must not be killed and no
+		// chunk should be lost even though earlyExit already matched.
+		expect(child.killCalls.length).toBe(0);
+		// A chunk that arrives mid-drain (simulating the rest of an NDJSON line still flushing)
+		// must still be appended, not dropped by an immediate finish().
+		child.stdout.emit("data", " rest-of-the-ndjson-line\n");
+		const result = await resultPromise;
+		expect(result.stdout).toBe("...hash protection... rest-of-the-ndjson-line\n");
+		expect(result.timedOut).toBe(false);
+		expect(child.killCalls).toContain("SIGKILL");
+	});
+
+	it("settles on a natural close that arrives during the drain window, without waiting out the full earlyExitDrainMs", async () => {
+		const child = createFakeChild();
+		const resultPromise = run(child, { timeoutMs: 60_000, earlyExitDrainMs: 10_000, earlyExit: stdout => stdout.includes("DONE") });
+		child.stdout.emit("data", "DONE");
+		child.emitClose();
+		const result = await resultPromise;
+		expect(result.stdout).toBe("DONE");
+		expect(result.timedOut).toBe(false);
+	});
+
+	it("ignores further earlyExit matches once already draining, so only one drain timer is ever scheduled", async () => {
+		const child = createFakeChild();
+		const resultPromise = run(child, { timeoutMs: 60_000, earlyExitDrainMs: 15, earlyExit: stdout => stdout.includes("DONE") });
+		child.stdout.emit("data", "DONE");
+		child.stdout.emit("data", "DONE again");
+		const result = await resultPromise;
+		expect(result.stdout).toBe("DONEDONE again");
+		expect(child.killCalls.length).toBe(1);
 	});
 
 	it("never calls resolve more than once even if close fires after a timeout already settled it", async () => {
