@@ -15,12 +15,14 @@
 // separate real-run evidence: the main session struggled to reliably follow pre-craft/craft/
 // post-craft's long SKILL.md instructions (repeating the same lsc_ask question 3 times,
 // misreading a subagent's JSON result and attempting to `read` a file that was never written,
-// several `lsc_select` fixture-matching failures) — E2E_MAIN_MODEL is now `zai/glm-4.6`. The
-// subagent tier struggled specifically as `lsc-executor`: a first attempt failed outright after
-// ~26 minutes on a small, well-specified bug fix, and a second attempt modified a protected test
-// file instead of fixing the implementation (the real trigger for the hash-violation deadlock
-// Fix 1 above addresses) rather than admit it couldn't solve the task — E2E_SUBAGENT_MODEL is
-// now also `zai/glm-4.6` (still the same low-cost tier, just no longer the very cheapest).
+// several `lsc_select` fixture-matching failures). The subagent tier struggled specifically as
+// `lsc-executor`: a first attempt failed outright after ~26 minutes on a small, well-specified
+// bug fix, and a second attempt modified a protected test file instead of fixing the
+// implementation (the real trigger for the hash-violation deadlock Fix 1 above addresses) rather
+// than admit it couldn't solve the task. Both E2E_MAIN_MODEL and E2E_SUBAGENT_MODEL are now
+// `zai/glm-5.2` (same authenticated provider, same low-cost intent, confirmed via `omp models
+// list`) — same model for both roles per explicit user direction, still on the `:low` effort tier
+// (glm-5.2 supports minimal/low/medium/high/xhigh).
 import { execFileSync } from "node:child_process";
 import { type ChildProcess, spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -58,9 +60,9 @@ function syncModeConfigPath(): string {
 	return cachedSyncModeConfigPath;
 }
 
-/** Authenticated, low-cost models verified during harness development (see module header for why both moved off the very cheapest tier). Overridable for local runs against a different provider. */
-export const E2E_MAIN_MODEL = process.env.LSC_E2E_MAIN_MODEL ?? "zai/glm-4.6:low";
-export const E2E_SUBAGENT_MODEL = process.env.LSC_E2E_SUBAGENT_MODEL ?? "zai/glm-4.6:low";
+/** Authenticated zai-provider model (see module header for why both main and subagent moved off the very cheapest tier) — confirmed via `omp models list` (zai/glm-5.2, 1M context, effort levels minimal/low/medium/high/xhigh, so `:low` is supported). Overridable for local runs against a different provider. */
+export const E2E_MAIN_MODEL = process.env.LSC_E2E_MAIN_MODEL ?? "zai/glm-5.2:low";
+export const E2E_SUBAGENT_MODEL = process.env.LSC_E2E_SUBAGENT_MODEL ?? "zai/glm-5.2:low";
 
 export interface OmpEvent {
 	type: string;
