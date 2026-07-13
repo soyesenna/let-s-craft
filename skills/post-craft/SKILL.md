@@ -146,12 +146,14 @@ C25's parenthetical for `APPROVE-WITH-CHANGE` — "수정 필수, 수정 후 재
 
 ### 6.1 REJECT / APPROVE-WITH-CHANGE → offer to re-invoke craft
 
-Once `audit-{N}.md` is written and committed (§8), ask:
+**Chaining gate, before asking anything**: check `[ -n "$LSC_FIXTURE" ]` (bash) and, if unset, whether this session's accumulated context is already large (long-running session, several `lsc-explore`/`lsc-critic` spawns behind you). Once `audit-{N}.md` is written and committed (§8), ask regardless of either:
 
 `[Audit] Verdict was {AUDIT VERDICT}. Re-invoke craft against .lsc/crafts/{feature}/audit/audit-{N}.md to address the findings above? Proceed?`
 
 via `lsc_confirm`.
-- **Approved** → this skill does not, and cannot, call `craft` directly (skills cannot invoke each other — the same architectural constraint pre-craft/craft's finalization steps already work within). Tell the user, plainly and exactly: *"Invoke the craft skill against `.lsc/crafts/{feature}/audit/audit-{N}.md` next"* — this is the literal path `craft/SKILL.md` §2.1 already classifies as audit-driven-craft input, so no further translation is needed on craft's side.
+- **Approved, and neither gate above applies (not fixture mode, context not oversized)** → `read skill://craft` in this same turn — it returns craft's full contract text — and continue executing from craft's own §0 immediately, treating `.lsc/crafts/{feature}/audit/audit-{N}.md` as the input (the literal path `craft/SKILL.md` §2.1 already classifies as audit-driven-craft input, so no further translation is needed). **From this point on, this skill's own contract (§0's "This skill never writes implementation code," everything above) no longer applies — only the contract you just read from `skill://craft` governs the rest of this turn.** This is not hypothetical: there is no dedicated "dispatch another skill" primitive, but loading a skill's contract via `read skill://{name}` and continuing to execute it in the same turn has been confirmed against the real host — `read skill://craft` returns the live contract text, and an in-turn `lsc_craft_init` call right after succeeds. If the audit's Required Fix (§4.1 point 8) itself requires modifying the protected `test/` canon (not just implementation source), say so explicitly in the Required Fix text — the re-invoked craft will need its own `[Canon Amendment]` approval → `lsc_craft_release` → edit → `lsc_craft_init` re-baseline path (`craft/SKILL.md` §4) to make that change, not the ordinary executor loop.
+- **Approved, but `$LSC_FIXTURE` is set** → do not chain — the E2E harness drives pre-craft, craft, and post-craft as three separate invocations; chaining here would run craft inside this post-craft turn, breaking that structure. Tell the user, plainly and exactly: *"Invoke the craft skill against `.lsc/crafts/{feature}/audit/audit-{N}.md` next"*, and end the turn normally.
+- **Approved, but this session's context is already large** → do not chain either — tell the user explicitly that you're recommending a fresh session for `craft` instead, and why, then give the same manual-invocation text as above.
 - **Declined** → stop here. The audit stands as the record of what's wrong; nothing further happens automatically.
 
 ### 6.2 Spec/Plan amendments — per-item, user-gated, with a durable trail
