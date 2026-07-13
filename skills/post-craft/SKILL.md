@@ -1,6 +1,6 @@
 ---
 name: post-craft
-description: Runs the lets-craft post-craft adversarial audit — a hostile, evidence-first review of a completed craft implementation against trace.md/spec.md/plan.md, producing a four-level verdict (APPROVE / APPROVE-WITH-COMMENT / APPROVE-WITH-CHANGE / REJECT) recorded to `.lsc/crafts/{feature}/audit/audit-N.md`, followed by a semi-automatic craft-reinvoke-or-land decision. Trigger when the user says "post-craft" / "/post-craft", asks to audit, review, or QA a feature the craft skill just finished, or when the craft skill's own finalization handoff recommends running post-craft next. Takes `.lsc/crafts/{feature}/` as input (implementation source auto-detected: `.lsc/worktrees/{feature}/` if it exists, else the current working tree). Ends by either handing off the exact `audit/audit-N.md` path back to `craft` for another fix cycle, or — on an APPROVE-family verdict — requesting explicit merge approval and landing the implementation.
+description: Runs the lets-craft post-craft adversarial audit — a hostile, evidence-first review of a completed craft implementation against trace.md/spec.md/plan.md, producing a four-level verdict (APPROVE / APPROVE-WITH-COMMENT / APPROVE-WITH-CHANGE / REJECT) recorded to `.lsc/crafts/{feature}/audit/audit-N.md`, followed by a semi-automatic craft-reinvoke-or-land decision. Trigger when the user says "post-craft" / "/post-craft", asks to audit, review, or QA a feature the craft skill just finished, or when the craft skill's own finalization handoff recommends running post-craft next. Takes `.lsc/crafts/{feature}/` as input (implementation source is always the `.lsc/worktrees/{feature}/` worktree pre-craft creates — C6/R5). Ends by either handing off the exact `audit/audit-N.md` path back to `craft` for another fix cycle, or — on an APPROVE-family verdict — requesting explicit merge approval and landing the implementation.
 ---
 
 # post-craft
@@ -24,13 +24,13 @@ lets-craft is a 3-stage pipeline: **pre-craft → craft → post-craft**. This s
 
    | Artifact | Path |
    |---|---|
-   | Audit report | `.lsc/crafts/{feature}/audit/audit-{N}.md` (N from 0, existing max + 1) |
-   | Trace / spec / plan (read, and spec/plan conditionally amended) | `.lsc/crafts/{feature}/{trace,spec,plan}.md` |
-   | Test suite (read + re-run only, never edited) | `.lsc/crafts/{feature}/test/` |
-   | Craft state (read-only signal, §2.4) | `.lsc/crafts/{feature}/test/.craft-state.json`, rooted at the worktree if §2.3 detected one for this feature, else the project root — see the exception note below the table |
-   | Worktree, if used | `.lsc/worktrees/{feature}/` |
+   | Worktree | `.lsc/worktrees/{feature}/` — always present (C6/R5); every artifact below lives inside it. Its absolute form is referred to as `{worktreeAbs}` throughout this document. |
+   | Audit report | `{worktreeAbs}/.lsc/crafts/{feature}/audit/audit-{N}.md` (N from 0, existing max + 1) |
+   | Trace / spec / plan (read, and spec/plan conditionally amended) | `{worktreeAbs}/.lsc/crafts/{feature}/{trace,spec,plan}.md` |
+   | Test suite (read + re-run only, never edited) | `{worktreeAbs}/.lsc/crafts/{feature}/test/` |
+   | Craft state (read-only signal, §2.4) | `{worktreeAbs}/.lsc/crafts/{feature}/test/.craft-state.json` |
 
-   `.lsc/crafts/{feature}/` (including `audit/`) always resolves relative to the **project root**, never the worktree, even when the implementation itself lives in a worktree (§2.3) — this mirrors `craftAuditDir` in `src/artifacts/paths.ts`, which is `projectLscDir(cwd)`-rooted regardless of `--worktree`. **Exception: craft state.** `.craft-state.json`'s on-disk root is no longer project-root-unconditional — `src/craft/state.ts`'s `persist` now writes it under `worktreeRoot ?? projectRoot`, mirroring `lsc_craft_init`/`lsc_verify_hash`/`lsc_restore_tests`'s own root resolution (`src/craft/hash-manifest.ts`). Read it at the worktree's absolute path when §2.3 detected one for this feature, else at the project-root-relative path — never assume project-root-relative unconditionally for this one artifact, unlike everything else in this table.
+   `.lsc/crafts/{feature}/` (including `audit/`) resolves relative to the **worktree** — `{worktreeAbs}` per the table above, not the project root. This is the pipeline's fixed policy now (C6/R5, all-in-worktree): pre-craft always creates the worktree, craft always operates inside it, and this skill inherits the same root for every artifact it reads or writes, with no per-artifact exception. `craftAuditDir`/`craftStatePath`/etc. in `src/artifacts/paths.ts` keep their existing `cwd`-parameterized signatures (unchanged by R5) — this skill is simply the caller now passing `{worktreeAbs}` as that `cwd` argument instead of the project root. The only departure from this is §2.3's own escape hatch: if no worktree exists for this feature and the user explicitly approves continuing anyway, every path in this table falls back to the project root for that one audit run — note this explicitly in the audit doc's Header (§4.1 point 1) when it happens.
 5. **Tool inventory.** `lsc_ask`/`lsc_select`/`lsc_confirm` for every human-facing question; `task` (batch form) to spawn `lsc-explore` and `lsc-critic` in parallel (§3.1); `lsc_run_tests` opportunistically, with a `bash` fallback (§3.4 — see why there); `bash`/`read`/`write`/`edit`/`glob`/`grep` directly for git orchestration, audit-doc authoring, and (only for user-approved amendments) editing `spec.md`/`plan.md`. Do **not** call `lsc_craft_init`/`lsc_verify_hash`/`lsc_restore_tests`/`lsc_craft_abort` — those activate the craft loop's hash-protection/active-craft state and are `craft`'s tools, not this skill's; calling `lsc_craft_init` here would incorrectly re-register this feature as an in-flight craft loop for the rest of the session (and would arm the `tool_call` block against §3.4's own bash-based test run — see the note there).
 6. **Feature slug.** Same resolution rule as `craft` (`src/artifacts/paths.ts`'s `resolveFeatureName`): the path segment right after `crafts/`, or the last path segment for a bare name. Works whether you were handed a bare feature name, the `.lsc/crafts/{feature}/` dir, or (on a re-audit) an `audit/audit-N.md` path.
 7. **Verdict vocabulary — two distinct scales, do not conflate them.** `lsc-critic`'s own output always begins with `**VERDICT: [REJECT / REVISE / ACCEPT-WITH-RESERVATIONS / ACCEPT]**` (`agents/lsc-critic.md`) — a narrower, agent-scoped scale for its own review. This skill's audit judgment (C25) is a *different*, four-level scale — `APPROVE` / `APPROVE-WITH-COMMENT` / `APPROVE-WITH-CHANGE` / `REJECT` — that only the main session assigns, holistically, after weighing `lsc-critic`'s verdict alongside `lsc-explore`'s findings, the compliance matrices you build yourself (§3.2), and the re-run test result (§3.4). Never copy `lsc-critic`'s verdict word directly into the audit's judgment line. §4.2 gives a disciplined (non-mechanical) correspondence between the two scales.
@@ -40,15 +40,19 @@ lets-craft is a 3-stage pipeline: **pre-craft → craft → post-craft**. This s
 
 1. **Validate pre-craft artifacts exist**: `trace.md`, `spec.md`, `plan.md`, `test/run_test.sh` under `.lsc/crafts/{feature}/`. If any is missing, stop and tell the user this feature never completed pre-craft — there is nothing to audit.
 2. **Determine the audit cycle number `N`.** `glob .lsc/crafts/{feature}/audit/audit-*.md`, parse the numeric suffixes, `N = max + 1` (or `0` if the directory is empty/missing — C8).
-3. **Detect the implementation source** (mirrors `craft/SKILL.md` §2.5, same rationale — `.lsc/worktrees/{feature}/` existing means that's where the code actually is):
-   - `.lsc/worktrees/{feature}/` exists → **worktree mode**. Implementation root = that absolute path. Implementation branch = `git -C {absolute worktree path} rev-parse --abbrev-ref HEAD` (ground truth — no guessing needed, since the worktree checkout *is* the branch).
-   - Otherwise → **non-worktree mode**. Implementation root = the project root (this session's cwd). Implementation branch = `git rev-parse --abbrev-ref HEAD` (whatever is currently checked out here — `craft` never switches branches on your behalf, so this should be the same branch `pre-craft` created).
-4. **Precondition sanity check — ask only if something looks off**, combining both signals into one gate rather than interrupting twice:
-   - Non-worktree mode: does the current branch name contain the feature slug (or the convention prefix pre-craft would have used, e.g. `lets-craft/{feature}` or `{detected-prefix}/{feature}`)? If not, this is a strong signal you're about to audit the wrong branch.
-   - Read `.craft-state.json` if it exists — at the worktree's absolute path when §2.3 detected one for this feature, else at the project-root-relative path (§1.4's table now carries this one artifact as the exception to "always project-root" — see the note under it). If `testsPassed` is `false`, or the file is missing entirely and no obvious implementation commits exist on the detected branch (`git log --oneline` since the branch's fork point), craft may not have actually finished.
+3. **Locate the implementation worktree** (mirrors `craft/SKILL.md` §2.5, same rationale — every craft always runs against a worktree now, C6/R5, so this is a presence check, not a mode branch):
+   - `.lsc/worktrees/{feature}/` exists → implementation root = that absolute path (`{worktreeAbs}`). Implementation branch = `git -C {worktreeAbs} rev-parse --abbrev-ref HEAD` (ground truth — no guessing needed, since the worktree checkout *is* the branch).
+   - Missing → this is not a valid signal to fall back to auditing the project root instead: it means craft never actually ran (or ran before this all-in-worktree design existed). Ask immediately:
+
+     `[Precondition] No worktree found at .lsc/worktrees/{feature}/ — craft may not have run against this feature yet. Continue auditing anyway (against the current working tree)? Proceed?`
+
+     via `lsc_confirm`. A decline stops the skill here. An approval falls back to implementation root = the project root, purely as an escape hatch for a pre-R5 feature or manual recovery — every other step in this skill still assumes a worktree exists by default; treat this branch as the exception, not the routine path.
+4. **Precondition sanity check — ask only if something looks off**, combining both signals into one gate rather than interrupting twice (skip entirely if §2.3 already asked and got an answer):
+   - Does the worktree's checked-out branch name contain the feature slug (or the convention prefix pre-craft would have used, e.g. `lets-craft/{feature}` or `{detected-prefix}/{feature}`)? If not, this is a strong signal something is wrong (a manually-repointed worktree, a stale one from a different feature).
+   - Read `{worktreeAbs}/.lsc/crafts/{feature}/test/.craft-state.json` if it exists (project-root-relative instead, only in §2.3's missing-worktree escape-hatch case). If `testsPassed` is `false`, or the file is missing entirely and no obvious implementation commits exist on the detected branch (`git -C {worktreeAbs} log --oneline` since the branch's fork point), craft may not have actually finished.
    - If either check is suspicious, ask:
 
-     `[Precondition] {specific concern — e.g. "the current branch 'main' does not look like the lets-craft implementation branch for 'my-feature'" or "test/.craft-state.json shows testsPassed: false — craft may not have finished"}. Continue auditing anyway? Proceed?`
+     `[Precondition] {specific concern — e.g. "the worktree's branch 'main' does not look like the lets-craft implementation branch for 'my-feature'" or "test/.craft-state.json shows testsPassed: false — craft may not have finished"}. Continue auditing anyway? Proceed?`
 
      via `lsc_confirm`. A decline stops the skill here (report why, do not fabricate an audit).
    - If both checks pass cleanly, do not ask anything — proceed silently.
@@ -71,7 +75,7 @@ lets-craft is a 3-stage pipeline: **pre-craft → craft → post-craft**. This s
 
 Spawn `lsc-explore` and `lsc-critic` in a **single `task` batch call** (independent work, C24's own instruction to use both "병렬") — waiting for both to report follows §1.8's waiting discipline (results deliver automatically; never poll for them). Every assignment must give:
 - The absolute paths to `trace.md`, `spec.md`, `plan.md`.
-- The implementation root as an **absolute path**, explicitly labeled as such — the `task` tool always spawns subagents at the *main session's* cwd (the project root), never a per-spawn cwd (same lesson `craft/SKILL.md` §2.5/§3.2 already states for `lsc-executor`). In worktree mode this is genuinely a different directory from the subagent's own cwd — every git/read command in the assignment must be prefixed accordingly (`git -C {absolute worktree path} ...`, `read {absolute worktree path}/...`), never a bare relative path.
+- `{worktreeAbs}` as an **absolute path**, explicitly labeled as such — the `task` tool always spawns subagents at the *main session's* cwd (the project root), never a per-spawn cwd (same lesson `craft/SKILL.md` §2.5/§3.2 already states for `lsc-executor`). This is always a genuinely different directory from the subagent's own cwd now (§2.3: no more non-worktree mode) — every git/read command in the assignment must be prefixed accordingly (`git -C {worktreeAbs} ...`, `read {worktreeAbs}/...`), never a bare relative path.
 - The implementation branch and base branch from §2.3/§2.5, and the instruction to scope their own investigation to `git -C {implRoot} log {base}..{implBranch} --oneline` / `git -C {implRoot} diff {base}...{implBranch}` (let them run this themselves rather than pasting a full diff into the assignment — keeps the prompt small, matches R2's context-management discipline already established in this project).
 
 **`lsc-explore` assignment** ("code mapping"): map every file the implementation diff touches, how those files relate to each other and to the rest of the codebase, and — critically — whether `test/`'s suite actually exercises the changed code paths (a coverage gap is exactly the kind of thing a hostile audit should not miss). Use its own `Output_Format` (`agents/lsc-explore.md`) as-is.
@@ -91,7 +95,7 @@ Synthesize `lsc-explore`'s mapping and `lsc-critic`'s findings (CRITICAL/MAJOR/M
 Never trust `.craft-state.json`'s `testsPassed` alone — the audit re-runs the suite itself, since code may have changed since craft's last recorded pass (including, on a fix-verification cycle, the fix you're specifically here to check).
 
 1. **Attempt `lsc_run_tests(feature_dir)` first.** It only succeeds if this session still holds `{feature}` as the active craft (e.g., this post-craft run is a direct continuation of the same session craft just finished in, and nothing has reset it — `src/craft/state.ts`'s resets fire on `session_switch`/`session_branch`/`session_shutdown`, not merely on craft's own completion). This is the common failure path, not an edge case — this skill deliberately never calls `lsc_craft_init` (§1.5), so there usually is no matching active craft, and the tool returns `isError: true` with a "no active craft" message (`src/craft/run-tests.ts`).
-2. **On that error, fall back to `bash` directly** — exactly `pre-craft`'s Stage 4 approach (`skills/pre-craft/SKILL.md` §6.4): run `bash {absolute path to test/run_test.sh}` with the bash tool's own `cwd` parameter set to the implementation root from §2.3 (`.lsc/worktrees/{feature}/` if worktree mode, else the project root) — the same `execCwd` selection `src/craft/run-tests.ts` uses internally (`craft.worktreeRoot ?? craft.projectRoot`), just invoked without the trusted-exec wrapper. Save the transcript into `audit/audit-{N}.md` yourself (there is no `logs/run-N.log` numbering to reuse here — that numbering is craft's `lsc_run_tests`-owned sequence, not this skill's). **This fallback is safe from the `tool_call` block by construction**: the block only fires when `getActiveCraft()` matches this feature (`src/craft/enforcement.ts`), and its bash check is a fail-closed substring match on the test dir path that doesn't distinguish read from write — but that's exactly the condition under which step 1 above already succeeded via `lsc_run_tests` instead. The two paths are mutually exclusive; there is no scenario where the bash fallback is both needed and blocked.
+2. **On that error, fall back to `bash` directly** — exactly `pre-craft`'s Stage 4 approach (`skills/pre-craft/SKILL.md` §6.4): run `bash {worktreeAbs}/.lsc/crafts/{feature}/test/run_test.sh` with the bash tool's own `cwd` parameter set to `{worktreeAbs}` (the implementation root from §2.3 — always the worktree now, except §2.3's own missing-worktree escape hatch, in which case use the project root instead) — the same `execCwd` selection `src/craft/run-tests.ts` uses internally (`craft.worktreeRoot ?? craft.projectRoot`), just invoked without the trusted-exec wrapper. Save the transcript into `audit/audit-{N}.md` yourself (there is no `logs/run-N.log` numbering to reuse here — that numbering is craft's `lsc_run_tests`-owned sequence, not this skill's). **This fallback is safe from the `tool_call` block by construction**: the block only fires when `getActiveCraft()` matches this feature (`src/craft/enforcement.ts`), and its bash check is a fail-closed substring match on the test dir path that doesn't distinguish read from write — but that's exactly the condition under which step 1 above already succeeded via `lsc_run_tests` instead. The two paths are mutually exclusive; there is no scenario where the bash fallback is both needed and blocked.
 3. **Record the outcome as a hard gate on the verdict (§4.2)**: if the re-run fails, the verdict cannot be `APPROVE` or `APPROVE-WITH-COMMENT` regardless of how clean `lsc-critic`'s review otherwise was.
 
 ## 4. Verdict and audit-N.md (C25)
@@ -100,7 +104,7 @@ Never trust `.craft-state.json`'s `testsPassed` alone — the audit re-runs the 
 
 Write `.lsc/crafts/{feature}/audit/audit-{N}.md` with (no length limit, C9):
 
-1. **Header**: feature, date, audit cycle `N`, implementation branch/worktree, base branch, mode (`full` or `fix-verification` — §5), reference to the prior audit if `N > 0`.
+1. **Header**: feature, date, audit cycle `N`, implementation branch/worktree, base branch, mode (`full` or `fix-verification` — §5), reference to the prior audit if `N > 0`, and — only if §2.3's missing-worktree escape hatch was used for this cycle — an explicit note that this audit ran against the project root instead of a worktree.
 2. **Load-bearing verdict line, placed immediately after the header, on its own line**:
    ```
    **AUDIT VERDICT: APPROVE|APPROVE-WITH-COMMENT|APPROVE-WITH-CHANGE|REJECT**
@@ -157,7 +161,7 @@ If the audit's investigation surfaced that `spec.md` or `plan.md` themselves nee
 `[Spec Change] {or [Plan Change]} Proposed: {precise description of the change}. Reason: {why, tied to a specific audit finding}. Apply this to {spec.md|plan.md}? Proceed?`
 
 via `lsc_select` with options `["Accept — apply to spec.md/plan.md", "Reject — do not apply", "Defer — revisit in a later audit cycle"]`. For every **Accept**:
-1. Apply the actual content change inline, in place, via `edit` — not just a log entry.
+1. Apply the actual content change inline, in place, via `edit` against `{worktreeAbs}/.lsc/crafts/{feature}/{spec.md|plan.md}` (§1.4) — not just a log entry.
 2. Append an entry to a `## Amendment Log` section (create it, once, near the end of the file if it doesn't exist yet) in the same format for both files:
    ```
    ### Amendment — audit cycle {N}, {date}
@@ -186,7 +190,7 @@ Reuse the base branch detected in §2.5 — do not re-detect or re-ask unless th
 
 ### 7.3 Explicit merge approval
 
-`[Land] Merge "{implementation branch}" into "{base branch}"{" and remove the worktree at .lsc/worktrees/{feature}/" if worktree mode}? Merge?`
+`[Land] Merge "{implementation branch}" into "{base branch}" and remove the worktree at .lsc/worktrees/{feature}/? Merge?`
 
 via `lsc_confirm`. This is not optional or skippable under any circumstance — the project's global rule is that `git merge` is never run without direct, explicit user instruction, and an APPROVE-family audit verdict is not itself that instruction.
 
@@ -194,9 +198,10 @@ via `lsc_confirm`. This is not optional or skippable under any circumstance — 
 
 ### 7.4 On approval — merge, then clean up
 
-1. **Worktree mode**: from the project root, `git checkout {base}` if not already on it, then `git merge --no-ff {implementation branch}` with a structured commit message following this project's own RULE's `what:`/`why:`/`evidence:`/`verify:` format (reference the feature and the final `AUDIT VERDICT`) — a merge commit, not a fast-forward, keeps a clear audit-trail boundary consistent with this project's feature-granularity commit discipline. The worktree's own checkout is untouched by this — it shares the same `.git`, so merging by branch name doesn't require being inside the worktree.
-2. **Non-worktree mode**: the current working tree *is* on the implementation branch (§2.3) — `git checkout {base}` (this switches the working tree away from the implementation branch; say so plainly in the final report, since it's a visible side effect), then `git merge --no-ff {implementation branch}` with the same structured message.
-3. **Worktree cleanup, worktree mode only** — replicate `removeWorktree()`/`pruneWorktrees()` (`src/artifacts/worktree.ts`) by hand, exactly as pre-craft replicates `addWorktree()` by hand (no tool wraps these for skill use — `src/main.ts` never registers one):
+This land flow assumes worktree mode (§2.3's default) — §2.3's missing-worktree escape hatch is not land-eligible through this automated flow; if that branch was taken for this audit, merge manually instead.
+
+1. From the project root, `git checkout {base}` if not already on it — in practice this is usually already a no-op: since every artifact and the implementation both live inside the worktree (C6/R5), craft never has reason to switch the main checkout away from `{base}` in the first place. Then `git merge --no-ff {implementation branch}` with a structured commit message following this project's own RULE's `what:`/`why:`/`evidence:`/`verify:` format (reference the feature and the final `AUDIT VERDICT`) — a merge commit, not a fast-forward, keeps a clear audit-trail boundary consistent with this project's feature-granularity commit discipline. The worktree's own checkout is untouched by this — it shares the same `.git`, so merging by branch name doesn't require being inside the worktree.
+2. **Worktree cleanup** — replicate `removeWorktree()`/`pruneWorktrees()` (`src/artifacts/worktree.ts`) by hand, exactly as pre-craft replicates `addWorktree()` by hand (no tool wraps these for skill use — `src/main.ts` never registers one):
    ```bash
    git worktree remove .lsc/worktrees/{feature}
    git worktree prune
@@ -206,12 +211,12 @@ via `lsc_confirm`. This is not optional or skippable under any circumstance — 
    `[Land] git worktree remove reported uncommitted/untracked changes: {status output}. Force-remove the worktree anyway (uncommitted changes will be lost)? Proceed?`
 
    via `lsc_confirm`. Only pass `--force` to `git worktree remove` on an explicit approval here; on decline, leave the worktree in place and say so in the final report.
-4. **Do not delete the implementation branch itself** — only the worktree checkout is in scope for automatic cleanup (C7's own text is specifically about `.lsc/worktrees/`, not about branch deletion); leave the branch for the user to remove later if they want to.
-5. Report: the merge commit hash, confirmation the worktree was removed and pruned (worktree mode), and the branch the working tree now sits on.
+3. **Do not delete the implementation branch itself** — only the worktree checkout is in scope for automatic cleanup (C7's own text is specifically about `.lsc/worktrees/`, not about branch deletion); leave the branch for the user to remove later if they want to.
+4. Report: the merge commit hash, confirmation the worktree was removed and pruned, and the branch the working tree now sits on.
 
 ## 8. Finalization
 
-1. Stage and commit `.lsc/crafts/{feature}/audit/audit-{N}.md` (and `spec.md`/`plan.md` if §6.2 amended them) per this project's own RULE (already part of your system prompt — no need to `read` it as a file; the plugin bundles it as a capability, not a project-tree file): Korean subject line with a conventional-commit prefix, structured `what:`/`why:`/`evidence:`/`verify:` body. Commit this **before** asking the §6.1/§7.3 gate questions — the audit record should exist regardless of what the user decides next.
+1. Stage and commit `{worktreeAbs}/.lsc/crafts/{feature}/audit/audit-{N}.md` (and `spec.md`/`plan.md` if §6.2 amended them) via `git -C {worktreeAbs} add ...` / `git -C {worktreeAbs} commit ...` — landing on the feature branch inside the worktree (§1.4), per this project's own RULE (already part of your system prompt — no need to `read` it as a file; the plugin bundles it as a capability, not a project-tree file): Korean subject line with a conventional-commit prefix, structured `what:`/`why:`/`evidence:`/`verify:` body. Commit this **before** asking the §6.1/§7.3 gate questions — the audit record should exist regardless of what the user decides next.
 2. If land (§7) ran and produced a merge commit, that is a separate commit from the audit commit above — do not combine them (feature-granularity discipline, per this project's own RULE).
 3. Tell the user plainly, in text: the verdict, the audit doc's path, and whichever of §6.1/§7 actually ran (and its outcome).
 

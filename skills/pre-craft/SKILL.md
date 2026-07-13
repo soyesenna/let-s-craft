@@ -1,6 +1,6 @@
 ---
 name: pre-craft
-description: Runs the lets-craft pre-craft pipeline (trace → interview → plan → test) that turns a feature/fix idea into implementation-ready artifacts before any code is written. Trigger when the user says "pre-craft" / "/pre-craft", asks to spec out, plan out, or investigate a new feature or fix through the lets-craft pipeline, or when the craft/post-craft skill reports missing `.lsc/crafts/{feature}/` artifacts for a feature. Produces trace.md, spec.md, plan.md, and test/ under `.lsc/crafts/{feature}/`, plus a git branch (and optionally a `.lsc/worktrees/{feature}/` worktree) — ready for the craft skill to implement against.
+description: Runs the lets-craft pre-craft pipeline (trace → interview → plan → test) that turns a feature/fix idea into implementation-ready artifacts before any code is written. Trigger when the user says "pre-craft" / "/pre-craft", asks to spec out, plan out, or investigate a new feature or fix through the lets-craft pipeline, or when the craft/post-craft skill reports missing `.lsc/crafts/{feature}/` artifacts for a feature. Produces trace.md, spec.md, plan.md, and test/ under `.lsc/crafts/{feature}/` inside a git worktree it always creates (`.lsc/worktrees/{feature}/`) on a dedicated feature branch — ready for the craft skill to implement against.
 ---
 
 # pre-craft
@@ -16,7 +16,6 @@ The four sub-stages run in a **fixed order and none may be skipped**: `trace →
 1. **Question seam.** Every question this skill asks a human goes through `lsc_ask` (free text), `lsc_select` (multiple choice), or `lsc_confirm` (yes/no) — never assume a UI, never fabricate an answer. In headless mode without a fixture configured these tools hard-error; that is correct behavior, not a bug to work around.
 2. **Question tagging convention (load-bearing — do not skip).** Every question issued by this skill MUST start with a bracketed English tag identifying its category, and every gate/escalation question MUST end with one of `approve?` / `proceed?` / `continue?` / `merge?` / `land?` (case-insensitive, optional `?`). This is not cosmetic: it is what makes fixture-mode E2E runs (`LSC_FIXTURE`) deterministically answerable. Tags in use:
    - `[Feature Name] ...` — Stage 0 feature description/name question
-   - `[Worktree] ...` — Stage 0 worktree yes/no question
    - `[Goal] ...` / `[Constraints] ...` / `[Success Criteria] ...` / `[Context] ...` — Stage 2 interview dimension-targeted questions
    - `[Consensus Escalation] ... Proceed?` — Stage 3/4 iteration-cap escalation
    - `[Pre-craft Complete] ... Proceed?` — final handoff confirmation
@@ -25,21 +24,22 @@ The four sub-stages run in a **fixed order and none may be skipped**: `trace →
 
    | Artifact | Path |
    |---|---|
-   | Trace | `.lsc/crafts/{feature}/trace.md` |
-   | External research journal | `.lsc/crafts/{feature}/research/` |
-   | Spec | `.lsc/crafts/{feature}/spec.md` |
-   | Plan | `.lsc/crafts/{feature}/plan.md` |
-   | Open questions | `.lsc/crafts/{feature}/open-questions.md` |
-   | Test suite | `.lsc/crafts/{feature}/test/` (`run_test.sh` + test assets; `logs/` reserved for the craft loop) |
-   | Worktree (`--worktree` only) | `.lsc/worktrees/{feature}/` |
+   | Worktree | `.lsc/worktrees/{feature}/` — always created in Stage 0 (C6/R5); every artifact below lives inside it. Its absolute form is referred to as `{worktreeAbs}` throughout this document. |
+   | Trace | `{worktreeAbs}/.lsc/crafts/{feature}/trace.md` |
+   | External research journal | `{worktreeAbs}/.lsc/crafts/{feature}/research/` |
+   | Spec | `{worktreeAbs}/.lsc/crafts/{feature}/spec.md` |
+   | Plan | `{worktreeAbs}/.lsc/crafts/{feature}/plan.md` |
+   | Open questions | `{worktreeAbs}/.lsc/crafts/{feature}/open-questions.md` |
+   | Test suite | `{worktreeAbs}/.lsc/crafts/{feature}/test/` (`run_test.sh` + test assets; `logs/` reserved for the craft loop) |
 
-   `{feature}` is always kebab-case (Stage 0).
+   `{feature}` is always kebab-case (Stage 0). `{worktreeAbs}` is always the worktree's **absolute** path (e.g. `/repo/.lsc/worktrees/{feature}`) — never a relative one; see item 9 below for why this matters for every `write`/`read` this skill performs.
 5. **Tool inventory for this skill.** `lsc_ask`/`lsc_select`/`lsc_confirm` for every human-facing question; `task` (batch form) to spawn `lsc-explore`/`lsc-tracer`/`lsc-planner`/`lsc-architect`/`lsc-critic`/`lsc-test-engineer`/`lsc-librarian` — the last of these is the web-facing external research worker (see Stage 1 step 5 for its roles); `bash`/`write`/`read`/`glob`/`grep` directly for git/filesystem orchestration. Do **not** call `lsc_craft_init`/`lsc_verify_hash`/`lsc_run_tests`/`lsc_restore_tests`/`lsc_craft_abort` — those activate the craft loop's hash-protection and are the `craft` skill's tools, not pre-craft's.
 6. **Interruption / resume.** State lives entirely in what has already been written to `.lsc/crafts/{feature}/`. If this skill is invoked again for a feature that already has some artifacts, do not restart from scratch: check which of trace.md → spec.md → plan.md → test/ already exist (in that order) and resume at the first missing one. Tell the user which stage you are resuming at.
 7. **Fixture mode bounding.** Check `[ -n "$LSC_FIXTURE" ]` (bash) once, at Stage 0, and reuse that answer for the rest of the run rather than re-checking per stage. When true, this run must stay cost/time-bounded for CI, on top of (never instead of) the fixture-mode branch already specified for external research (Stage 1 step 5):
    - **Consensus loop iteration cap (Stage 3's "The loop", reused by Stage 4): 2, not 10.** The number "10" that appears there is the live-mode cap (C17) — in fixture mode, substitute 2 everywhere that section says 10, including in the `[Consensus Escalation]` question text you compose (state "2 iterations", not "10 iterations", so the fixture's `proceed\??$` default answer ("yes" — see `fixtures/sample-ts-cli/answers.json`) resolves it correctly instead of being asked about a cap that was never actually 10 for this run).
    - **Interview hard cap (Stage 2) stays 20 — do not reduce it**, but expect and design for fast convergence: the bundled fixture answers (`fixtures/sample-ts-cli/answers.json`) give complete, specific `[Goal]`/`[Constraints]`/`[Success Criteria]`/`[Context]` answers up front precisely so the ambiguity gate should clear in well under 20 rounds; if a fixture run is burning many rounds, that is a fixture-content bug to fix (better-anchored answer rules), not a reason to shrink the cap itself.
 8. **Waiting discipline.** Background `task` spawns (per item 5 above) deliver their results automatically the moment they finish — this skill never needs to poll to retrieve them. Do **not** issue repeated `job {"poll": [...]}` calls against tasks already in flight: registering a watch/acknowledgement on an already-tracked task suppresses that automatic delivery instead of speeding it up, and each such call wastes a turn for nothing. When this skill genuinely has nothing left to do until every in-flight spawn returns, call `job` with no arguments **once** to block until they do — a single blocking wait, not a polling loop. Any direct wait on another agent rather than on a `task` spawn's own completion (e.g. coordinating with a peer outside this skill's own spawns) should use `irc {"op": "wait", "timeoutMs": ...}` instead — event-driven, and it releases automatically if the counterpart agent dies.
+9. **Absolute path discipline — write AND read, every stage (C6/R5, all-in-worktree).** This session's cwd is always the main checkout; nothing in this skill, or any subagent it spawns, ever changes it. Every artifact this skill produces now lives inside the worktree Stage 0 always creates (item 4's table), so every `write`/`mkdir`/`bash`-based file operation against `.lsc/crafts/{feature}/...` must target its **absolute** `{worktreeAbs}/.lsc/crafts/{feature}/...` form — and so must every `read`. A relative `write` would land on the base branch's own working tree instead of the feature branch inside the worktree (exactly the split-brain this design exists to remove), and a relative `read` would silently miss the worktree's artifacts and misreport them as absent or stale. Every subagent `task` assignment that needs to touch these artifacts must be handed the same absolute worktree path explicitly — the `task` tool always spawns subagents at the *main session's* cwd, never a per-spawn cwd (same lesson `craft/SKILL.md` §3.2 and `post-craft/SKILL.md` §3.1 already state for their own spawns).
 
 ## 2. Stage 0 — Initialization (C14)
 
@@ -48,31 +48,25 @@ The four sub-stages run in a **fixed order and none may be skipped**: `trace →
    `[Feature Name] What should this pre-craft build or fix? Describe it in a sentence or two — the feature name and the rest of this pipeline are derived from your answer.`
 
    via `lsc_ask`. Slugify the answer (C14, "작업 내용 기반 kebab-case"): take the first ~5 meaningful words, lowercase, strip punctuation/special characters, join with hyphens. If the result collides with an existing `.lsc/crafts/{feature}/` from a *different* piece of work, disambiguate (append `-2`, etc.) rather than silently overwriting.
-2. **Ask about `--worktree`** (unless already specified on invocation):
-
-   `[Worktree] Should this feature be implemented in an isolated git worktree (.lsc/worktrees/{feature}/) instead of the current working tree?`
-
-   via `lsc_confirm`.
-3. **Create `.lsc/crafts/{feature}/`**: `mkdir -p .lsc/crafts/{feature}`.
-4. **Branch.** Detect the repo's branch naming convention before defaulting:
+2. **Branch + worktree — always, no question asked.** Every craft now runs in an isolated git worktree (C6/R5: all-in-worktree is a fixed pipeline decision, not a per-run choice — the yes/no worktree question this stage used to ask is gone). Detect the repo's branch naming convention before defaulting:
    ```bash
    git branch -a --format='%(refname:short)' | grep -E '^(feat|feature|fix|chore|task)/' | head -5
    ```
-   If a convention is visible, use its prefix (`{prefix}/{feature}`); otherwise default to `lets-craft/{feature}` (matching `src/artifacts/worktree.ts`'s default). Reuse semantics mirror C7 (a re-run after a REJECT reuses, never errors on "already exists"):
-   - **`--worktree` case**: replicate `addWorktree()` (`src/artifacts/worktree.ts:61-76`) by hand —
-     - if `.lsc/worktrees/{feature}/` already exists → reuse, report it, skip to step 5.
-     - else if the branch already exists locally (`git show-ref --verify --quiet refs/heads/{branch}`) → `git worktree add .lsc/worktrees/{feature} {branch}`.
-     - else → `git worktree add -b {branch} .lsc/worktrees/{feature} HEAD`.
-   - **non-`--worktree` case**: `git checkout {branch}` if the branch already exists locally, else `git checkout -b {branch}` in the current working tree.
-5. **Gitignore, `--worktree` only.** Replicate `ensureWorktreesGitignored()` (`src/artifacts/gitignore.ts`) idempotently:
+   If a convention is visible, use its prefix (`{prefix}/{feature}`); otherwise default to `lets-craft/{feature}` (matching `src/artifacts/worktree.ts`'s default). Reuse semantics mirror C7 (a re-run after a REJECT reuses, never errors on "already exists") — replicate `addWorktree()` (`src/artifacts/worktree.ts:61-76`) by hand:
+   - if `.lsc/worktrees/{feature}/` already exists → reuse it, report it.
+   - else if the branch already exists locally (`git show-ref --verify --quiet refs/heads/{branch}`) → `git worktree add .lsc/worktrees/{feature} {branch}`.
+   - else → `git worktree add -b {branch} .lsc/worktrees/{feature} HEAD`.
+   Resolve and record `{worktreeAbs}` (the absolute path to `.lsc/worktrees/{feature}/`) now — every remaining step in this skill, across every stage, writes and reads through it (item 9 above).
+3. **Create `.lsc/crafts/{feature}/` inside the worktree**: `mkdir -p {worktreeAbs}/.lsc/crafts/{feature}`.
+4. **Gitignore — always, every run.** Replicate `ensureWorktreesGitignored()` (`src/artifacts/gitignore.ts`) idempotently, against the **project root's** `.gitignore` (not the worktree's — this deliberately mirrors `ensureSnapshotsGitignored`'s own main-checkout anchor in `src/craft/hash-manifest.ts`: an uncommitted worktree-local `.gitignore` change would itself pollute the eventual merge, same rationale as R10):
    ```bash
    grep -qE '^/?\.lsc/worktrees/?$' .gitignore 2>/dev/null || {
      [ -s .gitignore ] && [ "$(tail -c1 .gitignore)" != "" ] && echo >> .gitignore
      echo '.lsc/worktrees/' >> .gitignore
    }
    ```
-   Call this on every pre-craft run that uses `--worktree`, even if `.gitignore` was already updated by a previous run — it is a no-op then.
-6. Proceed to Stage 1. Do not ask any further setup questions.
+   Call this on every pre-craft run, even if `.gitignore` was already updated by a previous run — it is a no-op then.
+5. Proceed to Stage 1. Do not ask any further setup questions.
 
 ## 3. Stage 1 — Trace (C15)
 
@@ -100,9 +94,9 @@ Do **not** collapse into: a generic fix-it coding loop, a generic debugger summa
 5. **External research.** This step runs independently of (and typically concurrently with) the codebase lanes in step 4.
    - **Live mode (default): always run it live** (C15) — never skip or shortcut the protocol just because it's expensive; unlimited waves is the point. Follow the full protocol below:
 
-     **Session directory.** Create, before spawning anyone:
+     **Session directory.** Create, before spawning anyone, under `{worktreeAbs}/.lsc/crafts/{feature}/research/` (item 9's absolute-path discipline — this is a real `mkdir`/`write` target, not shorthand):
      ```
-     .lsc/crafts/{feature}/research/
+     {worktreeAbs}/.lsc/crafts/{feature}/research/
      ├── intent-diff.md          # what's actually being asked vs. what a lazy read would assume
      ├── claim-graph.md          # orchestrator-owned; claims + their sourcing/verification state (workers: read-only)
      ├── observation-manifest.md # raw findings as they come in, worker-attributed
@@ -289,15 +283,15 @@ This loop runs **twice** in pre-craft: once over `plan.md` (this stage) and once
 3. Every tester's `assignment` must state explicitly:
    - These test assets become **hash-protected and immutable** the moment the `craft` skill starts (`src/craft/hash-manifest.ts`, `src/craft/enforcement.ts` — a `tool_call` block plus a SHA-256 manifest check) — get them correct and complete before handoff, because neither the tester nor `lsc-executor` can edit them afterward without the platform's confirm-and-diff escalation gate. This is already in `agents/lsc-test-engineer.md`'s Constraints, but restate it in the assignment so it is not missed under time pressure.
    - **Produce test assets only — never modify, and never commit, production/implementation source.** A test that fails at this stage is the correct, expected outcome for a not-yet-implemented feature or an unfixed bug — that failure is the whole point of authoring it here, not a problem to solve. Implementing the fix so the test passes is `craft`'s job (the next pipeline stage), never this one's. If a tester's own verification step shows a test failing, the correct response is to leave it failing and move on — not to patch the implementation to make it green.
-4. **`run_test.sh` must be a single, working entry point** that runs every heterogeneous suite (gradle/pytest/node --test/shell/…) and reports a combined pass/fail plus a per-failure reason. Verify this yourself before moving on — actually invoke it (via `bash`, since the craft loop's trusted-exec tool `lsc_run_tests` is not available to this skill) and confirm it runs cleanly end-to-end, including any test cases that are *supposed* to fail at this stage (a feature built test-first will often have intentionally-failing tests — that is correct; verify the *harness* runs and reports correctly, not that everything passes). **If the feature is a genuinely unimplemented feature or an unfixed bug, `run_test.sh` failing at this point is the expected, correct result — a clean pass here is a red flag, not a success.** If it passes anyway, do not treat that as good news: run `git status`/`git diff` (or `git log` since the last pre-craft commit) over the implementation source outside `.lsc/crafts/{feature}/test/` and confirm no tester quietly implemented the fix instead of just testing for it. If you find such a change, revert it (`git checkout -- <path>`/`git restore <path>`, scoped to the implementation source only) before proceeding — pre-craft's own contract (§0: "It never writes implementation code") applies to every subagent it spawns, not just to this skill's own tool calls.
+4. **`run_test.sh` must be a single, working entry point** that runs every heterogeneous suite (gradle/pytest/node --test/shell/…) and reports a combined pass/fail plus a per-failure reason. Verify this yourself before moving on — actually invoke it (via `bash`, since the craft loop's trusted-exec tool `lsc_run_tests` is not available to this skill) and confirm it runs cleanly end-to-end, including any test cases that are *supposed* to fail at this stage (a feature built test-first will often have intentionally-failing tests — that is correct; verify the *harness* runs and reports correctly, not that everything passes). **If the feature is a genuinely unimplemented feature or an unfixed bug, `run_test.sh` failing at this point is the expected, correct result — a clean pass here is a red flag, not a success.** If it passes anyway, do not treat that as good news: run `git -C {worktreeAbs} status`/`git -C {worktreeAbs} diff` (or `git -C {worktreeAbs} log` since the last pre-craft commit) over the implementation source outside `.lsc/crafts/{feature}/test/` — inside the worktree, since that is now the only place implementation source could have been touched (item 9) — and confirm no tester quietly implemented the fix instead of just testing for it. If you find such a change, revert it (`git -C {worktreeAbs} checkout -- <path>`/`git -C {worktreeAbs} restore <path>`, scoped to the implementation source only) before proceeding — pre-craft's own contract (§0: "It never writes implementation code") applies to every subagent it spawns, not just to this skill's own tool calls.
 5. **Run the same architect/critic consensus loop from Stage 3 against the produced `test/` directory.** Mechanically identical to Stage 3's loop — same always-both, architect-then-critic order (architect reviews first and must complete before critic starts; critic always follows in the same iteration regardless of architect's blocking/not-blocking verdict), same real verdict vocabulary, same cap of 10 (**2 in fixture mode, §1.7**), same escalation pattern (tag the escalation question `[Consensus Escalation] ... Proceed?` exactly as before, scoped to `test/` instead of `plan.md`).
 
 ## 7. Finalization
 
-1. Confirm all four artifacts exist: `trace.md`, `spec.md`, `plan.md`, `test/` (with a working `run_test.sh`) under `.lsc/crafts/{feature}/`.
-2. **Stage and commit only `.lsc/crafts/{feature}/` (and `.gitignore` if this run modified it) — nothing under the implementation source tree.** This project's own RULE (already part of your system prompt — no need to `read` it as a file; the plugin bundles it as a capability, not a project-tree file) governs the message shape: Korean subject line with a conventional-commit prefix, and a structured body with `what:`/`why:`/`evidence:`/`verify:`. This is a feature-granularity commit — do not bundle it with anything else. If `git status` shows any implementation-source changes at this point (see Stage 4 step 4's revert instruction — this is the last checkpoint to catch one that slipped through), stop and resolve that before committing; a pre-craft commit must never contain implementation code.
+1. Confirm all four artifacts exist: `trace.md`, `spec.md`, `plan.md`, `test/` (with a working `run_test.sh`) under `{worktreeAbs}/.lsc/crafts/{feature}/`.
+2. **Stage and commit only `.lsc/crafts/{feature}/` (and the project root's `.gitignore`, per Stage 0 item 4, if this run modified it) — nothing under the implementation source tree.** The `.lsc/crafts/{feature}/` commit is `git -C {worktreeAbs} add .lsc/crafts/{feature}` + `git -C {worktreeAbs} commit ...` — it lands on the feature branch inside the worktree, never on the project root's working tree (the `.gitignore` commit, if any, is the one exception: that one *is* a project-root commit, since `.gitignore` itself lives there). This project's own RULE (already part of your system prompt — no need to `read` it as a file; the plugin bundles it as a capability, not a project-tree file) governs the message shape: Korean subject line with a conventional-commit prefix, and a structured body with `what:`/`why:`/`evidence:`/`verify:`. This is a feature-granularity commit — do not bundle it with anything else. If `git -C {worktreeAbs} status` shows any implementation-source changes at this point (see Stage 4 step 4's revert instruction — this is the last checkpoint to catch one that slipped through), stop and resolve that before committing; a pre-craft commit must never contain implementation code.
 3. Ask for final handoff:
 
    `[Pre-craft Complete] pre-craft is done for "{feature}" — trace.md, spec.md, plan.md, and test/ are committed. Run the craft skill against .lsc/crafts/{feature}/ next. Proceed?`
 
-   via `lsc_confirm`. Regardless of the answer, tell the user plainly, in text, the exact path to pass to `craft` (`.lsc/crafts/{feature}/`) and whether a worktree was created (and if so, its path) — this confirmation is a courtesy checkpoint, not a hard gate on ending the turn.
+   via `lsc_confirm`. Regardless of the answer, tell the user plainly, in text, the exact path to pass to `craft` (`.lsc/crafts/{feature}/`) and the worktree's absolute path (`{worktreeAbs}`) — this confirmation is a courtesy checkpoint, not a hard gate on ending the turn.
