@@ -7,6 +7,7 @@ import { registerRunTestsTool } from "./craft/run-tests.js";
 import { LSC_FIXTURE_FLAG } from "./fixtures.js";
 import { registerPresetCommand } from "./preset/command.js";
 import { applyActivePreset } from "./preset/inject.js";
+import { applySessionDefaultModel, entryTypeHistogram, isFreshMainSession } from "./preset/session-default.js";
 
 export default function (pi: ExtensionAPI): void {
 	// Bonus alias for LSC_FIXTURE (fixtures.ts) — the env var is the primary signal
@@ -32,6 +33,27 @@ export default function (pi: ExtensionAPI): void {
 				ctx.ui.notify(`lets-craft: preset "${result.preset}" active (${count} agent override(s)).`, "info");
 			}
 			for (const warning of result.warnings) ctx.ui.notify(`lets-craft preset: ${warning}`, "warning");
+
+			const entries = ctx.sessionManager.getEntries();
+			if (result.defaultSpec !== null && isFreshMainSession(entries)) {
+				const outcome = await applySessionDefaultModel(result.defaultSpec, {
+					resolve: spec => ctx.models.resolve(spec),
+					setModel: model => pi.setModel(model),
+					setThinkingLevel: level =>
+						pi.setThinkingLevel(level as Parameters<ExtensionAPI["setThinkingLevel"]>[0]),
+				});
+				if (outcome.status === "applied") {
+					const spec = `${outcome.base}${outcome.effort ? `:${outcome.effort}` : ""}`;
+					ctx.ui.notify(`lets-craft: session model -> ${spec} (preset "${result.preset}").`, "info");
+				} else if (outcome.status !== "none") {
+					const reason = outcome.status === "no-key" ? "no API key" : "not resolvable";
+					console.warn(`lets-craft preset: session default "${outcome.base}" skipped (${reason}).`);
+				}
+			} else if (result.defaultSpec !== null && process.env.LSC_DEBUG) {
+				console.error(
+					`lets-craft: session default gated off — ${JSON.stringify(entryTypeHistogram(entries))}`,
+				);
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			ctx.ui.notify(`lets-craft: could not apply model preset — ${message}`, "warning");

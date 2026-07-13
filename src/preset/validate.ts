@@ -3,7 +3,7 @@
 // omp's `resolve()` strips the thinking suffix and resolves the base model, so we
 // validate the `:effort` suffix locally against the five catalog levels and never
 // silently ignore a bad one (C13).
-import { type PresetModels, toTaskAgentName } from "./models-file.js";
+import { type PresetEntry, toTaskAgentName } from "./models-file.js";
 
 /** Valid thinking-effort suffixes (catalog/effort.ts). */
 export const EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
@@ -23,6 +23,8 @@ export interface PresetValidation {
 	valid: ResolvedOverride[];
 	/** Warnings for entries that were dropped — those agents fall back to the session model. */
 	warnings: string[];
+	/** Validated session-default spec, or null when absent or dropped. */
+	defaultSpec: string | null;
 }
 
 function isEffort(value: string): value is EffortLevel {
@@ -46,10 +48,41 @@ export function splitEffort(spec: string): { base: string; effort: string | null
  * (thinking suffix stripped) resolves to an authenticated model — pass
  * `spec => modelQuery.resolve(spec) !== undefined`.
  */
-export function validatePreset(preset: PresetModels, isModelAvailable: (base: string) => boolean): PresetValidation {
+export function validatePreset(preset: PresetEntry, isModelAvailable: (base: string) => boolean): PresetValidation {
 	const valid: ResolvedOverride[] = [];
 	const warnings: string[] = [];
-	for (const [agent, spec] of Object.entries(preset)) {
+	let defaultSpec: string | null = null;
+
+	if (preset.default !== undefined) {
+		const { base, effort } = splitEffort(preset.default);
+		const slash = base.indexOf("/");
+		if (slash <= 0 || slash === base.length - 1) {
+			warnings.push(
+				`default: invalid model spec "${preset.default}" (expected provider/model[:effort]) — keeping current session model`,
+			);
+		} else if (effort !== null && !isEffort(effort)) {
+			warnings.push(
+				`default: invalid effort ":${effort}" (expected ${EFFORT_LEVELS.join("|")}) — keeping current session model`,
+			);
+		} else if (!isModelAvailable(base)) {
+			warnings.push(`default: model "${base}" not found or not authenticated — keeping current session model`);
+		} else {
+			defaultSpec = preset.default;
+		}
+	}
+
+	const reservedKeys = ["default", "agents"] as const;
+	for (const key of reservedKeys) {
+		if (!Object.prototype.hasOwnProperty.call(preset.agents, key)) continue;
+		warnings.push(
+			key === "default"
+				? `"default" is not an agent — to set a session default model, use { default: "...", agents: { ... } }; entry dropped`
+				: `"agents" is not an agent — expected a map; use { default?, agents: { ... } }; entry dropped`,
+		);
+	}
+
+	for (const [agent, spec] of Object.entries(preset.agents)) {
+		if (agent === "default" || agent === "agents") continue;
 		const { base, effort } = splitEffort(spec);
 		if (effort !== null && !isEffort(effort)) {
 			warnings.push(`${agent}: invalid effort ":${effort}" (expected ${EFFORT_LEVELS.join("|")}) — using session model`);
@@ -61,5 +94,5 @@ export function validatePreset(preset: PresetModels, isModelAvailable: (base: st
 		}
 		valid.push({ agent, taskAgent: toTaskAgentName(agent), spec });
 	}
-	return { valid, warnings };
+	return { valid, warnings, defaultSpec };
 }

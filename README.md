@@ -39,7 +39,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 ### 로드 확인 방법
 
 - `/lsc-preset list`를 실행했을 때 오류 없이 프리셋 목록(또는 "no presets defined" 안내)이 출력되면 `/lsc-preset` 커맨드가 정상 등록된 것입니다.
-- `models.yaml`에 활성 프리셋이 설정되어 있는 상태로 세션을 시작하면, `src/main.ts`의 `session_start` 핸들러가 `lets-craft: preset "..." active (N agent override(s)).`라는 알림을 띄웁니다. 프리셋이 없으면 이 알림은 뜨지 않습니다(정상 동작).
+- `models.yaml`에 활성 프리셋이 설정되어 있는 상태로 세션을 시작하면, `src/main.ts`의 `session_start` 핸들러가 `lets-craft: preset "..." active (N agent override(s)).`라는 알림을 띄웁니다. 유효한 `default`가 신규 메인 세션에 적용되면 `lets-craft: session model -> ...` 알림도 표시됩니다. 프리셋이 없으면 이 알림들은 뜨지 않습니다(정상 동작).
 - `models.yaml`이 손상되어 있어도 세션 시작 자체는 절대 막히지 않고, `lets-craft: could not apply model preset — ...` 경고만 표시됩니다.
 
 ## 구성 요소
@@ -72,13 +72,13 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 
 ```
 /lsc-preset list                    # 유효 프리셋(전역+프로젝트 병합) 목록 출력 — 기본 서브액션
-/lsc-preset switch|use [name]       # 프리셋 전환, 즉시 세션에 재주입
-/lsc-preset create|new [name]       # 7개 에이전트를 순회하며 대화형으로 새 프리셋 생성
-/lsc-preset edit [name]             # 기존 프리셋 수정
-/lsc-preset delete|rm [name]        # 프리셋 삭제
+/lsc-preset switch|use [name]       # 프리셋 전환, 에이전트 override와 세션 default 즉시 적용
+/lsc-preset create|new [name]       # 세션 default를 먼저 묻고(skip 가능), 7개 에이전트를 순회해 생성
+/lsc-preset edit [name]             # 같은 질문 순서로 수정(default는 즉시 재적용하지 않음)
+/lsc-preset delete|rm [name]        # 프리셋 삭제(default 모델 복원 없음)
 ```
 
-모든 서브액션에 `--project` 플래그를 붙이면 전역(`~/.omp/.lsc/models.yaml`) 대신 프로젝트(`<cwd>/.lsc/models.yaml`)를 대상으로 합니다. `switch`/`create`/`edit`/`delete`는 실행 즉시 현재 세션에 재주입되어 재시작 없이 반영됩니다.
+모든 서브액션에 `--project` 플래그를 붙이면 전역(`~/.omp/.lsc/models.yaml`) 대신 프로젝트(`<cwd>/.lsc/models.yaml`)를 대상으로 합니다. 에이전트 override는 변경 후 현재 세션에 재주입됩니다. 세션 `default`는 명시적 `switch`에서 즉시 적용되고, `create`는 생성한 프리셋이 동시에 자동 활성화될 때만 즉시 적용됩니다. `edit`/`delete`는 사용자가 `/model`로 고른 현재 모델을 덮어쓰지 않습니다.
 
 ### RULE
 
@@ -106,37 +106,44 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 active: fast-triage
 presets:
   fast-triage:
-    explore: provider-a/model-x:medium
-    tracer:  provider-b/model-y:xhigh
+    default: provider-a/model-session:high
+    agents:
+      explore: provider-a/model-x:medium
+      tracer:  provider-b/model-y:xhigh
 ```
 
 - `active`: 현재 활성 프리셋 이름(문자열) 또는 `null`.
-- `presets`: 프리셋 이름 → (에이전트 짧은 이름 → 모델 문자열) 맵.
-- 에이전트 짧은 이름은 7개 고정값입니다: `explore`, `tracer`, `critic`, `architect`, `executor`, `planner`, `test-engineer`. 내부적으로 `lsc-` 접두사가 붙어 실제 등록된 서브에이전트 이름(예: `executor` → `lsc-executor`)에 매핑됩니다.
+- `presets`: 프리셋 이름 → 구조형 엔트리 맵.
+- `default`(선택): omp 세션 메인 모델 `provider/model-id[:effort]`.
+- `agents`: 에이전트 짧은 이름 → 모델 문자열 맵. 짧은 이름은 `explore`, `tracer`, `critic`, `architect`, `executor`, `planner`, `test-engineer` 7개이며, 내부적으로 `lsc-` 접두사가 붙습니다(예: `executor` → `lsc-executor`).
+
+기존의 평면 형식(`fast-triage: { explore: ..., tracer: ... }`)도 **agents-only** 프리셋으로 계속 읽습니다. 평면 맵의 `default`/`agents` 키는 에이전트 이름으로 사용하지 않고 경고 후 버리므로 세션 default는 반드시 위 구조형 sibling 필드로 작성해야 합니다. `switch`/`create`/`edit`/`delete`로 파일을 저장하면 구조형으로 업그레이드되며, v0.1.0에서는 이 파일을 구버전 lets-craft가 다시 읽지 못할 수 있습니다.
 
 ### 전역 + 프로젝트 오버레이
 
 - 전역: `~/.omp/.lsc/models.yaml`
 - 프로젝트: `<cwd>/.lsc/models.yaml`
 
-두 파일을 병합해서 사용하며, **프로젝트 레이어가 우선**합니다. 병합은 프리셋 이름 단위로 이루어지고, 같은 프리셋 안에서는 에이전트 키 단위로 프로젝트 값이 전역 값을 덮어씁니다. `active`도 프로젝트 값이 설정되어 있으면 그 값을 우선 사용합니다.
+두 파일을 병합해서 사용하며, **프로젝트 레이어가 우선**합니다. 같은 프리셋 안에서 `agents`는 에이전트 키 단위로 프로젝트 값이 전역 값을 덮어씁니다. `default`는 프로젝트 값이 전역 값을 덮어쓰며, 프로젝트가 생략하면 전역 값을 상속합니다. 이번 버전에서는 프로젝트 레이어로 전역 `default`를 삭제(erase)하는 기능은 지원하지 않습니다. `active`도 프로젝트 값이 설정되어 있으면 우선합니다.
 
 ### effort 문법
 
-모델 문자열은 `provider/model-id[:effort]` 형식입니다. `:effort` 접미사는 다음 5단계 중 하나여야 합니다: `minimal`, `low`, `medium`, `high`, `xhigh`.
+`default`와 에이전트 모델 문자열은 `provider/model-id[:effort]` 형식입니다. `:effort` 접미사는 `minimal`, `low`, `medium`, `high`, `xhigh` 중 하나여야 합니다. 세션 default에 effort가 있으면 모델 전환 성공 뒤 thinking level도 함께 설정하고, 접미사가 없으면 현재 thinking level을 유지합니다.
 
 ### 미지정 시 동작
 
-프리셋에 값이 없는 에이전트는 세션(메인) 모델로 폴백합니다.
+프리셋에 값이 없는 에이전트는 세션(메인) 모델로 폴백합니다. 활성 프리셋에 `default`가 있으면 세션 메인 모델 자체가 그 값으로 전환되므로 미지정 에이전트도 결과적으로 프리셋 default를 따릅니다.
+
+### 세션 default 모델
+
+- 명시적 `/lsc-preset switch`는 즉시 세션 모델을 전환합니다. `create`는 활성 프리셋이 없어서 새 프리셋이 자동 활성화된 경우에만 즉시 전환합니다.
+- 자동 적용은 **프로세스 부팅으로 만들어진 신규 메인 세션**의 `session_start`에서만 일어납니다. `/new`, 세션 전환, 세션 브랜치는 `session_start`를 다시 발화하지 않으므로 다음 명시적 switch 또는 새 프로세스 부팅 전까지 자동 적용하지 않습니다.
+- resume, 서브에이전트 세션, 세션 중 수동 `/model` 또는 모델 사이클 선택에는 간섭하지 않습니다. `edit`/`delete`도 default를 재적용하지 않으며, default 없는 프리셋으로 전환하거나 프리셋을 해제해도 이전 모델을 복원하지 않고 현재 모델을 유지합니다.
+- 모델을 해석할 수 없거나 API key가 없으면 프리셋 활성화와 에이전트 override는 유지한 채 default 전환만 경고 후 건너뜁니다. 자동 게이트가 default를 건너뛴 원인을 진단하려면 `LSC_DEBUG=1`로 실행하십시오. stderr에 세션 엔트리 타입 히스토그램 한 줄을 출력합니다.
 
 ### 검증 정책 — 경고 + fallback
 
-`validatePreset`(`src/preset/validate.ts`)은 프리셋의 각 항목에 대해:
-
-- `:effort` 접미사가 있는데 5개 유효 레벨에 속하지 않으면 → 경고를 남기고 해당 에이전트는 세션 모델로 폴백.
-- base 모델(`provider/model-id`)이 인증된 모델 목록에서 확인되지 않으면 → 경고를 남기고 해당 에이전트는 세션 모델로 폴백.
-
-즉, 프리셋 항목 하나가 잘못되었다고 해서 세션 시작이나 파이프라인 전체가 실패하지 않고, 문제가 된 에이전트만 조용히 폴백하면서 경고 알림만 표시됩니다.
+`validatePreset`(`src/preset/validate.ts`)은 session default와 각 에이전트 항목의 형식, effort, 인증된 모델 해석 가능 여부를 확인합니다. 잘못된 default는 현재 세션 모델을 유지하고, 잘못된 에이전트 항목은 해당 에이전트만 세션 모델로 폴백합니다. 어느 경우에도 세션 시작이나 파이프라인 전체를 실패시키지 않고 경고 알림만 표시합니다.
 
 ## 워크플로 가이드
 
