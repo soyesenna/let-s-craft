@@ -3,6 +3,7 @@ import { registerAskTools } from "./ask.js";
 import { registerCraftAbortTool } from "./craft/abort.js";
 import { registerCraftEnforcement } from "./craft/enforcement.js";
 import { registerHashManifestTools } from "./craft/hash-manifest.js";
+import { registerCraftReleaseTool } from "./craft/release.js";
 import { registerRunTestsTool } from "./craft/run-tests.js";
 import { LSC_FIXTURE_FLAG } from "./fixtures.js";
 import { registerPresetCommand } from "./preset/command.js";
@@ -21,6 +22,7 @@ export default function (pi: ExtensionAPI): void {
 	registerCraftEnforcement(pi);
 	registerAskTools(pi);
 	registerCraftAbortTool(pi);
+	registerCraftReleaseTool(pi);
 
 	// Re-apply the active model preset on every session start: self-healing from
 	// models.yaml into the live session (runtime override, seen by the next task
