@@ -63,6 +63,7 @@ function syncModeConfigPath(): string {
 /** Authenticated zai-provider model (see module header for why both main and subagent moved off the very cheapest tier) — confirmed via `omp models list` (zai/glm-5.2, 1M context, effort levels minimal/low/medium/high/xhigh, so `:low` is supported). Overridable for local runs against a different provider. */
 export const E2E_MAIN_MODEL = process.env.LSC_E2E_MAIN_MODEL ?? "zai/glm-5.2:low";
 export const E2E_SUBAGENT_MODEL = process.env.LSC_E2E_SUBAGENT_MODEL ?? "zai/glm-5.2:low";
+export const E2E_DEFAULT_MODEL = process.env.LSC_E2E_DEFAULT_MODEL ?? "zai/glm-4.5-flash:low";
 
 export interface OmpEvent {
 	type: string;
@@ -305,6 +306,17 @@ export function writeCheapModelPreset(projectDir: string, model: string = E2E_SU
 	const path = join(projectDir, ".lsc", "models.yaml");
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, stringify({ active: presetName, presets: { [presetName]: preset } }));
+}
+
+/** Write a structural preset with a session-default model and optional per-agent overrides. */
+export function writePresetWithSessionDefault(
+	projectDir: string,
+	args: { name?: string; default: string; agents?: Record<string, string> },
+): void {
+	const presetName = args.name ?? "e2e-session-default";
+	const path = join(projectDir, ".lsc", "models.yaml");
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, stringify({ active: presetName, presets: { [presetName]: { default: args.default, agents: args.agents ?? {} } } }));
 }
 
 /** `.lsc/crafts/*` directory names under a project — used to discover the LLM-derived feature slug rather than hardcoding it (Stage 0 kebab-case derivation is not literally predictable). */
