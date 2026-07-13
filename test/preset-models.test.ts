@@ -130,6 +130,7 @@ describe("parseModelsFile", () => {
 				"    executor: zai/glm-5.2:low",
 				"    planner: zai/glm-5.2:low",
 				"    test-engineer: zai/glm-5.2:low",
+				"    librarian: zai/glm-5.2:low",
 				"",
 			].join("\n"),
 		);
@@ -143,6 +144,7 @@ describe("parseModelsFile", () => {
 				executor: "zai/glm-5.2:low",
 				planner: "zai/glm-5.2:low",
 				"test-engineer": "zai/glm-5.2:low",
+				librarian: "zai/glm-5.2:low",
 			},
 		});
 	});

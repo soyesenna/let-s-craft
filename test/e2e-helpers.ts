@@ -298,7 +298,7 @@ export function setupFixtureProject(): { base: string; projectDir: string; fixtu
 	return { base, projectDir, fixtureDir, answersPath: join(fixtureDir, "answers.json"), sessionDir: join(base, "omp-sessions") };
 }
 
-/** Task B: `.lsc/models.yaml` preset mapping all 7 lsc-* agents to the cheap E2E subagent model, so `session_start` (src/main.ts's `applyActivePreset`) injects it live into every `task` spawn for the run. */
+/** Task B: `.lsc/models.yaml` preset mapping all 8 lsc-* agents to the cheap E2E subagent model, so `session_start` (src/main.ts's `applyActivePreset`) injects it live into every `task` spawn for the run. */
 export function writeCheapModelPreset(projectDir: string, model: string = E2E_SUBAGENT_MODEL): void {
 	const presetName = "e2e-cheap";
 	const preset: Record<string, string> = {};

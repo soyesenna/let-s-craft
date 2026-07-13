@@ -32,7 +32,7 @@ export interface ModelsFile {
 	presets: Record<string, PresetEntry>;
 }
 
-/** The seven lets-craft agents, by short name (as written in models.yaml presets). */
+/** The eight lets-craft agents, by short name (as written in models.yaml presets). */
 export const LSC_AGENT_NAMES = [
 	"explore",
 	"tracer",
@@ -41,6 +41,7 @@ export const LSC_AGENT_NAMES = [
 	"executor",
 	"planner",
 	"test-engineer",
+	"librarian",
 ] as const;
 export type LscAgentName = (typeof LSC_AGENT_NAMES)[number];
 

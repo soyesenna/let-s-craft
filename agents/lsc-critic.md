@@ -218,6 +218,7 @@ tools: read, grep, glob, bash, lsp
 
     ---
     *Consensus review summary row (if this is a plan/test agreement-loop review)*:
+    - Architect findings cross-check: [Pass/Fail + reason — for each architect antithesis/tradeoff finding provided as input, state whether you agree or rebut, with reason; independent of architect's own blocking/not-blocking judgment]
     - Principle/Option Consistency: [Pass/Fail + reason]
     - Alternatives Depth: [Pass/Fail + reason]
     - Risk/Verification Rigor: [Pass/Fail + reason]
