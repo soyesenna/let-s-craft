@@ -44,7 +44,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 
 ## 구성 요소
 
-### 에이전트 7종
+### 에이전트 8종
 
 각 에이전트는 `agents/lsc-*.md`에 프런트매터(`name`/`description`/`tools`/`spawns`)와 행동 계약으로 정의되어 있습니다.
 
@@ -57,6 +57,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 | `lsc-executor` | 집중형 구현 실행자 — 지정된 작업을 최소 변경으로 구현하고 빌드/테스트를 검증 |
 | `lsc-planner` | 확정된 spec을 실행 가능한 계획으로 전환 — DR(합의 요약)과 ADR을 포함, 코드는 절대 작성하지 않음 |
 | `lsc-test-engineer` | 테스트 전략·유닛/통합/e2e 작성, 플레이키 테스트 보강, TDD 강제 |
+| `lsc-librarian` | 외부 라이브러리/API/생태계 리서치 전문 — 로컬 의존성(설치된 패키지 소스·타입 정의) 우선 확인 후 필요 시 클론/웹 검색, 모든 주장을 소스/공식문서로 근거화한 구조화된 결과(answer/sources/api/version)를 반환 |
 
 ### 스킬 3종
 
@@ -73,7 +74,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 ```
 /lsc-preset list                    # 유효 프리셋(전역+프로젝트 병합) 목록 출력 — 기본 서브액션
 /lsc-preset switch|use [name]       # 프리셋 전환, 에이전트 override와 세션 default 즉시 적용
-/lsc-preset create|new [name]       # 세션 default를 먼저 묻고(skip 가능), 7개 에이전트를 순회해 생성
+/lsc-preset create|new [name]       # 세션 default를 먼저 묻고(skip 가능), 8개 에이전트를 순회해 생성
 /lsc-preset edit [name]             # 같은 질문 순서로 수정(default는 즉시 재적용하지 않음)
 /lsc-preset delete|rm [name]        # 프리셋 삭제(default 모델 복원 없음)
 ```
@@ -84,7 +85,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 
 `rules/lets-craft.md`(`alwaysApply: true`)는 pre-craft/craft/post-craft 어느 단계에서든 항상 적용되는 세션 규칙입니다.
 
-1. **서브에이전트 위임 적극화**: 읽기 전용 조사는 `lsc-explore`, 원인 설명은 `lsc-tracer`, 계획/diff 리뷰는 `lsc-critic`, 아키텍처 진단은 `lsc-architect`, 구현은 `lsc-executor`, 계획 수립은 `lsc-planner`, 테스트 전략은 `lsc-test-engineer`로 위임합니다.
+1. **서브에이전트 위임 적극화**: 읽기 전용 조사는 `lsc-explore`, 원인 설명은 `lsc-tracer`, 계획/diff 리뷰는 `lsc-critic`, 아키텍처 진단은 `lsc-architect`, 구현은 `lsc-executor`, 계획 수립은 `lsc-planner`, 테스트 전략은 `lsc-test-engineer`, 외부 라이브러리/API 리서치는 `lsc-librarian`으로 위임합니다.
 2. **기능 단위 커밋**: 하나의 커밋은 하나의 논리적 작업 단위(파이프라인 한 단계의 산출물, 프리미티브 하나, 버그 하나, 테스트 스위트 하나)만 담아야 하며, 여러 관심사를 섞은 대규모 커밋을 금지합니다.
 3. **커밋 메시지 형식**: 한국어 제목 + conventional-commit 접두사(`feat:`/`fix:`/`chore:`/`docs:`/`refactor:`/`test:` 등) + `what:`/`why:`/`evidence:`/`verify:` 4개 섹션으로 구성된 본문을 요구합니다. `evidence:`/`verify:`를 placeholder로 채우는 것은 금지됩니다.
 
@@ -97,6 +98,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 - **`lsc_run_tests`**: `run_test.sh`를 LLM 자신의 bash 도구가 아니라 신뢰된 실행기(`pi.exec`)로 실행합니다. 전체 실행 로그를 `test/logs/run-N.log`에 저장하고, 통과/실패 여부와 실패 라인 요약을 반환합니다.
 - **`lsc_ask` / `lsc_select` / `lsc_confirm`**: 파이프라인이 사람에게 무언가를 물어볼 때 사용하는 유일한 통로입니다(자유 텍스트 / 객관식 / 예-아니오). 대화형 UI가 없는 헤드리스 모드에서 `LSC_FIXTURE`가 설정되지 않으면 이 도구들은 답을 추측하지 않고 즉시 오류로 실패합니다.
 - **`lsc_craft_abort`**: craft 루프를 사용자 의사로 중단시키는 유일한 출구입니다. 해시 위반 복구를 사용자가 거부했거나 `run_test.sh` 실행 불가 상황에서 계속 진행을 거부했을 때만 호출되며, 이후 중단 방지 백스톱이 더 이상 세션을 강제로 이어가지 않습니다.
+- **`lsc_craft_release`**: 감사(post-craft)가 보호된 test 캐논 자체의 의도적 수정을 요구하는 상황을 위한 승인 경로입니다. 반드시 `lsc_confirm`을 통한 사용자 승인 후에만 호출되어야 하며, 호출 즉시 해시 보호가 해제됩니다. 캐논을 수정한 뒤에는 `lsc_craft_init`을 다시 호출해 매니페스트를 재기록해야만 해시 보호와 중단 방지 백스톱이 다시 켜집니다 — 재호출을 생략하면 보호 없이 루프가 계속됩니다.
 
 ## model preset 사용법
 
@@ -115,7 +117,7 @@ presets:
 - `active`: 현재 활성 프리셋 이름(문자열) 또는 `null`.
 - `presets`: 프리셋 이름 → 구조형 엔트리 맵.
 - `default`(선택): omp 세션 메인 모델 `provider/model-id[:effort]`.
-- `agents`: 에이전트 짧은 이름 → 모델 문자열 맵. 짧은 이름은 `explore`, `tracer`, `critic`, `architect`, `executor`, `planner`, `test-engineer` 7개이며, 내부적으로 `lsc-` 접두사가 붙습니다(예: `executor` → `lsc-executor`).
+- `agents`: 에이전트 짧은 이름 → 모델 문자열 맵. 짧은 이름은 `explore`, `tracer`, `critic`, `architect`, `executor`, `planner`, `test-engineer`, `librarian` 8개이며, 내부적으로 `lsc-` 접두사가 붙습니다(예: `executor` → `lsc-executor`).
 
 기존의 평면 형식(`fast-triage: { explore: ..., tracer: ... }`)도 **agents-only** 프리셋으로 계속 읽습니다. 평면 맵의 `default`/`agents` 키는 에이전트 이름으로 사용하지 않고 경고 후 버리므로 세션 default는 반드시 위 구조형 sibling 필드로 작성해야 합니다. `switch`/`create`/`edit`/`delete`로 파일을 저장하면 구조형으로 업그레이드되며, v0.1.0에서는 이 파일을 구버전 lets-craft가 다시 읽지 못할 수 있습니다.
 
@@ -128,7 +130,7 @@ presets:
 
 ### effort 문법
 
-`default`와 에이전트 모델 문자열은 `provider/model-id[:effort]` 형식입니다. `:effort` 접미사는 `minimal`, `low`, `medium`, `high`, `xhigh` 중 하나여야 합니다. 세션 default에 effort가 있으면 모델 전환 성공 뒤 thinking level도 함께 설정하고, 접미사가 없으면 현재 thinking level을 유지합니다.
+`default`와 에이전트 모델 문자열은 `provider/model-id[:effort]` 형식입니다. `:effort` 접미사는 `minimal`, `low`, `medium`, `high`, `xhigh`, `max` 중 하나여야 합니다. 세션 default에 effort가 있으면 모델 전환 성공 뒤 thinking level도 함께 설정하고, 접미사가 없으면 현재 thinking level을 유지합니다. 콜론을 포함한 전체 스펙(`provider/model-id:max` 등)이 그 자체로 인증된 모델로 바로 resolve되면, 접미사를 effort로 분리하지 않고 리터럴 모델 ID로 취급합니다.
 
 ### 미지정 시 동작
 
@@ -151,54 +153,62 @@ presets:
 
 `"pre-craft"` / `/pre-craft`라고 말하거나, 새 기능/버그를 조사·계획해달라고 요청하면 트리거됩니다.
 
-1. **Stage 0 초기화**: feature 이름(kebab-case)을 결정하고, `--worktree` 사용 여부를 확인한 뒤 `.lsc/crafts/{feature}/`를 만들고, 저장소의 브랜치 네이밍 규칙을 감지해 브랜치(또는 워크트리)를 생성합니다.
-2. **Stage 1 trace**: 코드 경로/설정·환경/측정-아티팩트 3개 레인(이상)으로 `lsc-tracer`를 병렬 스폰하고, 외부 리서치(라이브 모드에서는 실제 웹 조사, 픽스처 모드에서는 스텁)를 함께 진행해 `trace.md`를 씁니다.
-3. **Stage 2 interview**: `trace.md`의 3개 항목(초기 아이디어 보강/코드베이스 컨텍스트/첫 질문)을 주입받아 시작하고, 모호도(ambiguity) 점수가 5% 미만으로 떨어질 때까지 한 라운드에 한 질문씩 진행해 `spec.md`를 씁니다.
-4. **Stage 3 plan**: `lsc-planner`가 작성 → `lsc-architect` → `lsc-critic` 순서의 합의 루프(최대 10회 반복)를 거쳐 ADR을 포함한 `plan.md`를 확정합니다.
-5. **Stage 4 test**: `unit`/`integration`/`full-e2e`/`regression` 4종 이상의 `lsc-test-engineer`를 스폰해 `.lsc/crafts/{feature}/test/`(단일 진입점 `run_test.sh`)를 만들고, plan과 동일한 architect/critic 합의 루프를 거칩니다.
-6. 네 산출물을 커밋하고, `craft` 실행을 안내하는 핸드오프 질문으로 끝납니다.
+1. **Stage 0 초기화**: feature 이름(kebab-case)을 결정하고, `.lsc/crafts/{feature}/`를 만듭니다. 워크트리 사용 여부를 묻지 않고 항상 저장소의 브랜치 네이밍 규칙을 감지해 `.lsc/worktrees/{feature}/`에 feature 브랜치 워크트리를 생성합니다 — 이후 모든 산출물은 이 워크트리 내부의 `.lsc/crafts/{feature}/`에 작성·커밋되고, 원래(base) 브랜치는 land(병합 승인) 전까지 전혀 건드리지 않습니다.
+2. **Stage 1 trace**: 코드 경로/설정·환경/측정-아티팩트 3개 레인(이상)으로 `lsc-tracer`를 병렬 스폰하고, 외부 리서치(라이브 모드에서는 `lsc-librarian` 등을 동원한 실제 웹 조사, 픽스처 모드에서는 스텁)를 함께 진행해 `trace.md`를 씁니다. 완료 시 워크트리의 feature 브랜치에 커밋합니다.
+3. **Stage 2 interview**: `trace.md`의 3개 항목(초기 아이디어 보강/코드베이스 컨텍스트/첫 질문)을 주입받아 시작하고, 모호도(ambiguity) 점수가 5% 미만으로 떨어질 때까지 한 라운드에 한 질문씩 진행해 `spec.md`를 씁니다. 완료 시 커밋합니다.
+4. **Stage 3 plan**: `lsc-planner`가 작성 → `lsc-architect` → `lsc-critic` 순서의 합의 루프(최대 10회 반복)를 거쳐 ADR을 포함한 `plan.md`를 확정합니다. 매 반복마다 architect와 critic이 모두 실행됩니다 — critic은 architect의 리뷰 전문을 입력으로 받아 참고하지만, 최종 판정(`VERDICT`)은 architect가 blocking으로 판단했는지와 무관하게 독립적으로 내립니다. 완료 시 커밋합니다.
+5. **Stage 4 test**: `unit`/`integration`/`full-e2e`/`regression` 4종 이상의 `lsc-test-engineer`를 스폰해 `.lsc/crafts/{feature}/test/`(단일 진입점 `run_test.sh`)를 만들고, plan과 동일한(매 반복 architect+critic 상시 실행) 합의 루프를 거칩니다. 완료 시 커밋합니다.
+6. 이렇게 각 단계(research/trace/spec/plan/test) 완료마다 feature 브랜치에 개별 커밋이 쌓입니다(총 5개 이상). 마지막으로 `craft` 실행을 안내하는 핸드오프 질문으로 끝나며, 사용자가 승인하면 같은 세션에서 곧바로 `craft` 스킬로 이어서 진행합니다(자동 체이닝 — `LSC_FIXTURE` 픽스처 모드에서는 이중 실행 방지를 위해 비활성화되고, 거부 시 `craft`를 수동으로 다시 호출하라는 안내만 표시됩니다).
 
 ### 2. craft 실행
 
-`"craft"` / `/craft`라고 말하거나 `.lsc/crafts/{feature}/`(혹은 `audit/audit-N.md`) 경로를 전달하면 트리거됩니다. `lsc_craft_init` 한 번 호출 후, `lsc-executor` 스폰 → `lsc_verify_hash` → `lsc_run_tests` 순서를 `run_test.sh`가 통과할 때까지(또는 사용자가 `lsc_craft_abort`로 중단할 때까지) 반복합니다.
+`"craft"` / `/craft`라고 말하거나 `.lsc/crafts/{feature}/`(혹은 `audit/audit-N.md`) 경로를 전달하면 트리거됩니다. pre-craft가 만든 워크트리를 자동으로 감지해 그 안에서 구현을 진행합니다. `lsc_craft_init` 한 번 호출 후, `lsc-executor` 스폰 → `lsc_verify_hash` → `lsc_run_tests` 순서를 `run_test.sh`가 통과할 때까지(또는 사용자가 `lsc_craft_abort`로 중단할 때까지) 반복합니다. 완료하면 사용자 승인 시 같은 세션에서 곧바로 `post-craft`로 이어집니다(자동 체이닝, pre-craft와 동일 규칙).
 
 ### 3. post-craft 실행
 
-`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-explore`(코드 매핑)와 `lsc-critic`(적대적 리뷰)를 병렬 스폰하고, spec/plan 컴플라이언스 매트릭스를 직접 확인한 뒤, 테스트를 재실행해 4단계 판정을 `audit/audit-N.md`에 기록합니다.
+`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-explore`(코드 매핑)와 `lsc-critic`(적대적 리뷰)를 병렬 스폰하고, spec/plan 컴플라이언스 매트릭스를 직접 확인한 뒤, 테스트를 재실행해 4단계 판정을 워크트리 내부의 `audit/audit-N.md`에 기록합니다.
 
-- `REJECT` / `APPROVE-WITH-CHANGE` → craft를 감사 문서 경로로 재호출하도록 제안.
-- `APPROVE` / `APPROVE-WITH-COMMENT` → 사용자에게 명시적 병합 승인을 요청한 뒤(`git merge`는 이 승인 없이는 절대 실행되지 않음) 병합하고, 워크트리를 사용했다면 정리(`git worktree remove` + `git worktree prune`)합니다.
+- `REJECT` / `APPROVE-WITH-CHANGE` → craft를 감사 문서 경로로 재호출하도록 제안(사용자 승인 시 자동 체이닝). 감사가 보호된 test 캐논 자체의 수정을 요구하는 특수한 경우에는, `lsc_confirm` 승인 후 `lsc_craft_release`로 해시 보호를 해제하고 캐논을 수정한 뒤 `lsc_craft_init`을 재호출해 다시 보호를 켜는 경로를 사용합니다.
+- `APPROVE` / `APPROVE-WITH-COMMENT` → 사용자에게 명시적 병합 승인을 요청한 뒤(`git merge`는 이 승인 없이는 절대 실행되지 않음) feature 브랜치를 base 브랜치로 `--no-ff` 병합하고, 워크트리를 정리(`git worktree remove` + `git worktree prune`)합니다. 병합 전까지 base 브랜치는 이 feature의 산출물·구현·감사 어느 것도 담고 있지 않습니다.
 
-### `--worktree` 옵션
+### 항상 워크트리 (all-in-worktree)
 
-pre-craft Stage 0에서 확인하며, 사용 시 `.lsc/worktrees/{feature}/`에 별도 git worktree를 만들고 `.gitignore`에 `.lsc/worktrees/`를 자동으로 등록합니다. craft는 이 워크트리를 구현 루트로 사용하고, post-craft의 land 단계에서 병합 후 정리됩니다.
+pre-craft는 사용자에게 워크트리 사용 여부를 묻지 않고, 모든 feature에 대해 무조건 `.lsc/worktrees/{feature}/`에 git worktree를 만들고 `.gitignore`에 `.lsc/worktrees/`를 자동으로 등록합니다. trace/spec/plan/test(pre-craft)와 구현(craft), 감사(post-craft)까지 파이프라인 전체가 이 워크트리 내부의 `.lsc/crafts/{feature}/`에서만 진행되며, 원래(base) 브랜치는 post-craft의 land 단계에서 명시적으로 병합 승인하기 전까지 완전히 무오염 상태로 유지됩니다. land가 완료되면 워크트리는 제거되고, 산출물·구현·감사가 base 브랜치에 병합되어 나타납니다.
 
 ### 산출물 디렉터리 구조
 
+land(병합) 전까지, 모든 feature 산출물은 base 브랜치가 아니라 워크트리 내부에 존재합니다.
+
 ```
-<프로젝트 루트>/
+<프로젝트 루트>/                        # base 브랜치 체크아웃 — land 전까지 이 feature에 대해 무오염
 └── .lsc/
-    ├── crafts/
-    │   └── {feature}/
-    │       ├── trace.md              # pre-craft Stage 1
-    │       ├── research/             # 외부 리서치 세션 (라이브 모드)
-    │       ├── spec.md               # pre-craft Stage 2
-    │       ├── plan.md               # pre-craft Stage 3
-    │       ├── test/
-    │       │   ├── run_test.sh       # 단일 진입점, craft 시작 시 해시 보호됨
-    │       │   ├── logs/
-    │       │   │   └── run-N.log     # lsc_run_tests 실행 로그 (해시 보호 제외)
-    │       │   ├── .hash-manifest.json   # lsc_craft_init이 기록 (해시 보호 제외)
-    │       │   └── .craft-state.json     # 재시작 durable craft 상태 (해시 보호 제외)
-    │       └── audit/
-    │           └── audit-{N}.md      # post-craft 감사 결과 (N은 0부터)
-    └── worktrees/
-        └── {feature}/                # --worktree 사용 시에만 생성, .gitignore에 자동 등록
+    └── worktrees/                     # .gitignore에 자동 등록, 항상 생성
+        └── {feature}/                 # feature 브랜치 워크트리
+            └── .lsc/
+                └── crafts/
+                    └── {feature}/
+                        ├── trace.md            # pre-craft Stage 1
+                        ├── research/           # 외부 리서치 세션 (라이브 모드)
+                        ├── spec.md             # pre-craft Stage 2
+                        ├── plan.md             # pre-craft Stage 3
+                        ├── test/
+                        │   ├── run_test.sh     # 단일 진입점, craft 시작 시 해시 보호됨
+                        │   ├── logs/
+                        │   │   └── run-N.log   # lsc_run_tests 실행 로그 (해시 보호 제외)
+                        │   ├── .hash-manifest.json   # lsc_craft_init이 기록 (해시 보호 제외)
+                        │   └── .craft-state.json     # 재시작 durable craft 상태 (해시 보호 제외)
+                        └── audit/
+                            └── audit-{N}.md    # post-craft 감사 결과 (N은 0부터)
+
+land(병합 승인) 후:
+
+<프로젝트 루트>/.lsc/crafts/{feature}/  # --no-ff 병합으로 base 브랜치에 그대로 나타남
+                                         # (worktrees/{feature}/는 제거·prune됨)
 
 ~/.omp/.lsc/
-└── models.yaml                       # 전역 모델 프리셋
+└── models.yaml                        # 전역 모델 프리셋
 
-<프로젝트 루트>/.lsc/models.yaml       # 프로젝트 모델 프리셋 (전역보다 우선)
+<프로젝트 루트>/.lsc/models.yaml        # 프로젝트 모델 프리셋 (전역보다 우선)
 ```
 
 ## 강제 규칙 설명
@@ -212,6 +222,8 @@ craft 루프가 활성화되어 있는 동안, 아래 세 가지는 LLM의 협�
 ### 2. 해시 불변성
 
 `lsc_craft_init`이 `test/`(단, `logs/`와 두 상태 파일 제외) 전체 파일의 SHA-256 해시를 기록해 두고, 매 실행 반복 후 `lsc_verify_hash`가 다시 해시를 계산해 비교합니다. 위반(추가/삭제/수정)이 발견되면 craft는 그 반복에서 테스트를 실행하지 않고 즉시 멈춘 뒤, `lsc_confirm`으로 `[Hash Violation] ... Proceed?` 질문을 통해 사용자에게 diff를 보여주고 복구 여부를 묻습니다. 승인 시 `git checkout`/`git clean`으로 테스트 디렉터리만 복구하고 재검증 후 계속 진행하며, 거부 시 `lsc_craft_abort`가 호출되어 루프가 종료됩니다.
+
+이와 별개로, post-craft의 감사가 보호된 test 캐논 자체의 의도적 수정을 요구하는 경우를 위한 승인 경로가 따로 있습니다: `lsc_confirm` 승인 → `lsc_craft_release`(해시 보호 해제) → 캐논 수정 → `lsc_craft_init` 재호출(매니페스트 재기록, 보호 재활성화). 이 경로 없이는 보호된 test 트리를 의도적으로 고칠 방법이 없습니다.
 
 ### 3. 중단 방지 백스톱
 
@@ -227,22 +239,22 @@ craft 루프가 활성화되어 있는 동안, 아래 세 가지는 LLM의 협�
 npm test   # vitest run
 ```
 
-`test/**/*.test.ts`를 대상으로 하며, `node_modules/`, `dist/`, 벤더 트리, `fixtures/**`는 명시적으로 제외됩니다(`vitest.config.ts`). E2E 테스트 파일(`e2e-full-cycle.test.ts`, `e2e-worktree.test.ts`, `enforcement-rules.test.ts`)은 `LSC_E2E` 환경변수가 없으면 `describe.skipIf`로 전부 스킵되므로, `npm test`는 실제 omp 프로세스나 실제 토큰을 전혀 건드리지 않습니다.
+`test/**/*.test.ts`를 대상으로 하며, `node_modules/`, `dist/`, 벤더 트리, `fixtures/**`는 명시적으로 제외됩니다(`vitest.config.ts`). E2E 테스트 파일(`e2e-full-cycle.test.ts`, `enforcement-rules.test.ts`, `e2e-preset-default.test.ts`)은 `LSC_E2E` 환경변수가 없으면 `describe.skipIf`로 전부 스킵되므로, `npm test`는 실제 omp 프로세스나 실제 토큰을 전혀 건드리지 않습니다.
 
 ### `npm run e2e` — 실제 omp 통합 E2E
 
 ```bash
 npm run e2e
 # 내부적으로: npm run build && LSC_E2E=1 vitest run \
-#   test/e2e-full-cycle.test.ts test/e2e-worktree.test.ts test/enforcement-rules.test.ts \
+#   test/e2e-full-cycle.test.ts test/enforcement-rules.test.ts test/e2e-preset-default.test.ts \
 #   --no-file-parallelism --testTimeout=10200000 --hookTimeout=120000
 ```
 
 **경고 — 실제 토큰을 소비합니다.** 이 3개 파일은 실제 `omp` 바이너리를 헤드리스(`-p --mode=json`)로 자식 프로세스로 구동하며, 실제로 인증된 provider에 대해 실제 API 호출을 발생시킵니다. `--no-file-parallelism`으로 파일 간 동시 실행을 막고, 테스트당 최대 170분(`testTimeout=10200000`ms), 훅당 최대 2분(`hookTimeout=120000`ms)의 타임아웃이 걸려 있습니다. 각 테스트 파일 내부에도 단계별(pre-craft/craft/post-craft) 독립적인 kill 타임아웃이 별도로 걸려 있어, 멈추거나 반복하는 모델이 하네시 전체를 무한정 붙잡지 못하도록 되어 있습니다.
 
-- `test/e2e-full-cycle.test.ts`: pre-craft → craft → post-craft 전체를 픽스처 샘플에 대해 구동해, `trace.md → spec.md → plan.md → test/`가 순서대로 생성되고 craft 이후 `run_test.sh`가 통과하며 `audit-0.md`에 판정 라인이 기록되는지 확인합니다. 트레이스 추론의 질이나 spec 모호도 계산의 정확성 같은 의미론적 판단은 검증하지 않고, 산출물 존재/작성 순서/문자 그대로의 감사 판정 라인만 확인합니다.
-- `test/e2e-worktree.test.ts`: `--worktree` 경로(워크트리 생성, `.gitignore` 등록, craft가 워크트리를 구현 루트로 사용, land 시 병합+정리)를 검증합니다.
-- `test/enforcement-rules.test.ts`: `tool_call` 차단, 해시 위반 에스컬레이션, `session_stop` 백스톱 세 가지 강제 메커니즘의 실제 omp 연동(순수 판정 함수 자체는 별도 유닛 테스트로 이미 커버됨)을 검증합니다.
+- `test/e2e-full-cycle.test.ts`: 항상-워크트리 토폴로지로 pre-craft → craft → post-craft → land 전체를 픽스처 샘플에 대해 구동합니다. 워크트리 내부에 `trace.md → spec.md → plan.md → test/`가 순서대로 생성되고, base 브랜치가 그 동안 무오염임(산출물 커밋 0건)을 확인하고, pre-craft 단계별 커밋이 5개 이상 쌓였는지, craft 이후 `run_test.sh`가 통과하는지, `audit-0.md`에 판정 라인이 기록되는지, 마지막으로 승인 가능한 판정에서 워크트리가 base 브랜치로 병합·제거되고 산출물·구현·감사가 base에 나타나는지까지 단계별로 확인합니다. 트레이스 추론의 질이나 spec 모호도 계산의 정확성 같은 의미론적 판단은 검증하지 않고, 산출물 존재/작성 순서/커밋 위상/문자 그대로의 감사 판정 라인만 확인합니다.
+- `test/enforcement-rules.test.ts`: `tool_call` 차단, 해시 위반 에스컬레이션, `session_stop` 백스톱, `read` 도구를 통한 보호 트리 조회가 차단되지 않는지, `lsc_craft_release` 승인 경로(해제 → 캐논 수정 → 재init → 재검증 통과)까지 다섯 가지 강제 메커니즘의 실제 omp 연동(순수 판정 함수 자체는 별도 유닛 테스트로 이미 커버됨)을 검증합니다.
+- `test/e2e-preset-default.test.ts`: 구조형 프리셋의 세션 default 모델이 세션 시작 시 실제로 적용되는지, 명시적 에이전트 오버라이드가 default보다 우선하는지를 실제 omp 세션으로 검증합니다.
 
 ### `LSC_FIXTURE` 응답 주입 모드
 
