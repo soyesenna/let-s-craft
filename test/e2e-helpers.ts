@@ -1,5 +1,5 @@
 // Shared harness for Phase 7's real-omp-integration E2E tests (test/e2e-full-cycle.test.ts,
-// test/e2e-worktree.test.ts, test/enforcement-rules.test.ts). Spawns the actual `omp` binary
+// test/enforcement-rules.test.ts). Spawns the actual `omp` binary
 // headlessly (`-p --mode=json`) against a throwaway project directory, with the plugin already
 // loaded via `omp plugin link` (a real filesystem symlink to this repo — see package.json's
 // `omp.extensions`, confirmed live during harness development). None of this can run under
@@ -319,11 +319,34 @@ export function writePresetWithSessionDefault(
 	writeFileSync(path, stringify({ active: presetName, presets: { [presetName]: { default: args.default, agents: args.agents ?? {} } } }));
 }
 
-/** `.lsc/crafts/*` directory names under a project — used to discover the LLM-derived feature slug rather than hardcoding it (Stage 0 kebab-case derivation is not literally predictable). */
+/**
+ * `.lsc/crafts/*` directory names directly under the main project checkout — used to discover the
+ * LLM-derived feature slug rather than hardcoding it (Stage 0 kebab-case derivation is not
+ * literally predictable). Under R5's always-worktree topology this is empty for the whole
+ * pre-craft/craft/post-craft run (AC5 base-purity: the base branch must never see
+ * `.lsc/crafts/{feature}` until land merges it in) — use `listWorktreeFeatures` to discover the
+ * feature slug while a craft is in flight. This function is for post-land visibility assertions
+ * (the merge brings `.lsc/crafts/{feature}` onto the base branch) and any other base-checkout use.
+ */
 export function listCraftFeatures(projectDir: string): string[] {
 	const craftsDir = join(projectDir, ".lsc", "crafts");
 	if (!existsSync(craftsDir)) return [];
 	return readdirSync(craftsDir, { withFileTypes: true })
+		.filter(e => e.isDirectory())
+		.map(e => e.name);
+}
+
+/**
+ * `.lsc/worktrees/*` directory names under a project — the always-worktree topology's (R5) way to
+ * discover the LLM-derived feature slug while a craft is in flight, since every pre-craft run now
+ * creates its worktree (and, inside it, `.lsc/crafts/{feature}/`) rather than writing directly
+ * under the main checkout's `.lsc/crafts/` (see `listCraftFeatures`, which stays empty on the base
+ * branch until land).
+ */
+export function listWorktreeFeatures(projectDir: string): string[] {
+	const worktreesDir = join(projectDir, ".lsc", "worktrees");
+	if (!existsSync(worktreesDir)) return [];
+	return readdirSync(worktreesDir, { withFileTypes: true })
 		.filter(e => e.isDirectory())
 		.map(e => e.name);
 }
@@ -424,15 +447,18 @@ export function runToCompletion(args: RunToCompletionArgs): Promise<RunToComplet
 
 /**
  * Whether pre-craft's four Stage 1-4 artifacts all exist under the (LLM-derived) single
- * `.lsc/crafts/{feature}/` directory — the `isComplete` predicate `runToCompletion` callers use
- * for the pre-craft stage. False (never a throw) when the craft dir doesn't exist yet at all, or
- * when more than one exists (ambiguous — not "complete" either way, mirroring the pre-existing
- * `listCraftFeatures` length-1 assertions in e2e-full-cycle.test.ts/e2e-worktree.test.ts).
+ * `.lsc/worktrees/{feature}/.lsc/crafts/{feature}/` directory — the `isComplete` predicate
+ * `runToCompletion` callers use for the pre-craft stage. Worktree-internal per R5's always-worktree
+ * topology (pre-craft always creates `.lsc/worktrees/{feature}/` and writes every artifact inside
+ * it — see `listWorktreeFeatures`). False (never a throw) when no worktree exists yet, or when more
+ * than one does (ambiguous — not "complete" either way, mirroring the pre-existing
+ * `listWorktreeFeatures` length-1 assertions in e2e-full-cycle.test.ts).
  */
 export function preCraftArtifactsComplete(projectDir: string): boolean {
-	const features = listCraftFeatures(projectDir);
+	const features = listWorktreeFeatures(projectDir);
 	if (features.length !== 1) return false;
-	const craftDir = join(projectDir, ".lsc", "crafts", features[0]);
+	const worktreeDir = join(projectDir, ".lsc", "worktrees", features[0]);
+	const craftDir = join(worktreeDir, ".lsc", "crafts", features[0]);
 	return (
 		existsSync(join(craftDir, "trace.md")) &&
 		existsSync(join(craftDir, "spec.md")) &&

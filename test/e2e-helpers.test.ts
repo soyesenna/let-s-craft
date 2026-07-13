@@ -323,8 +323,10 @@ describe("preCraftArtifactsComplete", () => {
 		return dir;
 	}
 
+	// R5 always-worktree: pre-craft writes every artifact inside `.lsc/worktrees/{feature}/.lsc/crafts/{feature}/`,
+	// never directly under the project root's `.lsc/crafts/` (that stays empty until land — AC5 base-purity).
 	function seedCraftDir(projectDir: string, feature: string, files: { trace?: boolean; spec?: boolean; plan?: boolean; runTest?: boolean }): void {
-		const craftDir = join(projectDir, ".lsc", "crafts", feature);
+		const craftDir = join(projectDir, ".lsc", "worktrees", feature, ".lsc", "crafts", feature);
 		mkdirSync(craftDir, { recursive: true });
 		if (files.trace) writeFileSync(join(craftDir, "trace.md"), "");
 		if (files.spec) writeFileSync(join(craftDir, "spec.md"), "");
@@ -336,11 +338,11 @@ describe("preCraftArtifactsComplete", () => {
 		}
 	}
 
-	it("is false when no .lsc/crafts/{feature} directory exists yet", () => {
+	it("is false when no .lsc/worktrees/{feature} directory exists yet", () => {
 		expect(preCraftArtifactsComplete(tmpProjectDir())).toBe(false);
 	});
 
-	it("is false when more than one .lsc/crafts/{feature} directory exists (ambiguous, never treated as complete)", () => {
+	it("is false when more than one .lsc/worktrees/{feature} directory exists (ambiguous, never treated as complete)", () => {
 		const projectDir = tmpProjectDir();
 		seedCraftDir(projectDir, "feature-a", { trace: true, spec: true, plan: true, runTest: true });
 		seedCraftDir(projectDir, "feature-b", { trace: true, spec: true, plan: true, runTest: true });
