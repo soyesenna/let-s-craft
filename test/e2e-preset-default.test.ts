@@ -17,8 +17,12 @@ import {
 } from "./e2e-helpers";
 
 const RUN_E2E = process.env.LSC_E2E === "1";
-const PER_RUN_TIMEOUT_MS = 300_000;
-const TEST_TIMEOUT_MS = 360_000;
+// This single run spawns two subagents (explore + tracer) sequentially under sync-mode
+// (async.enabled=false, blocking spawns) on the cheap E2E model, so its wall-clock has a wide tail:
+// observed anywhere from ~100s to past 300s across runs on identical inputs. The budget is sized
+// for the slow tail so a merely-slow (not hung) run does not spuriously time out.
+const PER_RUN_TIMEOUT_MS = 600_000;
+const TEST_TIMEOUT_MS = 660_000;
 
 const cleanupDirs: string[] = [];
 afterEach(() => {
