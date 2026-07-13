@@ -4,9 +4,10 @@
 //   active: fast-glm
 //   presets:
 //     fast-glm:
-//       explore: zai/glm-4.6:medium
-//       tracer:  zai/glm-5.2:xhigh
-//
+//       default: zai/glm-4.6:medium
+//       agents:
+//         explore: zai/glm-4.6:medium
+//         tracer:  zai/glm-5.2:xhigh
 // Loaded from the global file (`~/.omp/.lsc/models.yaml`) overlaid by the project
 // file (`<cwd>/.lsc/models.yaml`); the project layer wins (C10).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -14,14 +15,21 @@ import { dirname, join } from "node:path";
 import { parse, stringify } from "yaml";
 import { globalLscDir, projectLscDir } from "../artifacts/paths.js";
 
-/** A preset maps an agent name to a model pattern `provider/model-id[:effort]`. */
+/** A preset's per-agent model patterns (`provider/model-id[:effort]`). */
 export type PresetModels = Record<string, string>;
+
+export interface PresetEntry {
+	/** Optional session-default model `provider/model-id[:effort]` — switches the omp session main model. */
+	default?: string;
+	/** Per-agent overrides (agent short name -> model pattern). */
+	agents: PresetModels;
+}
 
 export interface ModelsFile {
 	/** Name of the active preset, or null when none is selected. */
 	active: string | null;
 	/** Named presets. */
-	presets: Record<string, PresetModels>;
+	presets: Record<string, PresetEntry>;
 }
 
 /** The seven lets-craft agents, by short name (as written in models.yaml presets). */
@@ -54,6 +62,14 @@ function isPresetModels(value: unknown): value is PresetModels {
 	return Object.values(value).every(entry => typeof entry === "string");
 }
 
+function isPresetEntryShape(value: unknown): value is { default?: string | null; agents?: PresetModels } {
+	if (typeof value !== "object" || value === null) return false;
+	const entry = value as Record<string, unknown>;
+	if (!Object.keys(entry).every(key => key === "default" || key === "agents")) return false;
+	if (entry.default !== undefined && entry.default !== null && typeof entry.default !== "string") return false;
+	return entry.agents === undefined || isPresetModels(entry.agents);
+}
+
 /** Parse + structurally validate raw models.yaml text. Throws on invalid shape. */
 export function parseModelsFile(text: string): ModelsFile {
 	const raw: unknown = parse(text);
@@ -70,12 +86,20 @@ export function parseModelsFile(text: string): ModelsFile {
 	if (typeof presetsRaw !== "object" || presetsRaw === null) {
 		throw new Error("models.yaml: `presets` must be a mapping");
 	}
-	const presets: Record<string, PresetModels> = {};
+	const presets: Record<string, PresetEntry> = {};
 	for (const [name, value] of Object.entries(presetsRaw as Record<string, unknown>)) {
-		if (!isPresetModels(value)) {
-			throw new Error(`models.yaml: preset "${name}" must map agent names to model strings`);
+		if (isPresetEntryShape(value)) {
+			presets[name] = {
+				...(typeof value.default === "string" ? { default: value.default } : {}),
+				agents: { ...(value.agents ?? {}) },
+			};
+			continue;
 		}
-		presets[name] = { ...value };
+		if (isPresetModels(value)) {
+			presets[name] = { agents: { ...value } };
+			continue;
+		}
+		throw new Error(`models.yaml: preset "${name}" must be an agent->model map or { default?, agents }`);
 	}
 
 	return { active: active ?? null, presets };
@@ -93,9 +117,13 @@ export function loadModelsFileAt(path: string): ModelsFile {
  * override value unless it is null.
  */
 export function mergeModelsFiles(base: ModelsFile, override: ModelsFile): ModelsFile {
-	const presets: Record<string, PresetModels> = {};
+	const presets: Record<string, PresetEntry> = {};
 	for (const name of new Set([...Object.keys(base.presets), ...Object.keys(override.presets)])) {
-		presets[name] = { ...base.presets[name], ...override.presets[name] };
+		const mergedDefault = override.presets[name]?.default ?? base.presets[name]?.default;
+		presets[name] = {
+			...(mergedDefault !== undefined ? { default: mergedDefault } : {}),
+			agents: { ...base.presets[name]?.agents, ...override.presets[name]?.agents },
+		};
 	}
 	return { active: override.active ?? base.active, presets };
 }
