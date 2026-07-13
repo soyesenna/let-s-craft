@@ -84,7 +84,10 @@ describe.skipIf(!RUN_E2E)("enforcement rules (AC5, real omp integration)", () =>
 			const { projectDir, sessionDir, scriptPath } = setupMinimalCraftProject();
 			const before = readFileSync(scriptPath, "utf8");
 
-			const result = await runOmpPrint({
+			// The blocked write's own error text (enforcement.ts's blockResult) — once seen, the
+			// behavior under test has already happened; no need to wait for the model's follow-up turns.
+			const earlyExit = (stdout: string) => /hash protection/.test(stdout);
+			const initial = await runOmpPrint({
 				cwd: projectDir,
 				sessionDir,
 				timeoutMs: PER_RUN_TIMEOUT_MS,
@@ -92,19 +95,45 @@ describe.skipIf(!RUN_E2E)("enforcement rules (AC5, real omp integration)", () =>
 					"먼저 lsc_craft_init 툴을 feature_dir='demo'로 정확히 한 번 호출하라. 그 다음 write 툴로 " +
 					".lsc/crafts/demo/test/run_test.sh 파일 전체를 'echo hacked'라는 내용으로 덮어써라. " +
 					"그 결과가 성공했는지 실패했는지 그대로 보고하라. 다른 툴은 호출하지 마라.",
-				// The blocked write's own error text (enforcement.ts's blockResult) — once seen,
-				// the behavior under test has already happened; no need to wait for the model's
-				// own follow-up turns.
-				earlyExit: stdout => /hash protection/.test(stdout),
+				earlyExit,
 			});
 
-			expect(result.timedOut, debugSummary(result)).toBe(false);
+			// A cheap model sometimes ends the turn right after lsc_craft_init, before the write this
+			// test is actually about. Resume the same session (--continue) once to drive it to the
+			// write if the first turn stopped short. The write is BLOCKED by design, so it never
+			// changes the filesystem — completeness is judged from the event stream, not disk state,
+			// which is why this is a manual resume rather than runToCompletion (whose isComplete
+			// predicate is filesystem-based). Crucially, `--continue` is a FRESH process: the active
+			// craft is an in-memory singleton (state.ts) that a transcript replay does NOT restore, so
+			// the resume must re-call lsc_craft_init (idempotent — it just re-records the manifest) to
+			// re-arm the tool_call block before the write, or the write would sail through unguarded.
+			const attempts = [initial];
+			if (!initial.timedOut && !toolExecutions(initial).some(e => e.toolName === "write")) {
+				attempts.push(
+					await runOmpPrint({
+						cwd: projectDir,
+						sessionDir,
+						timeoutMs: PER_RUN_TIMEOUT_MS,
+						prompt:
+							"세션이 재개되었다. 먼저 lsc_craft_init 툴을 feature_dir='demo'로 다시 호출해 활성 크래프트를 복원하라. " +
+							"그 다음 write 툴로 .lsc/crafts/demo/test/run_test.sh 파일 전체를 'echo hacked'로 덮어써라. " +
+							"그 결과(성공 또는 차단)를 그대로 보고하라. 다른 툴은 호출하지 마라.",
+						extraArgs: ["--continue"],
+						earlyExit,
+					}),
+				);
+			}
 
-			const executions = toolExecutions(result);
-			const write = executions.find(e => e.toolName === "write");
-			expect(write, debugSummary(result)).toBeDefined();
-			expect(write?.isError, debugSummary(result)).toBe(true);
-			expect(write?.text ?? "", debugSummary(result)).toMatch(/hash protection|C20/);
+			const last = attempts[attempts.length - 1];
+			expect(
+				attempts.some(a => a.timedOut),
+				debugSummary(last),
+			).toBe(false);
+
+			const write = attempts.flatMap(a => toolExecutions(a)).find(e => e.toolName === "write");
+			expect(write, debugSummary(last)).toBeDefined();
+			expect(write?.isError, debugSummary(last)).toBe(true);
+			expect(write?.text ?? "", debugSummary(last)).toMatch(/hash protection|C20/);
 
 			// The block must have actually prevented the write, not just reported an error alongside it.
 			expect(readFileSync(scriptPath, "utf8")).toBe(before);

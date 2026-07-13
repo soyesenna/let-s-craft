@@ -182,18 +182,21 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 			const worktreeBranch = git(worktreePath, ["rev-parse", "--abbrev-ref", "HEAD"]);
 			expect(worktreeBranch, "worktree checkout must not be on the base branch").not.toBe(baseBranch);
 
-			// AC4 step commits: pre-craft must have committed each Stage 1-4 sub-stage separately
-			// (research/trace/spec/plan/test) on the worktree's feature branch, not as one bulk
-			// commit — at least 5 commits since the branch diverged from base. The exact per-stage
-			// keyword match is a soft, diagnostic-only check (commit message wording is LLM-composed
-			// prose, not a fixed contract) — the hard gate is the commit COUNT.
+			// AC4 step commits: pre-craft must have committed each Stage 1-4 sub-stage separately on
+			// the worktree's feature branch, not as one bulk commit. The four deterministic stages are
+			// trace/spec/plan/test — research is the fifth in live mode, but fixture mode STUBS external
+			// research (pre-craft §1.7 / Stage 1 fixture branch), so there is no research artifact to
+			// commit and no research commit is expected here; that fifth commit is only observable in a
+			// live run. So the hard gate for a fixture E2E is >=4 (trace/spec/plan/test), and the exact
+			// per-stage keyword match is a soft, diagnostic-only check (commit wording is LLM-composed
+			// prose, not a fixed contract).
 			const preCraftLog = git(worktreePath, ["log", "--oneline", `${baseBranch}..HEAD`]);
 			const preCraftCommitLines = preCraftLog.split("\n").filter(line => line.length > 0);
 			expect(
 				preCraftCommitLines.length,
-				`expected >=5 step commits on the worktree branch after pre-craft (research/trace/spec/plan/test, AC4), got ${preCraftCommitLines.length}.\n${preCraftLog}`,
-			).toBeGreaterThanOrEqual(5);
-			for (const keyword of ["research", "trace", "spec", "plan", "test"]) {
+				`expected >=4 step commits on the worktree branch after pre-craft (trace/spec/plan/test — research is fixture-stubbed, AC4), got ${preCraftCommitLines.length}.\n${preCraftLog}`,
+			).toBeGreaterThanOrEqual(4);
+			for (const keyword of ["trace", "spec", "plan", "test"]) {
 				if (!new RegExp(keyword, "i").test(preCraftLog)) {
 					// biome-ignore lint/suspicious/noConsole: intentional soft-check diagnostic, not a test failure.
 					console.warn(`lets-craft E2E (soft check, not a failure): no pre-craft commit message matched stage keyword "${keyword}".\n${preCraftLog}`);
