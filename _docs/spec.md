@@ -46,7 +46,7 @@
   - eg. codex-glm preset
     - explore : openai-codex/gpt-5.6-luna:medium
     - tracer : zai-coding/glm-5.2:xhigh
-- preset 에 모델이 지정되지 않은 Agent 는 main session(default) 모델로 fallback 한다.
+- preset 에 모델이 지정되지 않은 Agent 는 main session 모델로 fallback 한다. preset 에 세션 default 모델(`default` 필드)이 지정되어 있으면 세션 메인 모델 자체가 그 값으로 전환되므로, 미지정 Agent 는 결과적으로 preset default 를 따른다.
 
 ## skill 목록
 
