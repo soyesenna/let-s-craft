@@ -265,7 +265,7 @@ function registerVerifyHashTool(pi: ExtensionAPI): void {
 			// craft's worktreeRoot when it's actually this feature's craft, not some other
 			// feature's leftover active-craft state.
 			const craft = getActiveCraft();
-			const root = craft && craft.feature === feature ? (craft.worktreeRoot ?? ctx.cwd) : ctx.cwd;
+			const root = craft && craft.feature === feature ? (craft.worktreeRoot ?? craft.projectRoot) : ctx.cwd;
 			const testDir = craftTestDir(root, feature);
 			const manifestPath = craftHashManifestPath(root, feature);
 			const recorded = loadManifest(manifestPath);
@@ -314,7 +314,7 @@ function registerRestoreTestsTool(pi: ExtensionAPI): void {
 			const feature = resolveFeatureName(params.feature_dir);
 			// Feature-match guard — same rationale as lsc_verify_hash above.
 			const craft = getActiveCraft();
-			const root = craft && craft.feature === feature ? (craft.worktreeRoot ?? ctx.cwd) : ctx.cwd;
+			const root = craft && craft.feature === feature ? (craft.worktreeRoot ?? craft.projectRoot) : ctx.cwd;
 			const testDir = craftTestDir(root, feature);
 			const manifestPath = craftHashManifestPath(root, feature);
 			const recorded = loadManifest(manifestPath);
