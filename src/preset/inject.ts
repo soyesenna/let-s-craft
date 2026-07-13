@@ -14,6 +14,8 @@ export interface InjectResult {
 	applied: AgentModelOverrides;
 	/** Validation warnings surfaced to the user. */
 	warnings: string[];
+	/** Validated session-default model spec, or null when absent or dropped. */
+	defaultSpec: string | null;
 }
 
 /**
@@ -27,16 +29,21 @@ export function applyActivePreset(args: {
 	cwd: string;
 }): InjectResult {
 	const file = loadEffectiveModelsFile(args.cwd);
-	if (!file.active) return { preset: null, applied: {}, warnings: [] };
+	if (!file.active) return { preset: null, applied: {}, warnings: [], defaultSpec: null };
 
 	const preset = file.presets[file.active];
 	if (!preset) {
-		return { preset: file.active, applied: {}, warnings: [`active preset "${file.active}" not found in models.yaml`] };
+		return {
+			preset: file.active,
+			applied: {},
+			warnings: [`active preset "${file.active}" not found in models.yaml`],
+			defaultSpec: null,
+		};
 	}
 
-	const { valid, warnings } = validatePreset(preset, spec => args.models.resolve(spec) !== undefined);
+	const { valid, warnings, defaultSpec } = validatePreset(preset, spec => args.models.resolve(spec) !== undefined);
 	const applied: AgentModelOverrides = {};
 	for (const entry of valid) applied[entry.taskAgent] = entry.spec;
 	applySessionAgentModelOverrides(args.settings, applied);
-	return { preset: file.active, applied, warnings };
+	return { preset: file.active, applied, warnings, defaultSpec };
 }

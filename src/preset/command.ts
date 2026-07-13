@@ -11,14 +11,17 @@ import {
 	loadEffectiveModelsFile,
 	loadModelsFileAt,
 	type ModelsFile,
+	type PresetEntry,
 	globalModelsPath,
 	projectModelsPath,
 	saveModelsFileAt,
 	toTaskAgentName,
 } from "./models-file.js";
+import { applySessionDefaultModel } from "./session-default.js";
 import { EFFORT_LEVELS } from "./validate.js";
 
-const SKIP_LABEL = "(skip — inherit session model)";
+const SKIP_LABEL = "(skip — inherit session model / preset default)";
+const DEFAULT_SKIP_LABEL = "(skip — no session default)";
 const DEFAULT_EFFORT_LABEL = "(default effort)";
 
 type Scope = "global" | "project";
@@ -28,18 +31,33 @@ function scopePath(scope: Scope, cwd: string): string {
 }
 
 /** Build a human-readable summary of the effective preset config. */
-function summarize(file: ModelsFile): string {
+export function summarize(file: ModelsFile): string {
 	const names = Object.keys(file.presets);
 	if (names.length === 0) return "lets-craft: no presets defined. Create one with `/lsc-preset create`.";
 	const lines = [`lets-craft presets (active: ${file.active ?? "none"})`];
 	for (const name of names) {
 		const marker = name === file.active ? "*" : " ";
+		const preset = file.presets[name];
 		lines.push(`${marker} ${name}`);
-		for (const [agent, spec] of Object.entries(file.presets[name])) {
+		if (preset.default) lines.push(`    default -> ${preset.default}`);
+		for (const [agent, spec] of Object.entries(preset.agents)) {
 			lines.push(`    ${agent} -> ${spec}`);
 		}
 	}
 	return lines.join("\n");
+}
+
+async function pickModelSpec(
+	ctx: ExtensionCommandContext,
+	title: string,
+	modelLabels: string[],
+	skipLabel: string,
+): Promise<string | null> {
+	const chosen = await ctx.ui.select(title, [skipLabel, ...modelLabels]);
+	if (chosen === undefined || chosen === skipLabel) return null;
+	const effort = await ctx.ui.select(`Effort for ${title}`, [DEFAULT_EFFORT_LABEL, ...EFFORT_LEVELS]);
+	if (effort === undefined || effort === DEFAULT_EFFORT_LABEL) return chosen;
+	return `${chosen}:${effort}`;
 }
 
 /** Prompt for one agent's model choice; returns the spec, or null when skipped/cancelled. */
@@ -48,45 +66,69 @@ async function pickModelForAgent(
 	agent: string,
 	modelLabels: string[],
 ): Promise<string | null> {
-	const chosen = await ctx.ui.select(`Model for ${agent} (${toTaskAgentName(agent)})`, [SKIP_LABEL, ...modelLabels]);
-	if (chosen === undefined || chosen === SKIP_LABEL) return null;
-	const effort = await ctx.ui.select(`Effort for ${agent}`, [DEFAULT_EFFORT_LABEL, ...EFFORT_LEVELS]);
-	if (effort === undefined || effort === DEFAULT_EFFORT_LABEL) return chosen;
-	return `${chosen}:${effort}`;
+	return pickModelSpec(ctx, `Model for ${agent} (${toTaskAgentName(agent)})`, modelLabels, SKIP_LABEL);
 }
 
-/** Walk the seven agents, building a preset from interactive selections. */
-async function buildPreset(
-	ctx: ExtensionCommandContext,
-	base: Record<string, string>,
-): Promise<Record<string, string> | null> {
+/** Prompt for a session default first, then walk the seven agent overrides. */
+async function buildPreset(ctx: ExtensionCommandContext, base: PresetEntry): Promise<PresetEntry | null> {
 	const models = ctx.models.list();
 	if (models.length === 0) {
 		ctx.ui.notify("No authenticated models available. Log in to a provider first.", "error");
 		return null;
 	}
 	const modelLabels = models.map(model => `${model.provider}/${model.id}`).sort();
-	const preset: Record<string, string> = {};
+	const defaultSpec = await pickModelSpec(
+		ctx,
+		`Session default model${base.default ? ` [current: ${base.default}]` : ""}`,
+		modelLabels,
+		DEFAULT_SKIP_LABEL,
+	);
+	const agents: Record<string, string> = {};
 	for (const agent of LSC_AGENT_NAMES) {
-		const current = base[agent];
+		const current = base.agents[agent];
 		const hint = current ? ` [current: ${current}]` : "";
 		const spec = await pickModelForAgent(ctx, `${agent}${hint}`, modelLabels);
-		if (spec !== null) preset[agent] = spec;
+		if (spec !== null) agents[agent] = spec;
 	}
-	return preset;
+	return {
+		...(defaultSpec !== null ? { default: defaultSpec } : {}),
+		agents,
+	};
 }
 
 /**
- * Re-resolve the effective active preset (global+project) and re-inject it live.
- * Called after every mutation (switch/create/edit/delete) so the running session
- * never drifts from what models.yaml now says — matching AC2d-live's "no restart
- * needed" contract for more than just the `switch` subcommand.
+ * Re-resolve the effective active preset and re-inject its agent overrides.
+ * A session default is applied only for an explicitly requested matching
+ * switch, or for creation that also auto-activated the new preset.
  */
-async function reinject(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function reinject(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	applyDefaultFor: string | null = null,
+): Promise<void> {
 	const result = applyActivePreset({ settings: pi.pi.settings, models: ctx.models, cwd: ctx.cwd });
+	let appliedDefault: string | null = null;
+	if (applyDefaultFor !== null && result.preset === applyDefaultFor && result.defaultSpec !== null) {
+		const outcome = await applySessionDefaultModel(result.defaultSpec, {
+			resolve: spec => ctx.models.resolve(spec),
+			setModel: model => pi.setModel(model),
+			setThinkingLevel: level =>
+				pi.setThinkingLevel(level as Parameters<ExtensionAPI["setThinkingLevel"]>[0]),
+		});
+		if (outcome.status === "applied") {
+			appliedDefault = `${outcome.base}${outcome.effort ? `:${outcome.effort}` : ""}`;
+		} else if (outcome.status !== "none") {
+			const reason = outcome.status === "no-key" ? "no API key" : "not resolvable";
+			ctx.ui.notify(`Session default "${outcome.base}" skipped (${reason}); preset remains active.`, "warning");
+		}
+	}
 	const appliedCount = Object.keys(result.applied).length;
 	if (result.preset) {
-		ctx.ui.notify(`lets-craft: preset "${result.preset}" active (${appliedCount} agent override(s)).`, "info");
+		const modelNotice = appliedDefault === null ? "" : `, session model -> ${appliedDefault}`;
+		ctx.ui.notify(
+			`lets-craft: preset "${result.preset}" active (${appliedCount} agent override(s)${modelNotice}).`,
+			"info",
+		);
 	}
 	for (const warning of result.warnings) ctx.ui.notify(warning, "warning");
 }
@@ -110,7 +152,7 @@ async function runSwitch(pi: ExtensionAPI, ctx: ExtensionCommandContext, name: s
 	file.active = target;
 	saveModelsFileAt(path, file);
 	ctx.ui.notify(`Switched to preset "${target}" (${scope}).`, "info");
-	await reinject(pi, ctx);
+	await reinject(pi, ctx, target);
 }
 
 async function runCreate(pi: ExtensionAPI, ctx: ExtensionCommandContext, name: string | undefined, scope: Scope): Promise<void> {
@@ -120,16 +162,20 @@ async function runCreate(pi: ExtensionAPI, ctx: ExtensionCommandContext, name: s
 	}
 	const presetName = name ?? (await ctx.ui.input("New preset name"));
 	if (!presetName) return;
-	const preset = await buildPreset(ctx, {});
+	const preset = await buildPreset(ctx, { agents: {} });
 	if (preset === null) return;
 
 	const path = scopePath(scope, ctx.cwd);
 	const file = loadModelsFileAt(path);
 	file.presets[presetName] = preset;
-	if (!file.active) file.active = presetName;
+	const autoActivated = !file.active;
+	if (autoActivated) file.active = presetName;
 	saveModelsFileAt(path, file);
-	ctx.ui.notify(`Saved preset "${presetName}" (${scope}) with ${Object.keys(preset).length} agent override(s).`, "info");
-	await reinject(pi, ctx);
+	ctx.ui.notify(
+		`Saved preset "${presetName}" (${scope}) with ${Object.keys(preset.agents).length} agent override(s)${preset.default ? " + session default" : ""}.`,
+		"info",
+	);
+	await reinject(pi, ctx, autoActivated ? presetName : null);
 }
 
 async function runEdit(pi: ExtensionAPI, ctx: ExtensionCommandContext, name: string | undefined, scope: Scope): Promise<void> {
