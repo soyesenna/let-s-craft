@@ -239,4 +239,139 @@ describe.skipIf(!RUN_E2E)("enforcement rules (AC5, real omp integration)", () =>
 		},
 		TEST_TIMEOUT_MS,
 	);
+
+	// R7 observation (plan Step 6 test contract): enforcement.ts's tool_call matcher only inspects
+	// write/edit/ast_edit/bash (PROTECTED_TOOLS + the bash special-case) — `read` is never even
+	// evaluated for blocking (enforcement.ts:156 returns undefined immediately for any tool not in
+	// that set). This is not a code change to verify (the code is unchanged and unconditionally
+	// permits `read`); it fixes in place that the skill-prescribed alternative for inspecting a
+	// protected file (`read` instead of `cat`/`head`/`tail`, which the bash substring matcher DOES
+	// false-positive against per craft/SKILL.md's prohibited/prescribed table) actually works.
+	it(
+		"4. read passthrough — reading the protected test tree via the `read` tool during an active craft is never blocked",
+		async () => {
+			const { projectDir, sessionDir, scriptPath } = setupMinimalCraftProject();
+
+			const result = await runOmpPrint({
+				cwd: projectDir,
+				sessionDir,
+				timeoutMs: PER_RUN_TIMEOUT_MS,
+				prompt:
+					"먼저 lsc_craft_init 툴을 feature_dir='demo'로 정확히 한 번 호출하라. 그 다음 read 툴로 " +
+					`정확히 이 절대경로 파일을 읽어라: ${scriptPath} — 그 파일의 첫 줄을 그대로 보고하라. ` +
+					"다른 툴은 호출하지 마라.",
+			});
+
+			expect(result.timedOut, debugSummary(result)).toBe(false);
+
+			const executions = toolExecutions(result);
+			const init = executions.find(e => e.toolName === "lsc_craft_init");
+			expect(init, debugSummary(result)).toBeDefined();
+			expect(init?.isError, debugSummary(result)).toBe(false);
+
+			const read = executions.find(e => e.toolName === "read");
+			expect(read, debugSummary(result)).toBeDefined();
+			// The whole point of this observation: unlike test 1's `write`, this must NOT be blocked —
+			// no "hash protection"/C20 error, and no error at all.
+			expect(read?.isError, debugSummary(result)).toBe(false);
+			expect(read?.text ?? "", debugSummary(result)).not.toMatch(/hash protection|C20/);
+
+			// Session-wide: no tool execution anywhere in this run reported the block text — the
+			// active craft's protection never fired against this read-only access pattern.
+			expect(executions.some(e => e.isError && /hash protection/.test(e.text)), debugSummary(result)).toBe(false);
+		},
+		TEST_TIMEOUT_MS,
+	);
+
+	// R8 yes-path (plan Step 9 test contract): the symmetric case to test 2 above (hash-violation
+	// no -> abort). Here the user APPROVES an intentional protected-canon fix via lsc_confirm, which
+	// routes through lsc_craft_release (clearActiveCraft — release.ts) instead of lsc_craft_abort.
+	// Once released, the tool_call block no longer applies (getActiveCraft() is undefined — same
+	// "no active craft" state enforcement.ts's evaluateToolCallForActiveCraft early-returns
+	// undefined for), so the canon edit goes through, and a fresh lsc_craft_init call re-baselines
+	// the manifest against the now-intentionally-modified content — RK8's required re-init, verified
+	// here by asserting the immediately-following lsc_verify_hash reports zero violations.
+	it(
+		"5. release approval — an explicitly approved protected-canon edit goes through lsc_craft_release, and a re-init + re-verify afterward passes clean",
+		async () => {
+			const { projectDir, sessionDir, scriptPath } = setupMinimalCraftProject();
+			const fixtureDir = mkdtempSync(join(tmpdir(), "lsc-e2e-enforcement-release-fixture-"));
+			cleanupDirs.push(fixtureDir);
+			const answersPath = join(fixtureDir, "answers.json");
+			// Test-local inline answers.json (mirrors test 2's own pattern) — never the shared
+			// fixtures/sample-ts-cli/answers.json, which this test does not touch. The explicit
+			// "^\\[Release\\]" rule is redundant with `default: "yes"` (any unmatched lsc_confirm
+			// question already answers "yes") but documents intent and survives a future default flip.
+			writeFileSync(
+				answersPath,
+				JSON.stringify({
+					default: "yes",
+					answers: [{ match: "^\\[Release\\]", response: "yes" }],
+				}),
+			);
+
+			const result = await runOmpPrint({
+				cwd: projectDir,
+				sessionDir,
+				timeoutMs: PER_RUN_TIMEOUT_MS,
+				env: { LSC_FIXTURE: answersPath },
+				prompt:
+					"다음 단계를 순서대로, 각각 정확히 한 번씩 실행하라. " +
+					"1) lsc_craft_init 툴을 feature_dir='demo'로 호출하라. " +
+					'2) lsc_confirm 툴로 정확히 이 질문을 하라: "[Release] Protected test canon needs an approved, ' +
+					'intentional modification. Release hash protection and proceed? Proceed?" ' +
+					'3) lsc_confirm의 응답이 "yes"이면, lsc_craft_release 툴을 reason=\'user approved an intentional ' +
+					"fix to the protected test canon via lsc_confirm'으로 호출하라. " +
+					`4) write 툴로 ${scriptPath} 파일 전체를 정확히 다음 내용으로 덮어써라: ` +
+					'"#!/bin/bash\\necho ok-modified\\nexit 0\\n" ' +
+					"5) lsc_craft_init 툴을 feature_dir='demo'로 다시 호출해 매니페스트를 재베이스라인하라. " +
+					"6) lsc_verify_hash 툴을 feature_dir='demo'로 호출하라. " +
+					"각 단계의 결과를 그대로 보고하라. 위에 명시되지 않은 다른 툴은 호출하지 마라.",
+				// lsc_verify_hash's own success text (hash-manifest.ts's registerVerifyHashTool: "hash
+				// verification passed — ...") only appears once the re-init + re-verify sequence has
+				// actually succeeded clean — every assertion below already holds by then.
+				earlyExit: stdout => /hash verification passed/.test(stdout),
+			});
+
+			expect(result.timedOut, debugSummary(result)).toBe(false);
+
+			const executions = toolExecutions(result);
+
+			const confirm = executions.find(e => e.toolName === "lsc_confirm");
+			expect(confirm, debugSummary(result)).toBeDefined();
+			expect(confirm?.text.trim().toLowerCase(), debugSummary(result)).toBe("yes");
+
+			const release = executions.find(e => e.toolName === "lsc_craft_release");
+			expect(release, debugSummary(result)).toBeDefined();
+			expect(release?.isError, debugSummary(result)).toBe(false);
+			expect(release?.text ?? "", debugSummary(result)).toMatch(/released for approved canon modification/);
+
+			// The canon edit itself must not have been blocked — release cleared active-craft
+			// protection before this write ran.
+			const writes = executions.filter(e => e.toolName === "write");
+			expect(writes.length, debugSummary(result)).toBeGreaterThan(0);
+			for (const write of writes) {
+				expect(write.isError, `write unexpectedly blocked after release.\n${debugSummary(result)}`).toBe(false);
+			}
+			expect(readFileSync(scriptPath, "utf8")).toContain("ok-modified");
+
+			// Two lsc_craft_init calls: the original activation and RK8's required re-init after the
+			// approved edit.
+			const inits = executions.filter(e => e.toolName === "lsc_craft_init");
+			expect(inits.length, debugSummary(result)).toBeGreaterThanOrEqual(2);
+			for (const init of inits) {
+				expect(init.isError, debugSummary(result)).toBe(false);
+			}
+
+			// The re-verify after re-init must report a clean pass — the whole point of the
+			// release -> edit -> re-init sequence (RK8): the manifest now matches the intentionally
+			// modified content, zero violations.
+			const verify = executions.find(e => e.toolName === "lsc_verify_hash");
+			expect(verify, debugSummary(result)).toBeDefined();
+			expect(verify?.isError, debugSummary(result)).toBe(false);
+			expect(verify?.text ?? "", debugSummary(result)).toMatch(/hash verification passed/);
+			expect(verify?.text ?? "", debugSummary(result)).not.toMatch(/HASH VIOLATION/);
+		},
+		TEST_TIMEOUT_MS,
+	);
 });
