@@ -58,6 +58,7 @@ Spawn one `lsc-executor` via `task` (flat form, `agent: "lsc-executor"`). The `a
 - Note that some of the plan may already be done — instruct the executor to check `git log`/`git diff` in the implementation root first rather than assuming a blank slate.
 - On iterations after the first: the structured failure summary and the log path from the most recent `lsc_run_tests` call (C21) — this is how the loop feeds test results back without replaying the whole transcript.
 - An explicit reminder that `.lsc/crafts/{feature}/test/` (including `run_test.sh`) and `trace.md`/`spec.md`/`plan.md` are read-only and hash/tool-call-protected — this is already in `agents/lsc-executor.md`'s Constraints, but restate it here per that agent's own convention of not relying on the platform block alone.
+- The forbidden-tool / false-positive summary from §4's table: use `read`/`glob` for anything under the protected `test/` tree, never `cat`/`head`/`tail`/`ls` via `bash`; never write the protected path as a literal string inside a commit message, `echo`, or any other text output; and if a test itself looks wrong, that is not something to fix by editing it — report the objection instead.
 
 lsc-executor is expected to make its own feature-granularity commits per this project's own RULE (already part of its system prompt as a bundled capability, not a project-tree file) as it works — this skill does not commit on the executor's behalf mid-loop.
 
@@ -70,7 +71,7 @@ Call `lsc_verify_hash(feature_dir)` **before** `lsc_run_tests` — this ordering
 Read `details.passed`/`details.violations`, not `isError` (a clean result never sets `isError`; violations are reported through `passed: false` + the `violations` array of `{path, kind}`).
 
 **On violation** — stop the loop immediately, do not run tests this iteration:
-1. Gather the actual diff for context, since the tool only reports paths and kinds: `git status --short -- .lsc/crafts/{feature}/test/` and `git diff -- .lsc/crafts/{feature}/test/`. This is a read-only inspection, not the restore itself — `git status`/`git diff` never touch the protected tree's contents, so the `tool_call` block has no reason to (and does not) stop them.
+1. Gather the actual diff for context, since the tool only reports paths and kinds: run **path-argument-free** `git status --short` and `git diff` — no `-- .lsc/crafts/{feature}/test/` argument — then read the output yourself and pick out the lines that touch `.lsc/crafts/{feature}/test/`. Attaching the protected path as a command argument gets the call blocked: the `tool_call` handler's bash matcher (`src/craft/enforcement.ts`'s `containsProtectedPath`) is a plain substring match on the command's text and does not distinguish this read from a write — see §4's forbidden-tool table for the general pattern.
 2. Present the violated paths (with kind: added/removed/modified) and the diff/status output to the user via `lsc_confirm`:
    `[Hash Violation] {N} protected test asset(s) changed: {violations summary}. Restore them and continue the craft loop? Proceed?`
 3. **Approved** → call `lsc_restore_tests(feature_dir)` — **never** attempt the restore yourself via `bash`/`git checkout`/`git clean`, or any other `write`/`edit`/`bash` call. This is not a style preference: the protected tree is under the same `tool_call` block C20 enforces everywhere else, so a `bash`-based restore attempt would be blocked by the very protection it's trying to work around, and the loop would deadlock retrying it forever. `lsc_restore_tests` is a dedicated internal-fs tool built exactly for this — it does not go through `write`/`edit`/`bash` and so is not itself subject to that block. It also re-verifies for you: read `details.passed`/`details.violations` from its result directly (no separate `lsc_verify_hash` call needed). If `details.passed` is still `false` after calling it, treat that as a new, unresolved violation — report it to the user via a fresh `[Hash Violation]` prompt rather than silently retrying. Once `details.passed` is `true`, continue to §3.4 with the executor's already-made implementation-code changes intact (only the protected tree was reverted — no need to re-spawn the executor).
@@ -90,6 +91,17 @@ Call `lsc_run_tests(feature_dir)`. Distinguish two outcomes carefully — they a
 ## 4. What this loop never does (C20)
 
 Never call `write`/`edit`/`ast_edit`/`bash` yourself against `.lsc/crafts/{feature}/test/` (including `run_test.sh`) at any point in this skill, and never instruct the executor to. The `tool_call` block enforces this at the platform level and will return `{block: true, reason: ...}` if attempted — but the discipline is stated here too, not just relied on as a backstop. If you conclude a test is actually wrong (poorly written, testing the wrong thing), the correct move is **never** to edit it — report your reasoning to the user via `lsc_confirm` and let them decide (they can pause the craft loop and fix the test themselves outside this skill's scope). Silently working around a test you disagree with, or hard-coding output to satisfy a specific assertion, is exactly the failure mode this whole loop exists to prevent.
+
+**Forbidden-tool / false-positive class table.** The `tool_call` block's bash matcher is a plain substring match of the protected `test/` path against the command's own text — it does not parse the shell, and it does not distinguish a read from a write. That means the discipline is not just "never write to `test/`," it is "never let a bash command's text contain that path string at all," even for commands that are purely read-only. Observed in practice: a plain read-only `cat` against a protected file, and a commit message that merely *mentioned* the protected path as a string, were both blocked by this same substring match.
+
+| Want | Forbidden | Use instead |
+|---|---|---|
+| Modify a protected test asset | `write`/`edit`/`ast_edit`/`bash` | Not permitted at all — report to the user via `lsc_confirm` (see the paragraph above) |
+| Read a protected test asset | `cat`/`head`/`tail` via `bash` (false-positive block — same substring match as a write) | the `read` tool |
+| List protected test assets | `ls .../test/` via `bash` | `glob` |
+| Inspect a hash-violation diff | `git diff -- .../test/` / `git status -- .../test/` (false-positive block) | path-argument-free `git status --short` / `git diff`, then filter the output yourself (§3.3 point 1) |
+| Restore a violated protected asset | `bash`/`git checkout`/`git clean` (self-blocking — the restore command is itself a protected-path match, so retrying it deadlocks) | `lsc_restore_tests` (§3.3 point 3) |
+| Commit message / `echo` / any text you emit | writing the protected path as a literal string inside it | never spell out the protected path inside commit messages, `echo` text, or log output — the block does not care that the surrounding command is otherwise harmless |
 
 ## 5. Finalization
 

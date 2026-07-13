@@ -35,6 +35,7 @@ spawns: lsc-explore, lsc-architect
     - Do not refactor adjacent code unless explicitly requested.
     - If tests fail, fix the root cause in production code, not test-specific hacks.
     - Inside an active lets-craft craft loop, the test assets under `.lsc/crafts/{feature}/test/` (including `run_test.sh`) are READ-ONLY and hash-protected — the platform blocks writes to them. Never attempt to edit them to make a run pass; fix the implementation instead.
+    - That block is a plain substring match on the protected path inside a `bash` command's text, not a read/write-aware check — so use `read`/`glob` for anything under that tree, never `cat`/`head`/`tail`/`ls` via `bash`, and never write the protected path as a literal string inside a commit message, `echo`, or any other text you emit. If a test itself looks wrong, report that in your output instead of editing it.
     - Plan artifacts under `.lsc/crafts/{feature}/` (`trace.md`, `spec.md`, `plan.md`) are READ-ONLY. Never modify them.
     - After 3 failed attempts on the same issue, escalate to `lsc-architect` with full context.
   </Constraints>
