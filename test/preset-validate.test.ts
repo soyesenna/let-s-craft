@@ -42,7 +42,7 @@ describe("validatePreset", () => {
 		);
 		expect(result.valid).toEqual([]);
 		expect(result.warnings).toEqual([
-			'executor: invalid effort ":ultra" (expected minimal|low|medium|high|xhigh) — using session model',
+			'executor: invalid effort ":ultra" (expected minimal|low|medium|high|xhigh|max) — using session model',
 		]);
 	});
 
@@ -61,8 +61,8 @@ describe("validatePreset", () => {
 		expect(result.warnings).toHaveLength(1);
 	});
 
-	it("exposes exactly the five catalog effort levels", () => {
-		expect([...EFFORT_LEVELS]).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+	it("exposes exactly the six catalog effort levels", () => {
+		expect([...EFFORT_LEVELS]).toEqual(["minimal", "low", "medium", "high", "xhigh", "max"]);
 	});
 
 	it("warns and drops a malformed default while retaining valid agent overrides", () => {
@@ -88,7 +88,7 @@ describe("validatePreset", () => {
 
 		expect(result.defaultSpec).toBeNull();
 		expect(result.warnings).toEqual([
-			'default: invalid effort ":ultra" (expected minimal|low|medium|high|xhigh) — keeping current session model',
+			'default: invalid effort ":ultra" (expected minimal|low|medium|high|xhigh|max) — keeping current session model',
 		]);
 		expect(result.valid).toEqual([{ agent: "executor", taskAgent: "lsc-executor", spec: "anthropic/ok:medium" }]);
 	});
@@ -144,5 +144,40 @@ describe("validatePreset", () => {
 		expect(result.warnings[0]).toMatch(/"agents"/);
 		expect(result.defaultSpec).toBeNull();
 		expect(taskAgents).toEqual(["lsc-executor"]);
+	});
+
+	it("accepts a :max effort suffix on an agent entry", () => {
+		const result = validatePreset(
+			{ agents: { executor: "anthropic/claude-opus-4-8:max" } },
+			availabilityOf(["anthropic/claude-opus-4-8"]),
+		);
+		expect(result.warnings).toEqual([]);
+		expect(result.valid).toEqual([
+			{ agent: "executor", taskAgent: "lsc-executor", spec: "anthropic/claude-opus-4-8:max" },
+		]);
+	});
+
+	it("accepts a :max effort suffix on the default field", () => {
+		const result = validatePreset(
+			{ default: "anthropic/claude-opus-4-8:max", agents: {} },
+			availabilityOf(["anthropic/claude-opus-4-8"]),
+		);
+		expect(result.warnings).toEqual([]);
+		expect(result.defaultSpec).toBe("anthropic/claude-opus-4-8:max");
+	});
+
+	it("treats a full spec that resolves as a literal model ID without splitting the trailing suffix", () => {
+		// "prov/model:max" is itself a registered availability entry here (not just its base) —
+		// mirrors a real model whose literal ID happens to end in a catalog effort word.
+		const result = validatePreset(
+			{
+				default: "prov/model:max",
+				agents: { executor: "prov/model:max" },
+			},
+			availabilityOf(["prov/model:max"]),
+		);
+		expect(result.warnings).toEqual([]);
+		expect(result.defaultSpec).toBe("prov/model:max");
+		expect(result.valid).toEqual([{ agent: "executor", taskAgent: "lsc-executor", spec: "prov/model:max" }]);
 	});
 });

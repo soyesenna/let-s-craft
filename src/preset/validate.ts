@@ -1,12 +1,12 @@
 // Validate a preset's model strings against the authenticated model set.
 //
 // omp's `resolve()` strips the thinking suffix and resolves the base model, so we
-// validate the `:effort` suffix locally against the five catalog levels and never
+// validate the `:effort` suffix locally against the six catalog levels and never
 // silently ignore a bad one (C13).
 import { type PresetEntry, toTaskAgentName } from "./models-file.js";
 
 /** Valid thinking-effort suffixes (catalog/effort.ts). */
-export const EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+export const EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 export interface ResolvedOverride {
@@ -55,19 +55,25 @@ export function validatePreset(preset: PresetEntry, isModelAvailable: (base: str
 
 	if (preset.default !== undefined) {
 		const { base, effort } = splitEffort(preset.default);
-		const slash = base.indexOf("/");
-		if (slash <= 0 || slash === base.length - 1) {
-			warnings.push(
-				`default: invalid model spec "${preset.default}" (expected provider/model[:effort]) — keeping current session model`,
-			);
-		} else if (effort !== null && !isEffort(effort)) {
-			warnings.push(
-				`default: invalid effort ":${effort}" (expected ${EFFORT_LEVELS.join("|")}) — keeping current session model`,
-			);
-		} else if (!isModelAvailable(base)) {
-			warnings.push(`default: model "${base}" not found or not authenticated — keeping current session model`);
-		} else {
+		if (effort !== null && isModelAvailable(preset.default)) {
+			// A colon-bearing full spec that itself resolves as a literal model ID — don't
+			// split it, mirroring the host's "literal model IDs keep winning" behavior.
 			defaultSpec = preset.default;
+		} else {
+			const slash = base.indexOf("/");
+			if (slash <= 0 || slash === base.length - 1) {
+				warnings.push(
+					`default: invalid model spec "${preset.default}" (expected provider/model[:effort]) — keeping current session model`,
+				);
+			} else if (effort !== null && !isEffort(effort)) {
+				warnings.push(
+					`default: invalid effort ":${effort}" (expected ${EFFORT_LEVELS.join("|")}) — keeping current session model`,
+				);
+			} else if (!isModelAvailable(base)) {
+				warnings.push(`default: model "${base}" not found or not authenticated — keeping current session model`);
+			} else {
+				defaultSpec = preset.default;
+			}
 		}
 	}
 
@@ -84,6 +90,12 @@ export function validatePreset(preset: PresetEntry, isModelAvailable: (base: str
 	for (const [agent, spec] of Object.entries(preset.agents)) {
 		if (agent === "default" || agent === "agents") continue;
 		const { base, effort } = splitEffort(spec);
+		if (effort !== null && isModelAvailable(spec)) {
+			// A colon-bearing full spec that itself resolves as a literal model ID — don't
+			// split it, mirroring the host's "literal model IDs keep winning" behavior.
+			valid.push({ agent, taskAgent: toTaskAgentName(agent), spec });
+			continue;
+		}
 		if (effort !== null && !isEffort(effort)) {
 			warnings.push(`${agent}: invalid effort ":${effort}" (expected ${EFFORT_LEVELS.join("|")}) — using session model`);
 			continue;
