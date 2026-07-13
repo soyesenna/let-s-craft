@@ -49,12 +49,21 @@ export const FIXTURE_SAMPLE_DIR = join(REPO_ROOT, "fixtures", "sample-ts-cli");
 // Running" text, vs. 2 job-poll calls / 10 "Still Running"/"Spawned agent" occurrences for the
 // same single-subagent prompt with the default. Written once per process (content is static,
 // no per-test isolation needed) and reused by every runOmpPrint call below.
+//
+// The overlay also pins `modelRoles.task: "default"`. A developer's own
+// `~/.omp/agent/config.yml` may set `modelRoles.task` to a real model (e.g. a codex tier); for a
+// task-spawned subagent that host role otherwise takes precedence over parent-live inheritance,
+// which makes preset-inheritance assertions (a tracer without an explicit preset entry should
+// inherit the session default, not the developer's host task role) environment-dependent. The
+// `"default"` sentinel means "session-inherited", so the overlay makes every task spawn hermetic
+// against whatever the host config happens to carry — per-agent `agentModelOverrides` (e.g. the
+// cheap-preset seeds) still win over it, so this only pins the fallback, not the overrides.
 let cachedSyncModeConfigPath: string | undefined;
 function syncModeConfigPath(): string {
 	if (!cachedSyncModeConfigPath) {
 		const dir = mkdtempSync(join(tmpdir(), "lsc-e2e-config-"));
 		const path = join(dir, "sync-mode.yml");
-		writeFileSync(path, "async:\n  enabled: false\n");
+		writeFileSync(path, 'async:\n  enabled: false\nmodelRoles:\n  task: "default"\n');
 		cachedSyncModeConfigPath = path;
 	}
 	return cachedSyncModeConfigPath;

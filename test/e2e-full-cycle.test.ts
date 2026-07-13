@@ -235,7 +235,7 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 				`run_test.sh did not exit 0 in the worktree after craft (status=${rerun.status}).\nstdout:\n${rerun.stdout}\nstderr:\n${rerun.stderr}\n\n${debugSummary(craftResult)}`,
 			).toBe(0);
 
-			// ==================== Stage ③ post-craft (pre-land) ====================
+			// ==================== Stage ③ post-craft (audit, and land if approved) ====================
 			const postCraftResult = await runOmpPrint({
 				cwd: projectDir,
 				sessionDir,
@@ -246,8 +246,15 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 			});
 			expect(postCraftResult.timedOut, `post-craft timed out.\n${debugSummary(postCraftResult)}`).toBe(false);
 
-			const auditPath = join(craftDir, "audit", "audit-0.md");
-			expect(existsSync(auditPath), `audit/audit-0.md missing.\n${debugSummary(postCraftResult)}`).toBe(true);
+			// post-craft's audit and its §7 land run in the *same* omp invocation: on an APPROVE-family
+			// verdict the fixture answers "yes" to the [Land] Merge? gate, so by the time this call
+			// returns the worktree has already been merged and pruned. There is no separable
+			// "after audit, before land" filesystem moment to observe — read audit-0.md from wherever
+			// it landed: the merged base-branch path if land ran (worktree gone), else the worktree.
+			const landed = !existsSync(worktreePath);
+			const auditCraftDir = landed ? join(projectDir, ".lsc", "crafts", feature) : craftDir;
+			const auditPath = join(auditCraftDir, "audit", "audit-0.md");
+			expect(existsSync(auditPath), `audit/audit-0.md missing (landed=${landed}).\n${debugSummary(postCraftResult)}`).toBe(true);
 			const auditContent = readFileSync(auditPath, "utf8");
 			// Line-start anchor, per skills/post-craft/SKILL.md §4.1 point 2's explicit flag: this
 			// must not match lsc-critic's own embedded "**VERDICT: ...**" sub-line quoted later in
