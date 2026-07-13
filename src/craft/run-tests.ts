@@ -127,7 +127,7 @@ export function registerRunTestsTool(pi: ExtensionAPI): void {
 			"the project root) via a trusted exec — never the LLM's own bash tool. Saves the full transcript to " +
 			"test/logs/run-N.log and returns a pass/fail verdict plus a best-effort structured failure summary (C21).",
 		parameters,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<RunTestsDetails>> {
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx): Promise<AgentToolResult<RunTestsDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
 			const craft = getActiveCraft();
 			if (!craft || craft.feature !== feature) {
@@ -137,7 +137,8 @@ export function registerRunTestsTool(pi: ExtensionAPI): void {
 				};
 			}
 
-			const scriptPath = craftRunTestScriptPath(ctx.cwd, feature);
+			const root = craft.worktreeRoot ?? craft.projectRoot;
+			const scriptPath = craftRunTestScriptPath(root, feature);
 			if (!existsSync(scriptPath)) {
 				return {
 					isError: true,
@@ -152,8 +153,8 @@ export function registerRunTestsTool(pi: ExtensionAPI): void {
 				outcome = await runFeatureTests({
 					feature,
 					scriptPath,
-					execCwd: craft.worktreeRoot ?? craft.projectRoot,
-					logsDir: craftTestLogsDir(ctx.cwd, feature),
+					execCwd: root,
+					logsDir: craftTestLogsDir(root, feature),
 					timeoutMs: params.timeout_ms,
 					exec: pi.exec,
 				});

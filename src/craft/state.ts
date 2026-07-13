@@ -16,7 +16,13 @@ import { craftStatePath } from "../artifacts/paths.js";
 
 export interface CraftState {
 	feature: string;
-	/** Absolute path of the main project root — never the worktree (§3.3). */
+	/**
+	 * Absolute path of the main project root — this field itself is always the main checkout,
+	 * never the worktree (§3.3). It is no longer the sole artifact/state root, though: the
+	 * persisted state file below, the hash manifest, snapshots, and run_test.sh all resolve
+	 * against `worktreeRoot ?? projectRoot` (see `persist` below, and the matching root
+	 * resolution in hash-manifest.ts/run-tests.ts/enforcement.ts).
+	 */
 	projectRoot: string;
 	/** Absolute path of the worktree source root, when `--worktree` was used. */
 	worktreeRoot?: string;
@@ -37,7 +43,7 @@ export interface CraftState {
 let activeCraft: CraftState | undefined;
 
 function persist(state: CraftState): void {
-	const path = craftStatePath(state.projectRoot, state.feature);
+	const path = craftStatePath(state.worktreeRoot ?? state.projectRoot, state.feature);
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, JSON.stringify(state, null, 2));
 }

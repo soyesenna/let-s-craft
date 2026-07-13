@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -42,6 +42,20 @@ describe("setActiveCraft / getActiveCraft", () => {
 		expect(getActiveCraft()).toEqual(state);
 		const persisted = JSON.parse(readFileSync(craftStatePath(projectRoot, "my-feature"), "utf8"));
 		expect(persisted).toEqual(state);
+	});
+
+	// Worktree topology (R5): persist() now targets worktreeRoot ?? projectRoot, not projectRoot
+	// unconditionally — see state.ts's persist().
+	it("persists to the worktree root's .craft-state.json when worktreeRoot is set, not the project root", () => {
+		const projectRoot = tmpProject();
+		const worktreeRoot = tmpProject(); // separate temp dir standing in for a worktree checkout
+		const state: CraftState = { ...freshState(projectRoot), worktreeRoot };
+		setActiveCraft(state);
+
+		expect(getActiveCraft()).toEqual(state);
+		const persisted = JSON.parse(readFileSync(craftStatePath(worktreeRoot, "my-feature"), "utf8"));
+		expect(persisted).toEqual(state);
+		expect(existsSync(craftStatePath(projectRoot, "my-feature"))).toBe(false);
 	});
 });
 

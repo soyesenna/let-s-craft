@@ -84,7 +84,10 @@ function extractPathCandidates(input: Record<string, unknown>): string[] {
 /**
  * Substring match for bash: we can't parse arbitrary shell, so this checks only the two most
  * common ways a command's text would reference the protected path (the absolute `testDir`, and
- * `testDir` written relative to the event's own `cwd`). This is a best-effort first line of
+ * `testDir` written relative to the anchor `cwd` the caller passes in — the event's own cwd for
+ * the common case, or a craft's `worktreeRoot` when the protected path lives inside a worktree
+ * and the command references it worktree-relatively, e.g. `git -C {worktree} ... .lsc/crafts/...`).
+ * This is a best-effort first line of
  * defense, not a guarantee — it has known fail-OPEN gaps a determined or merely differently-
  * phrased command can slip through: a `cd`-chain that changes directory mid-command before
  * touching a bare relative filename (`cd .lsc/crafts/f/test && rm run_test.sh` is caught since
@@ -124,19 +127,29 @@ export interface ToolCallDecisionInput {
 /** Pure decision for the `tool_call` handler: block iff the call targets the active craft's protected test tree. */
 export function evaluateToolCallForActiveCraft(
 	event: ToolCallDecisionInput,
-	craft: Pick<CraftState, "projectRoot" | "feature"> | undefined,
+	craft: Pick<CraftState, "projectRoot" | "feature" | "worktreeRoot"> | undefined,
 ): ToolCallEventResult | undefined {
 	if (!craft) return undefined;
-	const testDir = craftTestDir(craft.projectRoot, craft.feature);
+	// Root + substring anchor both need worktree awareness (the block-vs-allow logic itself is
+	// unchanged): testDir must point at the worktree's protected tree when one is active, and the
+	// substring anchor below must be the same root so a worktree-relative command (e.g.
+	// `git -C {worktree} checkout -- .lsc/crafts/{f}/test/...`) is still recognized.
+	const testDir = craftTestDir(craft.worktreeRoot ?? craft.projectRoot, craft.feature);
 
 	if (event.toolName === "bash") {
 		const command = typeof event.input.command === "string" ? event.input.command : "";
 		const bashCwd = typeof event.input.cwd === "string" ? event.input.cwd : undefined;
 		if (bashCwd) {
+			// event.cwd is intentionally kept here (not worktreeRoot): this resolves the bash call's
+			// own --cwd option against where it actually executes, and using the worktree root
+			// instead would misinterpret that execution location (false-negative).
 			const resolvedBashCwd = isAbsolute(bashCwd) ? bashCwd : resolve(event.cwd, bashCwd);
 			if (isPathWithin(testDir, resolvedBashCwd)) return blockResult(testDir);
 		}
-		if (containsProtectedPath(command, event.cwd, testDir)) return blockResult(testDir);
+		// Only the substring anchor changes to worktreeRoot — this is the one line the worktree
+		// topology actually requires: it lets a worktree-relative command's text (which never spells
+		// out the worktree's own absolute path against testDir) still substring-match correctly.
+		if (containsProtectedPath(command, craft.worktreeRoot ?? event.cwd, testDir)) return blockResult(testDir);
 		return undefined;
 	}
 

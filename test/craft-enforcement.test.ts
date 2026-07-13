@@ -4,6 +4,12 @@ import { evaluateToolCallForActiveCraft, shouldContinueCraftLoop } from "../src/
 const CRAFT = { projectRoot: "/repo", feature: "my-feature" };
 const TEST_DIR = "/repo/.lsc/crafts/my-feature/test";
 
+// Worktree topology (R5): the active craft's protected tree lives under the worktree root when
+// one is set, not the project root — see enforcement.ts's `craft.worktreeRoot ?? craft.projectRoot`.
+const WORKTREE_ROOT = "/repo/.lsc/worktrees/my-feature";
+const CRAFT_WORKTREE = { projectRoot: "/repo", feature: "my-feature", worktreeRoot: WORKTREE_ROOT };
+const WORKTREE_TEST_DIR = `${WORKTREE_ROOT}/.lsc/crafts/my-feature/test`;
+
 describe("evaluateToolCallForActiveCraft", () => {
 	it("does not block anything when there is no active craft", () => {
 		const result = evaluateToolCallForActiveCraft(
@@ -99,6 +105,44 @@ describe("evaluateToolCallForActiveCraft", () => {
 	it("does not block an unrelated bash command", () => {
 		const result = evaluateToolCallForActiveCraft({ toolName: "bash", input: { command: "npm test" }, cwd: "/repo" }, CRAFT);
 		expect(result).toBeUndefined();
+	});
+
+	describe("worktree topology (R5) — testDir and the bash substring anchor both follow worktreeRoot", () => {
+		it("blocks an absolute write inside the worktree's protected test tree when a worktree is active (root fix)", () => {
+			// event.cwd stays the main session's cwd ("/repo") — the session never actually cds into
+			// the worktree, so this also confirms the fix does not depend on event.cwd changing.
+			const result = evaluateToolCallForActiveCraft(
+				{ toolName: "write", input: { path: `${WORKTREE_TEST_DIR}/run_test.sh` }, cwd: "/repo" },
+				CRAFT_WORKTREE,
+			);
+			expect(result?.block).toBe(true);
+			expect(result?.reason).toContain(WORKTREE_TEST_DIR);
+		});
+
+		it("does not block a write under the project root's (now-stale) test dir once a worktree is active", () => {
+			// Sanity check for the same root fix from the other direction: once worktreeRoot is set,
+			// the protected tree is the worktree's, not the project root's old location.
+			const result = evaluateToolCallForActiveCraft(
+				{ toolName: "write", input: { path: `${TEST_DIR}/run_test.sh` }, cwd: "/repo" },
+				CRAFT_WORKTREE,
+			);
+			expect(result).toBeUndefined();
+		});
+
+		it("blocks a worktree-relative bash command (git -C form) against the protected path (substring anchor fix)", () => {
+			// This is exactly pre-mortem scenario 1(b): the command text never spells out the
+			// worktree's absolute path contiguously with the protected path, so only anchoring the
+			// substring match at worktreeRoot (not event.cwd, which stays "/repo") catches it.
+			const result = evaluateToolCallForActiveCraft(
+				{
+					toolName: "bash",
+					input: { command: `git -C ${WORKTREE_ROOT} checkout -- .lsc/crafts/my-feature/test/run_test.sh` },
+					cwd: "/repo",
+				},
+				CRAFT_WORKTREE,
+			);
+			expect(result?.block).toBe(true);
+		});
 	});
 
 	it("does not gate tools outside the protected set (read, grep, glob, custom tools)", () => {

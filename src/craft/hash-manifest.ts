@@ -16,7 +16,7 @@ import { dirname, join, relative, sep } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftHashManifestPath, craftSnapshotDir, craftTestDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
 import { ensureSnapshotsGitignored } from "../artifacts/gitignore.js";
-import { setActiveCraft } from "./state.js";
+import { getActiveCraft, setActiveCraft } from "./state.js";
 
 // `pi.registerTool<TParams, TDetails>({ parameters: z.object({...}), async execute(...) {...} })`
 // hits TS2589 ("excessively deep" type instantiation) under this SDK's TSchema
@@ -192,13 +192,6 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<CraftInitDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
-			const testDir = craftTestDir(ctx.cwd, feature);
-			if (!existsSync(testDir)) {
-				return {
-					isError: true,
-					content: [{ type: "text", text: `lets-craft: no test/ directory at ${testDir}. Run pre-craft's test stage (C18) before craft.` }],
-				};
-			}
 
 			let worktreeRoot: string | undefined;
 			if (params.worktree) {
@@ -214,9 +207,25 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 				worktreeRoot = candidate;
 			}
 
+			// Resolved before testDir so the manifest/snapshot themselves land under the worktree
+			// when one is active — enforcement.ts's testDir (evaluateToolCallForActiveCraft) and
+			// run-tests.ts's scriptPath/logsDir mirror this same `worktreeRoot ?? ctx.cwd` root.
+			const root = worktreeRoot ?? ctx.cwd;
+			const testDir = craftTestDir(root, feature);
+			if (!existsSync(testDir)) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: `lets-craft: no test/ directory at ${testDir}. Run pre-craft's test stage (C18) before craft.` }],
+				};
+			}
+
 			const manifest = computeManifest(feature, testDir);
-			saveManifest(craftHashManifestPath(ctx.cwd, feature), manifest);
-			writeSnapshots(testDir, craftSnapshotDir(ctx.cwd, feature), manifest);
+			saveManifest(craftHashManifestPath(root, feature), manifest);
+			writeSnapshots(testDir, craftSnapshotDir(root, feature), manifest);
+			// ensureSnapshotsGitignored stays anchored at ctx.cwd (the main checkout), not `root`:
+			// a worktree .gitignore append would be an uncommitted change that pollutes the merge
+			// (R10's committed .gitignore already covers the worktree, since the feature branch
+			// forks from a HEAD that already has it).
 			ensureSnapshotsGitignored(ctx.cwd);
 			setActiveCraft({
 				feature,
@@ -252,8 +261,13 @@ function registerVerifyHashTool(pi: ExtensionAPI): void {
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<VerifyHashDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
-			const testDir = craftTestDir(ctx.cwd, feature);
-			const manifestPath = craftHashManifestPath(ctx.cwd, feature);
+			// Feature-match guard (mirrors run-tests.ts's lsc_run_tests): only trust the active
+			// craft's worktreeRoot when it's actually this feature's craft, not some other
+			// feature's leftover active-craft state.
+			const craft = getActiveCraft();
+			const root = craft && craft.feature === feature ? (craft.worktreeRoot ?? ctx.cwd) : ctx.cwd;
+			const testDir = craftTestDir(root, feature);
+			const manifestPath = craftHashManifestPath(root, feature);
 			const recorded = loadManifest(manifestPath);
 			if (!recorded) {
 				return {
@@ -298,8 +312,11 @@ function registerRestoreTestsTool(pi: ExtensionAPI): void {
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<RestoreTestsDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
-			const testDir = craftTestDir(ctx.cwd, feature);
-			const manifestPath = craftHashManifestPath(ctx.cwd, feature);
+			// Feature-match guard — same rationale as lsc_verify_hash above.
+			const craft = getActiveCraft();
+			const root = craft && craft.feature === feature ? (craft.worktreeRoot ?? ctx.cwd) : ctx.cwd;
+			const testDir = craftTestDir(root, feature);
+			const manifestPath = craftHashManifestPath(root, feature);
 			const recorded = loadManifest(manifestPath);
 			if (!recorded) {
 				return {
@@ -308,7 +325,7 @@ function registerRestoreTestsTool(pi: ExtensionAPI): void {
 				};
 			}
 
-			const details = restoreFromSnapshots(feature, testDir, craftSnapshotDir(ctx.cwd, feature), recorded);
+			const details = restoreFromSnapshots(feature, testDir, craftSnapshotDir(root, feature), recorded);
 			const text = details.passed
 				? `lets-craft: restored ${details.restoredPaths.length} test asset(s) from snapshot` +
 					(details.removedPaths.length > 0 ? ` and removed ${details.removedPaths.length} unauthorized addition(s)` : "") +
