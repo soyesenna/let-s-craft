@@ -8,3 +8,7 @@ pi/
 dist/
 node_modules/
 .lsc/worktrees/
+.lsc/crafts/*/test/.snapshots/
+.lsc/crafts/*/test/.craft-state.json
+.lsc/crafts/*/test/.hash-manifest.json
+dogfooding.html
