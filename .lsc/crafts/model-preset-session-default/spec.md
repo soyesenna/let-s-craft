@@ -29,7 +29,7 @@ Single component (the `src/preset/` subsystem). No sub-component rotation was ne
 
 ## Goal
 
-각 model preset이 **선택적(opt-in) 세션 default 모델**을 가질 수 있게 한다. 활성 프리셋에 default가 있으면, lets-craft가 omp 세션의 **메인 모델 자체를** 그 default로 전환한다 — 명시적 프리셋 전환 시 즉시, 그리고 **신규** 세션 시작 시 자동으로. omp의 서브에이전트 해석 체인(부모 세션의 live 모델 상속)에 의해, 프리셋에 명시 엔트리가 없는 lsc 에이전트들은 자동으로 이 default를 따라간다.
+각 model preset이 **선택적(opt-in) 세션 default 모델**을 가질 수 있게 한다. 활성 프리셋에 default가 있으면, lets-craft가 omp 세션의 **메인 모델 자체를** 그 default로 전환한다 — 명시적 프리셋 전환 시 즉시, 그리고 **신규** 세션 시작 시 자동으로. omp의 서브에이전트 해석 체인(부모 세션의 live 모델 상속)에 의해, 프리셋에 명시 엔트리가 없는 lsc 에이전트들은 자동으로 이 default를 따라간다. **단(감사 사이클 0 실측, omp 16.4.8): 사용자가 host 수준의 `modelRoles.task`를 명시 설정한 경우 task 스폰 에이전트에는 그 설정이 부모-live 상속보다 우선한다 — 호스트 설계 법칙("명시적 사용자 설정 > 프리셋")과 일관된 호스트 동작이며, 이 상속 계약은 host task-role 미설정 조건부다.**
 
 **핵심 가치 (R4 contrarian에서 확정):** 번들링 — 프리셋 전환 한 번으로 메인+에이전트 모델 세트가 통째로 바뀐다. 작업 유형별 세트 전환(저비용 e2e 프리셋 ↔ 고성능 개발 프리셋)이 omp 전역 default(config.yml modelRoles.default, --model)로는 얻을 수 없는 고유 가치다.
 
@@ -64,7 +64,7 @@ Single component (the `src/preset/` subsystem). No sub-component rotation was ne
 | # | 기준 | 검증 방법 |
 |---|---|---|
 | AC1 | 활성 프리셋에 default가 있을 때, **신규** 세션의 turn-1 메인 모델 = default | LSC_E2E 게이트 e2e: `--mode=json` 부모 stdout의 첫 assistant 턴 모델 |
-| AC2 | 프리셋에 명시 엔트리가 없는 lsc 에이전트의 스폰 모델 = default | 동일 e2e: `<session-dir>/<agentId>.jsonl` 검사 (spike finding 7 절차) |
+| AC2 | 프리셋에 명시 엔트리가 없는 lsc 에이전트의 스폰 모델 = default — **host `modelRoles.task` 미설정 조건부(사용자 host 설정이 있으면 그것이 우선; 감사 0 실측)** | 동일 e2e: `<session-dir>/<agentId>.jsonl` 검사 (spike finding 7 절차); **e2e는 hermetic overlay(`modelRoles.task: "default"` = session-inherited 센티널)로 환경 독립 검증** |
 | AC3 | `/lsc-preset` switch 시 동일 세션에서 즉시 메인 모델 전환 | 유닛(주입 경로) + e2e 관찰 |
 | AC4 | resume된 세션은 미변경; 수동 /model 후 그 선택이 세션 내내 유지 | 유닛(게이트 로직: entries>0 → no-op) |
 | AC5 | resolve 실패 소프트 처리: 명시적=notify 경고+에이전트 오버라이드는 적용, 자동=조용히 skip | 유닛(resolve 실패/false 반환 스텁) |
@@ -173,3 +173,10 @@ Q: 목표 재진술 + 스키마/적용/실패 정책 + AC1–AC9 일괄 확정?
 A: **yes**
 
 — 게이트 통과 (0.0465 < 0.05), 인터뷰 종료.
+
+## Amendment Log
+
+### Amendment — audit cycle 0, 2026-07-13
+- **Change**: Goal 서술에 host `modelRoles.task` 우선순위 단서 추가; AC2를 host task-role 미설정 조건부 계약으로 명시하고 e2e hermetic overlay 검증 방식을 기재.
+- **Reason**: 감사 사이클 0의 계약된 e2e 실집행에서 tracer가 사용자 `config.yml`의 `modelRoles.task`(openai-codex)로 스폰됨 — AC2의 무조건 상속 전제가 환경 의존임을 실측 확인 (audit/audit-0.md §4, Required Fix §5).
+- **Disposition**: Accepted via [Spec Change] lsc_select

@@ -181,6 +181,7 @@ export async function applySessionDefaultModel<M>(
 
 ### Step 4 — 배선: `inject.ts` 반환 확장 + `main.ts` 게이트 적용 + `command.ts` reinject (`src/preset/inject.ts`, `src/main.ts`, `src/preset/command.ts`)
 
+> **정본 각주(감사 0):** 이 Step의 pseudo-code에 등장하는 auto-path 실패 `ctx.ui.notify(warning)`는 본 계획의 합성 계약 ③("자동 경로 = 조용함 — notify 채널 금지", R7/§2 AC5와 일치)과 모순된다. **합성 계약이 정본**이며 구현(`main.ts` `console.warn`)이 그 정본을 따랐다 — audit/audit-0.md §3 MINOR 참조.
 **inject.ts (`applyActivePreset`, `inject.ts:24-42`):** 동기 유지(DR Decision A).
 - `InjectResult`(`inject.ts:10-17`)에 `defaultSpec: string | null` 추가.
 - 본문: `validatePreset(preset, ...)` 결과에서 `defaultSpec` 전달; 두 조기 반환(`:30`, `:33-35`)에 `defaultSpec: null` 추가. **setModel은 여기서 호출하지 않는다.**
@@ -353,6 +354,7 @@ pi.on("session_start", async (_event, ctx) => {
 | R8 | **모델 ID 소멸(호스트 PATCH)** — 저장된 default가 어느 날 미해석 | 운영 | C13 검증 + 적용기 이중 방어(unresolved 소프트 경로) — 세션·프리셋 활성화 무손상, 경고만 |
 | R9 | **`settings.override` 마스킹 상호작용** — override가 이후 set()을 가림(핀 계약) | 기존과 동일 | 신규 쓰기 없음(오버라이드 경로 불변); 인지 사항으로만 기록 |
 | R10 | **게이트 fail-closed 침묵의 진단 불가** — 타 확장이 우리보다 먼저 `session_start` 전에 엔트리를 기록하거나(`appendCustomEntry`/`appendLabelChange` 바인딩 실존 — `runtime-init.ts:80-85`, `extension-ui-controller.ts:126-131`, `acp-agent.ts:2210-2215`) setModel을 호출하는 경우, 또는 호스트가 미래 마이너에서 부트 스탬프 타입을 추가하는 경우 → 게이트 false → **조용한** skip(방향은 정확 — 클로버 없음 — 하나 4가지 원인이 구분 불가한 침묵으로 수렴) | 지원/디버깅 비용 | Step 4 합성 계약 ③: `LSC_DEBUG` 설정 시 게이트 거부에 entry 타입 히스토그램 stderr 1줄(`entryTypeHistogram` 순수 헬퍼 — 유닛 고정) — "왜 default가 안 먹었나" 포렌식; notify 채널 불사용(자동 경로 조용함 유지, 스펙 R7; 호스트 notify에 debug 레벨 부재); README에 `LSC_DEBUG` 문서화(Step 5) |
+| R11 | **라이브 호스트 task-role 우선순위(감사 0 실측, omp 16.4.8)** — 사용자 `config.yml`의 `modelRoles.task` 설정이 task 스폰 에이전트의 부모-live 상속을 가로챔 → AC2 e2e의 무조건 상속 어서션이 환경 의존 | AC2 e2e 신뢰성 | e2e overlay(`syncModeConfig`)에 `modelRoles.task: "default"`(host의 session-inherited 센티널, `model-resolver.ts:871-873`) 고정 → hermetic 검증. 스펙 AC2는 조건부 계약으로 개정(spec.md Amendment Log, 감사 0). 상세: audit/audit-0.md §4·§5 |
 
 ---
 
@@ -378,3 +380,10 @@ pi.on("session_start", async (_event, ctx) => {
 ## 7. Open Questions
 
 [open-questions.md](./open-questions.md)에 기록 — ① 스펙 문면 게이트(`entries===0`) 편차 — **강화(개수 상한) 술어의 최종 의미론(잔여 위양성 공지 포함)에 대한 단일 사용자 ACK, 랜딩 전 하드 게이트**, ② 레거시 `default` 키 — 기본안 C2(validate 가드), C1(파스 승격)은 사용자 선택 대안, ③ SKIP_LABEL 확정 문구. ②·③은 구현 착수를 막지 않고(기본안 명시, 국소 치환 가능), ①도 착수는 막지 않되 **머지 전 ACK가 필수**다(아키텍트 라운드1 B2 조건).
+
+## Amendment Log
+
+### Amendment — audit cycle 0, 2026-07-13
+- **Change**: 리스크 레지스터 R11 추가(라이브 호스트 `modelRoles.task` 우선순위 + e2e hermeticization 완화); Step 4에 auto-path notify 채널 정본 각주 추가(합성 계약 ③ = 정본).
+- **Reason**: 감사 사이클 0의 e2e 실집행 실측(tracer가 사용자 host task-role로 스폰) 및 크리틱 MINOR(계획 내 pseudo-code/합성 계약 모순) — audit/audit-0.md §3-§5.
+- **Disposition**: Accepted via [Plan Change] lsc_select
