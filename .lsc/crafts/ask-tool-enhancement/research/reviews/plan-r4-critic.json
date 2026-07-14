@@ -1,0 +1,48 @@
+{
+  "verdict": "REVISE",
+  "iteration": 4,
+  "feature": "ask-tool-enhancement",
+  "r3_upgrade_conditions": {
+    "P0-F": "해소 — plan.md:143(nonblank canonicalize-then-trim, NEL 정정 실측 정확)·:109(양 ingress 폐쇄)·:226(AC7 3케이스)·:315(P2)",
+    "P0-G": "5항 전부 합의 형태로 반영(:97/:48+:101/:94/:110/:222+:225) — 단 합의 집합 자체가 VT/FF 미달(신규 blocking으로 승계)",
+    "P1-H": "해소 — :50/:100/:107/:113 preflight-render 분리 + AC1/AC6 양 채널 쌍",
+    "P1-I": "해소 — :147 exact allowlist 단일화, 구 상충 문장 삭제 확인, AC7 케이스",
+    "U-1_U-2": "해소 — :72 .min(1), :49/:105 stem 명기"
+  },
+  "major_findings": [
+    {
+      "id": "P0-J",
+      "severity": "MAJOR(blocking)",
+      "title": "U+000B(VT)/U+000C(FF) 누락 — mandatory break 7종 중 5종만 가드",
+      "evidence": "LineBreak.txt:64(000B..000C;BK); plan.md:48,:97,:101,:222,:225 전부 5종; node 실측 interior VT는 trim 불변·split('\\n') 1행(가장자리는 trim 포섭 — 표면 interior 전용)",
+      "agrees_with_architect": true,
+      "fix": "규범 참조(UAX #14 BK∪CR∪LF∪NL 7종)로 집합 정의 + :48/:97/:101/:183/:222/:225/:305/:317 sweep + AC3/AC6 VT·FF 케이스"
+    },
+    {
+      "id": "P0-K",
+      "severity": "MAJOR(blocking-clarification)",
+      "title": "canonicalizer 단일 소유 미명시 + ingress 검증 비대칭 — architect 비차단 권고의 승격",
+      "evidence": "plan.md:92(src/ask.ts 소유) vs :143(fixtures.ts parse-time 사용) vs src/ask.ts:17(ask→fixtures 의존); AC3(:222) UI positive 케이스 vs AC7(:226) fixture blank-거부만 — fixture-ingress positive canonical 케이스 0",
+      "fix": "함수 명명+소유 택1(fixtures.ts export 권장)+양 ingress 순서 고정+table/idempotence 테스트+AC7 positive 저장 케이스"
+    }
+  ],
+  "minor_findings": [
+    "preflight-unavailable precedence 무근거(:50/:100 — unavailable 후로 좁히거나 근거+테스트)",
+    "_customMetadata 계약-핀 테스트 부재(:147 vs :226)",
+    "stem/DONE 과잉거부 근거 정직화(단사성 불요 형식 논증 확증; DONE 무조건 거부+에러 문구 :102; AC6 sentinel-stem 케이스 부재)",
+    "whitespace-only description(.min(1) 한계 — :72 자기 근거와 비정합)"
+  ],
+  "consensus_gates": {
+    "architect_cross_check": "blocking 동의+정밀화 2건, 비차단 4종 중 1건 승격·3건 동의(Minor)",
+    "principle_option_consistency": "Fail(협소 — 전 집합 주장 vs 5종 가드)",
+    "alternatives_depth": "Pass",
+    "risk_verification_rigor": "Fail(협소 — VT/FF 케이스 0, ingress parity 미검증)",
+    "deliberate_additions": "Pass"
+  },
+  "upgrade_conditions": [
+    "P0-J: mandatory break 7종 규범 정의 + 전 지점 sweep + AC 케이스",
+    "P0-K: canonicalizer 단일 소유+순서+직접 테스트+fixture positive 케이스"
+  ],
+  "not_reject_rationale": "R3 조건 4/4 실질 해소(반박 0), 신규 표면은 2 code point+소유권 문장+테스트 수 행의 국소 보강 — 설계 골격 불변",
+  "not_awr_rationale": "DELIBERATE 게이트에서 폐쇄 주장이 현재 거짓인 플랜은 유보 승인 불가"
+}
