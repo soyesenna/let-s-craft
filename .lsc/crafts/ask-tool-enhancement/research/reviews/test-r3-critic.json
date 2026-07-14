@@ -1,0 +1,93 @@
+{
+  "verdict": "REVISE",
+  "iteration": 3,
+  "role": "critic",
+  "aligns_with_architect_r3": true,
+  "overall": "정본은 503 tests·10 AC 중 9개 완결. R2 지적 5항 중 N2·C-a·C-b·C-d 완전 해소 확인, N1은 B1로 인해 order fidelity 부분 해소. architect R3 잔여 blocking B1 독립 확증 → REVISE.",
+  "r2_conditions_resolution": {
+    "N1_P0": {
+      "status": "PARTIALLY_RESOLVED_BLOCKED_BY_B1",
+      "evidence": "데이터 ask.test.ts:73-77 + dispatch :685-693,797-807 + recommended 원본 desc :705-708 추가됐으나 shared oracle이 order/description fidelity proof 저해"
+    },
+    "N2_P0": {
+      "status": "RESOLVED",
+      "evidence": "fixtures.test.ts:117-127(missing-version v2-body case) + :151-155(errorMessage 강제) + :62-70(no-throw시 throw). silent acceptance→RED"
+    },
+    "C_a_P1": {
+      "status": "RESOLVED",
+      "evidence": "ask.test.ts:585(ask Esc)·765(single Esc)·777(multi Esc)·1020(confirm Esc) 각 details.toBeUndefined()"
+    },
+    "C_b_P2": {
+      "status": "RESOLVED",
+      "evidence": "ask.test.ts:229-231 resolveAskChannel(path,false).kind==='fixture'"
+    },
+    "C_d_P1": {
+      "status": "RESOLVED",
+      "evidence": "fixtures.test.ts:100-103(once:false validBody) + :105-110(...body override로 input·expected 양쪽 once:false 고정)"
+    }
+  },
+  "critical_findings": [],
+  "major_findings": [
+    {
+      "id": "B1",
+      "severity": "MAJOR",
+      "confidence": "HIGH",
+      "blocking": true,
+      "title": "stimulus·expected oracle의 mutable alias → in-place sort 반례 미차단",
+      "evidence": [
+        "ask.test.ts:9-12 OptionInput mutable interface",
+        "ask.test.ts:73-77 NON_ALPHABETICAL_OPTIONS mutable OptionInput[] (non-frozen)",
+        "ask.test.ts:176-180 UI double capture=call시점 snapshot(=mutation 이후)",
+        "ask.test.ts:689,691-692 single: input≡oracle 동일 binding",
+        "ask.test.ts:803,805-806 multi: input≡oracle 동일 binding",
+        "ask.test.ts:89-97 afterEach 전역배열 미복원"
+      ],
+      "counterexample": "params.options.sort(labelComparator) in-place → 배열 [Zeta,Alpha,Mango]→[Alpha,Mango,Zeta] → capture(정렬後)=oracle(live read)=[Alpha,Mango,Zeta] → 양 toMatchObject 통과=false-green. copy-sort는 oracle 미변형이라 RED(=in-place만 통과)",
+      "why_sole_guard": "recommended-cursor(:675-680,700-711)·buildDisplayRows(:467-470)는 알파벳순 BASE_OPTIONS 사용→sort 불변→재정렬 미포착. NON_ALPHABETICAL 쌍이 in-place-reorder 클래스 unit 유일 방어선인데 B1이 무력화. AC6 recommended 인덱스-커서 계약(spec.md:76)도 order 보존 의존",
+      "realist_recalibration": "naive CRITICAL→MAJOR 하향. Mitigated by: ①plan canonical order 강제→spec준수 구현은 sort 안함, ②copy-sort는 이미 RED, ③recommended desc는 :705-708 독립 리터럴로 핀, ④TUI 7항목 수동게이트 backstop. 단 hash-frozen 정본의 지명반례 결정론적 kill은 타협불가+fix trivial이라 blocking 유지"
+    }
+  ],
+  "minor_findings": [
+    {
+      "id": "m1",
+      "severity": "MINOR",
+      "blocking": false,
+      "title": "afterEach 전역 배열 미복원 (B1 동일 root cause)",
+      "note": "BASE_OPTIONS/selectOptions는 oracle 독립 리터럴이라 in-place 변형시 spurious RED(loud)로만 발현, false-green 아님. B1 fix(테스트별 fresh clone)가 NON_ALPHABETICAL 완결. 나머지 clone/freeze 위생상 권장이나 비필수",
+      "ref": "ask.test.ts:89-97"
+    }
+  ],
+  "independent_exploration_negatives": {
+    "BASE_OPTIONS_aliasing": "없음 — input 전용, oracle 전부 독립 리터럴(:467-470 toEqual literal, :705-708 toMatchObject literal, :614 toBe, dialog snapshots)",
+    "selectOptions_aliasing": "없음 — fixtures.test.ts input 전용, fixture 모드(ui.select unreachable), oracle hard-coded",
+    "tautology_mirror_oracle": "없음 — .sort()/buildDisplayRows() 거울 oracle 0건(B1만 degenerate tautology)",
+    "adversarial_schema_files": "없음 — .sort( 0건, 공유배열 별칭 0건, toMatchObject는 리터럴/primitive(문자열 불변→false-green 불가)",
+    "run_test_sh_exit_propagation": "정상·회귀 0 — run_test.sh:19 set -uo pipefail(no -e, documented) + build/unit/e2e status $? 즉시 포획 + status 3집계 + exit \"$status\". RED phase→unit_status=1→exit 1. || true/파이프 손실 없음"
+  },
+  "spec_plan_grounding": {
+    "AC1": "spec.md:71 {label,description} 신스키마",
+    "AC6": "spec.md:76 초기 커서=recommended 위치(=caller 배열 인덱스→caller order 보존 필수)",
+    "D6": "plan.md:282-284 display-label lookup, 표시/데이터 계층 분리 → B1 반례가 실제 계약 겨냥"
+  },
+  "upgrade_condition": {
+    "id": "P0/B1/N1/C-c",
+    "type": "mechanical_2-3_lines",
+    "spec": [
+      "불변 expected 리터럴 NON_ALPHABETICAL_EXPECTED 신설(as const/Object.freeze), performSelect에 미전달; 기존 mutable NON_ALPHABETICAL_OPTIONS(:73-77) 삭제/대체",
+      "각 테스트 fresh clone input: const input = NON_ALPHABETICAL_EXPECTED.map(o=>({...o})); single·multi 서로 다른 인스턴스로 cross-test 오염 차단",
+      "capture prefix를 독립 expected와 비교: toMatchObject(NON_ALPHABETICAL_EXPECTED) (single :691-692, multi :805-806)",
+      "수용기준: in-place sort→single·multi 양쪽 RED / label-only projection→description mismatch RED / order+desc 보존→GREEN. toMatchObject 범위 유지",
+      "불변 유지: N2(fixtures.test.ts:117-127,151-155)·C-a(ask.test.ts:585,765,777,1020)·C-b(:229-231)·C-d(fixtures.test.ts:100-110)·recommended(:705-708)"
+    ],
+    "on_apply": "ACCEPT"
+  },
+  "consensus_summary_row": {
+    "architect_cross_check": "Pass — B1 독립 동의, 반박 0. antithesis 인정하되 blocking 유지 합의",
+    "principle_option_consistency": "Pass — D6/AC6와 테스트 계약 정합, B1은 proof gap",
+    "alternatives_depth": "Pass — architect 5-옵션 trade-off 제시",
+    "risk_verification_rigor": "Fail(B1 한정) — in-place-reorder 결정론적 kill 부재",
+    "deliberate_additions": "Pass — antithesis/tradeoff/synthesis/principle-violations 전부 존재, N2 pre-mortem 폐쇄 확인"
+  },
+  "escalation_mode": "THOROUGH (CRITICAL 0/MAJOR 1이라 ADVERSARIAL 미escalation)",
+  "open_questions": []
+}
