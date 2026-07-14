@@ -50,7 +50,9 @@ export function registerCraftAbortTool(pi: ExtensionAPI): void {
 		description:
 			"Mark the active craft as user-aborted so the session_stop backstop stops forcing continuation (C23). Only call " +
 			"this after the user has explicitly declined to continue via lsc_confirm — a hash-violation restore prompt " +
-			"(C23b) or a run_test.sh-unrunnable escalation (C23c).",
+			"(C23b) or a run_test.sh-unrunnable escalation (C23c). In lsc_confirm terms a decline is the No selection " +
+			"(content exactly `no`); a free answer (content starting `User provided free answer:`) is neither approve nor " +
+			"reject — reflect it as an instruction and re-ask, never abort on it.",
 		approval: "read",
 		parameters,
 		async execute(_toolCallId, params): Promise<AgentToolResult<CraftAbortDetails>> {

@@ -169,7 +169,7 @@ export function attachOmpRunHandlers(
 	// Set the instant `earlyExit` first matches — from then on we're just waiting out the drain
 	// grace (or a natural close, whichever comes first), not re-checking earlyExit every chunk.
 	let draining = false;
-	let drainTimer: ReturnType<typeof setTimeout> | undefined;
+	let drainTimer: NodeJS.Timeout | undefined;
 
 	const onStdoutData = (chunk: Buffer | string) => {
 		stdout = appendBounded(stdout, chunk.toString(), maxBytes);
@@ -271,16 +271,31 @@ function parseNdjson(text: string): OmpEvent[] {
  * `result` itself — confirmed against a real `--mode=json` transcript during harness
  * development; an earlier version of this helper read `result.isError` (always undefined)
  * and every block/error assertion silently saw `false`.
+ * `result.details` is preserved verbatim when present: cursor.ts emits it inside the
+ * `tool_execution_end.result` payload, and select-gate E2E assertions need both that structured
+ * observation and the model-facing content envelope from the same NDJSON event.
  */
-export function toolExecutions(result: OmpRunResult): Array<{ toolName: string; isError: boolean; text: string }> {
+export interface OmpToolExecution {
+	toolName: string;
+	isError: boolean;
+	text: string;
+	details?: unknown;
+}
+
+export function toolExecutions(result: OmpRunResult): OmpToolExecution[] {
 	return result.events
 		.filter(e => e.type === "tool_execution_end")
 		.map(e => {
-			const r = e.result as { content?: Array<{ type: string; text?: string }> } | undefined;
+			const r = e.result as { content?: Array<{ type: string; text?: string }>; details?: unknown } | undefined;
 			const text = (r?.content ?? [])
 				.map(c => c.text ?? "")
 				.join("\n");
-			return { toolName: String(e.toolName ?? ""), isError: e.isError === true, text };
+			return {
+				toolName: String(e.toolName ?? ""),
+				isError: e.isError === true,
+				text,
+				...(r && "details" in r ? { details: r.details } : {}),
+			};
 		});
 }
 

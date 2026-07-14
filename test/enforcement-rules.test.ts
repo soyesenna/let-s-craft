@@ -20,6 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { shouldContinueCraftLoop } from "../src/craft/enforcement";
@@ -65,19 +66,15 @@ function setupMinimalCraftProject(feature = "demo"): { projectDir: string; sessi
 	return { projectDir, sessionDir: join(base, "omp-sessions"), scriptPath };
 }
 
-function waitForFile(path: string, timeoutMs: number): Promise<void> {
+async function waitForFile(path: string, timeoutMs: number): Promise<void> {
 	const start = Date.now();
-	return new Promise((resolve, reject) => {
-		const tick = () => {
-			if (existsSync(path)) return resolve();
-			if (Date.now() - start > timeoutMs) return reject(new Error(`timed out waiting for ${path}`));
-			setTimeout(tick, 100);
-		};
-		tick();
-	});
+	while (!existsSync(path)) {
+		if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for ${path}`);
+		await delay(100);
+	}
 }
 
-describe.skipIf(!RUN_E2E)("enforcement rules (AC5, real omp integration)", () => {
+describe.skipIf(!RUN_E2E)("enforcement rules + ask select gate (AC5/AC7/AC10b, real omp integration)", () => {
 	it(
 		"1. tool_call block — a write against the protected test tree during an active craft is rejected, and the file is left untouched",
 		async () => {
@@ -151,8 +148,9 @@ describe.skipIf(!RUN_E2E)("enforcement rules (AC5, real omp integration)", () =>
 			writeFileSync(
 				answersPath,
 				JSON.stringify({
-					default: "yes",
-					answers: [{ match: "^\\[Hash Violation\\]", response: "no" }],
+					version: 2,
+					answers: [{ match: "^\\[Hash Violation\\]", kind: "confirmation", confirm: false }],
+					default: { kind: "confirmation", confirm: true },
 				}),
 			);
 
@@ -329,13 +327,14 @@ describe.skipIf(!RUN_E2E)("enforcement rules (AC5, real omp integration)", () =>
 			const answersPath = join(fixtureDir, "answers.json");
 			// Test-local inline answers.json (mirrors test 2's own pattern) — never the shared
 			// fixtures/sample-ts-cli/answers.json, which this test does not touch. The explicit
-			// "^\\[Release\\]" rule is redundant with `default: "yes"` (any unmatched lsc_confirm
-			// question already answers "yes") but documents intent and survives a future default flip.
+			// "^\\[Release\\]" rule is redundant with the confirmation-true default (any unmatched
+			// lsc_confirm question already answers "yes") but documents intent and survives a future default flip.
 			writeFileSync(
 				answersPath,
 				JSON.stringify({
-					default: "yes",
-					answers: [{ match: "^\\[Release\\]", response: "yes" }],
+					version: 2,
+					answers: [{ match: "^\\[Release\\]", kind: "confirmation", confirm: true }],
+					default: { kind: "confirmation", confirm: true },
 				}),
 			);
 
@@ -400,6 +399,80 @@ describe.skipIf(!RUN_E2E)("enforcement rules (AC5, real omp integration)", () =>
 			expect(verify?.isError, debugSummary(result)).toBe(false);
 			expect(verify?.text ?? "", debugSummary(result)).toMatch(/hash verification passed/);
 			expect(verify?.text ?? "", debugSummary(result)).not.toMatch(/HASH VIOLATION/);
+		},
+		TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"6. select gate direct trigger (AC7/AC10b) — fixture v2 selection returns the canonical content envelope and NDJSON details together",
+		async () => {
+			const { projectDir, sessionDir } = setupMinimalCraftProject();
+			const fixtureDir = mkdtempSync(join(tmpdir(), "lsc-e2e-enforcement-select-fixture-"));
+			cleanupDirs.push(fixtureDir);
+			const answersPath = join(fixtureDir, "answers.json");
+			writeFileSync(
+				answersPath,
+				JSON.stringify({
+					version: 2,
+					answers: [
+						{
+							match: "^\\[Consensus Escalation\\]",
+							kind: "selection",
+							selections: ["Proceed with current version"],
+						},
+					],
+					default: { kind: "confirmation", confirm: true },
+				}),
+			);
+
+			const question =
+				"[Consensus Escalation] plan.md did not reach architect/critic consensus after 10 iterations. " +
+				"Unresolved: direct-trigger E2E fixture. Proceed?";
+			const options = [
+				{
+					label: "Proceed with current version",
+					description:
+						"Use the current artifact without another review cycle. The user accepts the unresolved findings to preserve progress. Pros: finishes now. Cons: keeps known review risks.",
+				},
+				{
+					label: "Give additional guidance and continue iterating",
+					description:
+						"Start a fresh iteration with additional user guidance. Another review cycle may resolve the outstanding findings. Pros: improves the artifact. Cons: uses more review time.",
+				},
+				{
+					label: "Abort pre-craft",
+					description:
+						"Stop pre-craft without accepting the current artifact. This prevents an unapproved handoff while risks remain. Pros: avoids implicit acceptance. Cons: produces no implementation-ready handoff.",
+				},
+			];
+			const exactArguments = JSON.stringify({ question, options });
+
+			const result = await runOmpPrint({
+				cwd: projectDir,
+				sessionDir,
+				timeoutMs: PER_RUN_TIMEOUT_MS,
+				env: { LSC_FIXTURE: answersPath },
+				prompt:
+					"lsc_select 툴을 정확히 한 번 호출하라. 툴 인자는 다음 JSON과 완전히 동일해야 한다: " +
+					exactArguments +
+					". 결과를 그대로 보고하고, 다른 툴은 호출하지 마라.",
+				earlyExit: stdout => /User selected: Proceed with current version/.test(stdout),
+			});
+
+			expect(result.timedOut, debugSummary(result)).toBe(false);
+
+			const executions = toolExecutions(result);
+			expect(executions.filter(t => t.toolName === "lsc_select").length, debugSummary(result)).toBe(1);
+			expect(executions.filter(t => t.toolName === "lsc_ask").length, debugSummary(result)).toBe(0);
+			expect(executions.filter(t => t.toolName === "lsc_confirm").length, debugSummary(result)).toBe(0);
+
+			const select = executions.find(e => e.toolName === "lsc_select");
+			expect(select, debugSummary(result)).toBeDefined();
+			expect(select?.isError, debugSummary(result)).toBe(false);
+			expect(select?.text.trim(), debugSummary(result)).toBe("User selected: Proceed with current version");
+
+			const details = select?.details as { selections?: unknown } | undefined;
+			expect(details?.selections, debugSummary(result)).toEqual(["Proceed with current version"]);
 		},
 		TEST_TIMEOUT_MS,
 	);

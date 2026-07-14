@@ -1,13 +1,51 @@
 {
-  "_note": "Interview fixture answers for lets-craft's ask seam (src/ask.ts, src/fixtures.ts), updated for the pre-craft skill's question-tagging convention (skills/pre-craft/SKILL.md §1.2): every pre-craft question starts with a bracketed English tag ([Feature Name], [Goal], [Constraints], [Success Criteria], [Context]), and every consensus/escalation/handoff gate question ends literally in 'Proceed?'. R5's always-worktree topology removed the old [Worktree] yes/no question entirely (pre-craft now unconditionally creates .lsc/worktrees/{feature}/), so there is no rule for it here anymore. Anchoring on the tag prefix (rather than a loose keyword like the old 'goal'/'constraint' substrings) avoids the 'approve pattern anchor problem' flagged in the Phase 3.5 handoff -- a loose, unanchored keyword match could accidentally fire on the wrong question or on the tag of a different dimension appearing in prose. Patterns are still necessarily provisional: interview-stage question *bodies* are LLM-generated at runtime and only their tag prefix is contractually fixed, so 'default' remains the fallback for anything these rules don't anticipate (e.g. a mid-round free-form [Goal] follow-up worded differently from the first one). Real usage against the actual pre-craft skill (Phase 7 E2E) may still require refinement.",
-  "_warning": "Do NOT set LSC_FIXTURE to this file (or point it at a copy of it) against a real repository. The catch-all default (\"yes\") answers EVERY unmatched question affirmatively, including post-craft's [Land] merge approval and its force-remove-worktree escalation — both are normally hard, explicit user gates precisely because they run `git merge`/discard uncommitted worktree changes. This file is designed only for the disposable, throwaway git repos the E2E test harness (test/e2e-helpers.ts) creates per run and deletes afterward.",
-  "default": "yes",
+  "_note": "Interview fixture answers for lets-craft's ask seam (src/ask.ts, src/fixtures.ts), migrated to fixture schema v2 and aligned with the pre-craft skill's question-tagging convention (skills/pre-craft/SKILL.md §1.2): every pre-craft question starts with a bracketed English tag ([Feature Name], [Goal], [Constraints], [Success Criteria], [Context]), and every consensus/escalation/handoff gate ends in an approval suffix such as 'Proceed?'. The five interview-tag rules intentionally use kind 'free-text', which all three ask tools can consume, so runtime choice between lsc_ask and lsc_select does not affect these scripted answers. Select gates use kind 'selection' with canonical labels, while yes/no gates use kind 'confirmation'. Select-gate rules precede the generic proceed-suffix rule because fixture matching is first-hit. R5's always-worktree topology removed the old [Worktree] question entirely. Tag-prefix anchoring avoids loose keyword matches against unrelated prose; the confirmation default remains a fallback for unanticipated yes/no gates in disposable E2E repositories only.",
+  "_warning": "Do NOT set LSC_FIXTURE to this file (or point it at a copy of it) against a real repository. The catch-all default ({\"kind\":\"confirmation\",\"confirm\":true}) affirmatively answers EVERY unmatched lsc_confirm question, including post-craft's [Land] merge approval and its force-remove-worktree escalation. It deliberately errors rather than guessing if an unmatched lsc_ask or lsc_select reaches the confirmation default. This file is only for disposable git repositories created and deleted by test/e2e-helpers.ts.",
+  "version": 2,
   "answers": [
-    { "match": "^\\[Feature Name\\]", "response": "Fix slugify so it collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, matching the behavior already documented in src/slugify.ts's bug note." },
-    { "match": "^\\[Goal\\]", "response": "Fix slugify so it collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, matching the behavior already documented in src/slugify.ts's bug note." },
-    { "match": "^\\[Constraints\\]", "response": "Keep the CLI dependency-free (node --test only) and keep slugify/capitalize/truncate's public signatures unchanged." },
-    { "match": "^\\[Success Criteria\\]", "response": "All tests under test/ pass via run_test.sh, including the currently-failing 'collapses consecutive separators' case in test/slugify.test.ts." },
-    { "match": "^\\[Context\\]", "response": "The bug is isolated to slugify() in src/slugify.ts; capitalize() and truncate() in src/text-utils.ts and the CLI wiring in src/cli.ts are unaffected and already covered by their own passing tests." },
-    { "match": "proceed\\??$", "response": "yes" }
-  ]
+    {
+      "match": "^\\[Feature Name\\]",
+      "kind": "free-text",
+      "freeText": "Fix slugify so it collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, matching the behavior already documented in src/slugify.ts's bug note."
+    },
+    {
+      "match": "^\\[Goal\\]",
+      "kind": "free-text",
+      "freeText": "Fix slugify so it collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, matching the behavior already documented in src/slugify.ts's bug note."
+    },
+    {
+      "match": "^\\[Constraints\\]",
+      "kind": "free-text",
+      "freeText": "Keep the CLI dependency-free (node --test only) and keep slugify/capitalize/truncate's public signatures unchanged."
+    },
+    {
+      "match": "^\\[Success Criteria\\]",
+      "kind": "free-text",
+      "freeText": "All tests under test/ pass via run_test.sh, including the currently-failing 'collapses consecutive separators' case in test/slugify.test.ts."
+    },
+    {
+      "match": "^\\[Context\\]",
+      "kind": "free-text",
+      "freeText": "The bug is isolated to slugify() in src/slugify.ts; capitalize() and truncate() in src/text-utils.ts and the CLI wiring in src/cli.ts are unaffected and already covered by their own passing tests."
+    },
+    {
+      "match": "^\\[Consensus Escalation\\]",
+      "kind": "selection",
+      "selections": ["Proceed with current version"]
+    },
+    {
+      "match": "^\\[Spec Change\\]|^\\[Plan Change\\]",
+      "kind": "selection",
+      "selections": ["Accept — apply to spec.md/plan.md"]
+    },
+    {
+      "match": "proceed\\??$",
+      "kind": "confirmation",
+      "confirm": true
+    }
+  ],
+  "default": {
+    "kind": "confirmation",
+    "confirm": true
+  }
 }

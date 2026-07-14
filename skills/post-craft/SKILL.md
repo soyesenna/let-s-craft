@@ -19,6 +19,8 @@ lets-craft is a 3-stage pipeline: **pre-craft → craft → post-craft**. This s
    - `[Audit] ... Proceed?` — REJECT/APPROVE-WITH-CHANGE craft-reinvoke offer (§6.1)
    - `[Spec Change] ... Proceed?` / `[Plan Change] ... Proceed?` — per-item amendment gate (§6.2)
    - `[Land] ... Merge?` — merge approval gate and worktree-force-remove sub-decision (§7.3, §7.4)
+
+   **Option authoring & free-answer branching (follow pre-craft's SSOT).** Author every `lsc_select` option as `{label, description}`, and branch on each gate's result **CONTENT** exactly as `skills/pre-craft/SKILL.md` §1.2 "Option authoring & free-answer policy (SSOT)" parts (a)-(d) prescribe — never read `details` (the model never receives it). Each gate below restates its own free-answer branch, but that SSOT is the canonical rule.
 3. **No document length limits (C9).** `audit/audit-N.md` may be as long and detailed as the work requires — do not compress findings for brevity.
 4. **Artifact paths (C8)** — mirror `src/artifacts/paths.ts` exactly, same replicate-by-hand discipline pre-craft/craft already establish (nothing in `src/main.ts` registers a tool for audit-directory/merge/worktree-removal setup, so this skill is the sole owner of replicating those conventions by hand):
 
@@ -46,7 +48,7 @@ lets-craft is a 3-stage pipeline: **pre-craft → craft → post-craft**. This s
 
      `[Precondition] No worktree found at .lsc/worktrees/{feature}/ — craft may not have run against this feature yet. Continue auditing anyway (against the current working tree)? Proceed?`
 
-     via `lsc_confirm`. A decline stops the skill here. An approval falls back to implementation root = the project root, purely as an escape hatch for a pre-R5 feature or manual recovery — every other step in this skill still assumes a worktree exists by default; treat this branch as the exception, not the routine path.
+     via `lsc_confirm`. A decline stops the skill here. An approval falls back to implementation root = the project root, purely as an escape hatch for a pre-R5 feature or manual recovery — every other step in this skill still assumes a worktree exists by default; treat this branch as the exception, not the routine path. (A free answer is neither approval nor decline — reflect it and re-ask this gate; §1.2 SSOT (c).)
 4. **Precondition sanity check — ask only if something looks off**, combining both signals into one gate rather than interrupting twice (skip entirely if §2.3 already asked and got an answer):
    - Does the worktree's checked-out branch name contain the feature slug (or the convention prefix pre-craft would have used, e.g. `lets-craft/{feature}` or `{detected-prefix}/{feature}`)? If not, this is a strong signal something is wrong (a manually-repointed worktree, a stale one from a different feature).
    - Read `{worktreeAbs}/.lsc/crafts/{feature}/test/.craft-state.json` if it exists (project-root-relative instead, only in §2.3's missing-worktree escape-hatch case). If `testsPassed` is `false`, or the file is missing entirely and no obvious implementation commits exist on the detected branch (`git -C {worktreeAbs} log --oneline` since the branch's fork point), craft may not have actually finished.
@@ -54,7 +56,7 @@ lets-craft is a 3-stage pipeline: **pre-craft → craft → post-craft**. This s
 
      `[Precondition] {specific concern — e.g. "the worktree's branch 'main' does not look like the lets-craft implementation branch for 'my-feature'" or "test/.craft-state.json shows testsPassed: false — craft may not have finished"}. Continue auditing anyway? Proceed?`
 
-     via `lsc_confirm`. A decline stops the skill here (report why, do not fabricate an audit).
+     via `lsc_confirm`. A decline stops the skill here (report why, do not fabricate an audit). A free answer is neither approval nor decline — reflect it as an instruction and re-ask this gate (§1.2 SSOT (c)).
    - If both checks pass cleanly, do not ask anything — proceed silently.
 5. **Detect the base (merge target) branch** — needed both for scoping the implementation diff (§3.1) and for landing (§7.2), so detect it once here and reuse it. Priority chain, first match wins:
    ```bash
@@ -62,7 +64,7 @@ lets-craft is a 3-stage pipeline: **pre-craft → craft → post-craft**. This s
    [ -z "$base" ] && git show-ref --verify --quiet refs/heads/main   && base=main
    [ -z "$base" ] && git show-ref --verify --quiet refs/heads/master && base=master
    ```
-   If `base` is still empty, ask via `lsc_select` (`[Precondition] Which branch should this audit treat as the merge target/base for "{feature}"? Proceed?`) listing `git branch --format='%(refname:short)'` minus the implementation branch itself. Record the result — it is reused verbatim in §3.1 and §7.2.
+   If `base` is still empty, resolve it interactively. Enumerate candidate branches with `git branch --format='%(refname:short)'` minus the implementation branch itself, prioritizing `main`/`master`/`develop` then most-recent-commit order. **If ≥2 candidates**, present the top **4** via `lsc_select` (`[Precondition] Which branch should this audit treat as the merge target/base for "{feature}"? Proceed?`), each option `{label: <branch>, description: <recency/role — e.g. "default branch" or "last commit 2d ago">}` — do **not** add a "type it yourself" option (the tool always appends the free-text "Other" row). Branch on the result CONTENT (§1.2 SSOT (c)): `User selected: <branch>` → use it; a free answer (`User provided free answer:` …) → treat the payload as a branch name, verify it with `git show-ref --verify --quiet refs/heads/<name>`, use it if it exists, else re-ask this gate. **If only 1 candidate exists** (select needs ≥2 options), ask via `lsc_confirm` instead (`[Precondition] Use branch "{X}" as the merge target for "{feature}"? Proceed?`): CONTENT `yes` → use it; `no` or a free answer → treat any free-answer payload as a branch name (verify via `git show-ref`) or re-ask. Record the result — it is reused verbatim in §3.1 and §7.2.
 6. **Read prior audit context, if any.** If `N > 0`, `read` the **latest** existing `audit-{N-1}.md` in full. Its verdict determines this cycle's scope:
    - Latest verdict was **APPROVE-WITH-CHANGE** → this cycle runs the **narrower fix-verification path** (§5) instead of a full fresh audit — carry that document's exact "Required Fix" text forward into §3.1's assignments.
    - Latest verdict was **REJECT**, or `N == 0` (first audit) → run the **full audit** (§3–§4 as written, no scope narrowing). Still read the prior audit's findings as background context (has this exact issue already been raised and dismissed once, or is it new?) — but do not skip any of the four dimensions on the strength of that context alone.
@@ -150,7 +152,7 @@ C25's parenthetical for `APPROVE-WITH-CHANGE` — "수정 필수, 수정 후 재
 
 `[Audit] Verdict was {AUDIT VERDICT}. Re-invoke craft against .lsc/crafts/{feature}/audit/audit-{N}.md to address the findings above? Proceed?`
 
-via `lsc_confirm`.
+via `lsc_confirm`. Branch on the result CONTENT (§1.2 SSOT (c)): `yes` → the approved paths below; `no` → the declined path; a free answer (`User provided free answer:` …) is neither — reflect it as an instruction and re-ask this exact `[Audit]` gate, never re-invoke craft on a free answer.
 - **Approved, and neither gate above applies (not fixture mode, context not oversized)** → `read skill://craft` in this same turn — it returns craft's full contract text — and continue executing from craft's own §0 immediately, treating `.lsc/crafts/{feature}/audit/audit-{N}.md` as the input (the literal path `craft/SKILL.md` §2.1 already classifies as audit-driven-craft input, so no further translation is needed). **From this point on, this skill's own contract (§0's "This skill never writes implementation code," everything above) no longer applies — only the contract you just read from `skill://craft` governs the rest of this turn.** This is not hypothetical: there is no dedicated "dispatch another skill" primitive, but loading a skill's contract via `read skill://{name}` and continuing to execute it in the same turn has been confirmed against the real host — `read skill://craft` returns the live contract text, and an in-turn `lsc_craft_init` call right after succeeds. If the audit's Required Fix (§4.1 point 8) itself requires modifying the protected `test/` canon (not just implementation source), say so explicitly in the Required Fix text — the re-invoked craft will need its own `[Canon Amendment]` approval → `lsc_craft_release` → edit → `lsc_craft_init` re-baseline path (`craft/SKILL.md` §4) to make that change, not the ordinary executor loop.
 - **Approved, but `$LSC_FIXTURE` is set** → do not chain — the E2E harness drives pre-craft, craft, and post-craft as three separate invocations; chaining here would run craft inside this post-craft turn, breaking that structure. Tell the user, plainly and exactly: *"Invoke the craft skill against `.lsc/crafts/{feature}/audit/audit-{N}.md` next"*, and end the turn normally.
 - **Approved, but this session's context is already large** → do not chain either — tell the user explicitly that you're recommending a fresh session for `craft` instead, and why, then give the same manual-invocation text as above.
@@ -162,7 +164,7 @@ If the audit's investigation surfaced that `spec.md` or `plan.md` themselves nee
 
 `[Spec Change] {or [Plan Change]} Proposed: {precise description of the change}. Reason: {why, tied to a specific audit finding}. Apply this to {spec.md|plan.md}? Proceed?`
 
-via `lsc_select` with options `["Accept — apply to spec.md/plan.md", "Reject — do not apply", "Defer — revisit in a later audit cycle"]`. For every **Accept**:
+via `lsc_select` — the three labels below are load-bearing (keep them verbatim; add only a `description` per §1.2's SSOT): `[{label: "Accept — apply to spec.md/plan.md", description: "Edit the doc in place now. 장점: 스펙/플랜이 실제 결정과 일치. 단점: 되돌리려면 다시 편집해야 함."}, {label: "Reject — do not apply", description: "Leave the doc unchanged. 장점: 현 스펙/플랜 유지. 단점: 문서가 구현 현실과 어긋난 채 남음."}, {label: "Defer — revisit in a later audit cycle", description: "Postpone the decision. 장점: 지금 결정을 강요하지 않음. 단점: 다음 사이클까지 미해결로 남음."}]`. Branch on the result CONTENT (§1.2 SSOT (c)): `User selected: Accept — apply to spec.md/plan.md` → the Accept path below; `User selected: Reject — do not apply` → the Reject path; `User selected: Defer — revisit in a later audit cycle` → the Defer path; a free answer (`User provided free answer:` …) is **not** an Accept — treat the payload as feedback, revise the proposed change accordingly, and re-ask this exact `[Spec Change]`/`[Plan Change]` gate (never auto-apply on a free answer). For every **Accept**:
 1. Apply the actual content change inline, in place, via `edit` against `{worktreeAbs}/.lsc/crafts/{feature}/{spec.md|plan.md}` (§1.4) — not just a log entry.
 2. Append an entry to a `## Amendment Log` section (create it, once, near the end of the file if it doesn't exist yet) in the same format for both files:
    ```
@@ -194,7 +196,7 @@ Reuse the base branch detected in §2.5 — do not re-detect or re-ask unless th
 
 `[Land] Merge "{implementation branch}" into "{base branch}" and remove the worktree at .lsc/worktrees/{feature}/? Merge?`
 
-via `lsc_confirm`. This is not optional or skippable under any circumstance — the project's global rule is that `git merge` is never run without direct, explicit user instruction, and an APPROVE-family audit verdict is not itself that instruction.
+via `lsc_confirm`. This is not optional or skippable under any circumstance — the project's global rule is that `git merge` is never run without direct, explicit user instruction, and an APPROVE-family audit verdict is not itself that instruction. Merge proceeds **only** on CONTENT exactly `yes` (§1.2 SSOT (c) — a destructive action); `no` declines; a free answer (`User provided free answer:` …) is neither approval nor decline — reflect it as an instruction and re-ask this exact `[Land]` gate, never merge on it.
 
 - **Declined** → stop here. Preserve the worktree/branch exactly as-is (do not remove, do not merge). Report that land was skipped and why (user declined).
 
@@ -212,7 +214,7 @@ This land flow assumes worktree mode (§2.3's default) — §2.3's missing-workt
 
    `[Land] git worktree remove reported uncommitted/untracked changes: {status output}. Force-remove the worktree anyway (uncommitted changes will be lost)? Proceed?`
 
-   via `lsc_confirm`. Only pass `--force` to `git worktree remove` on an explicit approval here; on decline, leave the worktree in place and say so in the final report.
+   via `lsc_confirm`. Only pass `--force` to `git worktree remove` on CONTENT exactly `yes` (§1.2 SSOT (c) — a destructive action); on `no`, leave the worktree in place and say so in the final report; a free answer (`User provided free answer:` …) is neither — reflect it as an instruction and re-ask this exact `[Land]` gate, never force-remove on it.
 3. **Do not delete the implementation branch itself** — only the worktree checkout is in scope for automatic cleanup (C7's own text is specifically about `.lsc/worktrees/`, not about branch deletion); leave the branch for the user to remove later if they want to.
 4. Report: the merge commit hash, confirmation the worktree was removed and pruned, and the branch the working tree now sits on.
 

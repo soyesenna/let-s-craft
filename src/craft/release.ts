@@ -62,7 +62,9 @@ export function registerCraftReleaseTool(pi: ExtensionAPI): void {
 			"skill's contract requires an explicit lsc_confirm user approval before this tool is ever called. After " +
 			"the canon edit is made, lsc_craft_init MUST be called again to re-baseline the hash manifest and " +
 			"re-register active-craft protection — without that re-call, the loop proceeds with no hash-violation " +
-			"protection at all.",
+			"protection at all. In lsc_confirm terms that approval is the Yes selection (content exactly `yes`); a free " +
+			"answer (content starting `User provided free answer:`) is neither approve nor reject — reflect it as an " +
+			"instruction and re-ask, never release on it.",
 		approval: "read",
 		parameters,
 		async execute(_toolCallId, params): Promise<AgentToolResult<CraftReleaseDetails>> {
