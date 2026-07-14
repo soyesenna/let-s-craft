@@ -260,22 +260,40 @@ npm run e2e
 
 pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`lsc_select`/`lsc_confirm`을 거칩니다. `LSC_FIXTURE=<answers.json 경로>` 환경변수(또는 `--lsc-fixtures` 플래그)가 설정되면, 이 도구들은 대화형 UI 대신 스크립트된 응답을 반환해 파이프라인 전체를 무인(unattended)으로 실행할 수 있게 합니다.
 
-`answers.json` 스키마:
+`answers.json` v2 스키마:
 
 ```json
 {
-  "default": "yes",
+  "version": 2,
+  "default": { "kind": "confirmation", "confirm": true },
   "answers": [
-    { "match": "^\\[Feature Name\\]", "response": "...", "once": false, "optionIndex": 0 }
+    { "match": "^\\[Feature Name\\]", "kind": "free-text", "freeText": "slugify 중복 구분자 제거" },
+    { "match": "approach|접근", "kind": "selection", "selections": ["연속 구분자 병합"], "once": true },
+    { "match": "정말 진행", "kind": "confirmation", "confirm": true }
   ]
 }
 ```
 
-- `match`: 질문 문자열에 대해 먼저 대소문자 무시 정규식으로 시도하고, 유효한 정규식이 아니면 대소문자 무시 부분 문자열 검사로 폴백합니다.
-- `response`: 스크립트된 응답. `lsc_select`의 경우 정확 일치 → 대소문자 무시 일치 → 유일한 단어 단위 포함 매칭 순으로 옵션 라벨에 매칭을 시도합니다.
-- `once`: `true`면 한 번 매칭된 후 그 규칙은 소진되어 다시 매칭되지 않습니다.
-- `optionIndex`: `lsc_select` 전용 — 텍스트 매칭이 실패했을 때 `options[optionIndex]`를 직접 선택하는 탈출구입니다.
-- `default`: 어떤 규칙도 매칭되지 않았을 때의 폴백 응답. 이것도 없으면 무한 대기 대신 즉시 에러로 실패합니다.
+최상위 구조는 `{ "version": 2, "answers": [<규칙>...], "default"?: <body> }`입니다. `version`은 반드시 `2`여야 하며(v1 파일은 마이그레이션 메시지와 함께 하드 에러로 거부됩니다), `default`는 선택입니다 — 지정하지 않으면 매칭되지 않은 질문은 즉시 에러로 실패합니다(무한 대기 없음). `default`에는 `free-text` kind를 쓸 수 없습니다(매칭되지 않은 모든 질문이 재질문 루프에 갇히므로).
+
+각 규칙(rule)은 `{ "match": <정규식 문자열>, "once"?: <불리언>, ...<body> }` 형태입니다. `match`는 대소문자 무시 정규식으로 먼저 시도하고, 유효한 정규식이 아니면 대소문자 무시 부분 문자열로 폴백합니다. `once: true`면 한 번 매칭된 뒤 그 규칙은 소진됩니다. `body`는 `kind`로 태그된 4종 중 하나입니다:
+
+| kind | 필수 필드 | 소비 도구 |
+|---|---|---|
+| `free-text` | `freeText` (공백 불가 문자열) | 세 도구 모두 — `lsc_ask`의 답변, 그리고 `lsc_select`/`lsc_confirm`의 자유답변 채널 |
+| `selection` | `selections` (비어있지 않은 문자열 배열); 선택적 `freeText` | `lsc_select` 전용 (`freeText` 공존은 다중 선택에서만 — 단일 선택 + `freeText`는 에러) |
+| `selection-index` | 0-기반 옵션 인덱스 (비음수 정수) | `lsc_select` 단일 선택 전용 (라벨이 동적일 때의 위치 기반 탈출구) |
+| `confirmation` | `confirm` (불리언) | `lsc_confirm` 전용 (`true`→yes, `false`→no) |
+
+키 화이트리스트는 엄격합니다 — 허용되지 않은 키는 파싱 시점에 경로(path)/kind/허용 키 목록을 명시하며 에러를 냅니다:
+
+- **규칙 키**: `match`, `once`, `kind` + 해당 kind의 variant 필드만. (v1의 `response` 키가 남아 있으면 v1→v2 마이그레이션 힌트를 띄웁니다.)
+- **최상위 키**: `version`, `answers`, `default`, 그리고 `_`로 시작하는 키(주석/메타데이터 관례, 예: `_note`/`_warning`)만. (`defualt` 같은 오타 키는 거부됩니다.)
+- **default 키**: `kind` + 해당 kind의 variant 필드만 (`match`/`once` 불가).
+
+- **freeText**: 정규화 후 trim 기준으로 공백만인 값은 금지됩니다. 줄바꿈은 저장 시 정규 `\n`으로 정규화됩니다 — UAX #14 필수 개행 7종(LF/VT/FF/CR/NEL U+0085/LS U+2028/PS U+2029, VT·FF 포함, CRLF는 하나로 접힘)이 모두 대상입니다.
+- **다중 선택 × selection-index**: 다중 선택 질문은 `selection-index`를 쓸 수 없습니다 — 라벨을 명시한 `selection`으로 지정하세요.
+- **v1→v2 마이그레이션**: v1의 단일 `response` 문자열은 v2에서 `kind` 태그 바디(`selection`/`free-text`/`confirmation`/`selection-index`)로 분리됐습니다. 문자열이던 `default`는 `{ "kind": "confirmation", "confirm": true }` 같은 바디 객체로, v1의 위치 기반 인덱스 폴백은 별도의 `selection-index` 규칙으로 옮기고, 최상위에 `"version": 2`를 반드시 추가해야 합니다(누락 시 v1로 간주되어 에러).
 
 번들된 샘플 픽스처는 `fixtures/sample-ts-cli/`입니다. 의존성 없는 `node --test` 기반의 최소 TypeScript CLI 프로젝트로, `slugify()`에 의도적인 버그(연속된 구분자를 하나로 합치지 못함)가 남아 있어 craft 루프가 실제로 반복 수정할 거리가 있습니다. `answers.json`(인터뷰 응답 스크립트), `recorded-research.md`(픽스처 모드에서 외부 웹 리서치 대신 읽어들이는 사전 기록 리서치), `run_test.sh`(`node --test`를 실행하고 결과를 요약하는 단일 진입점)를 포함합니다.
 
