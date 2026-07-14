@@ -282,7 +282,7 @@ pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`ls
 |---|---|---|
 | `free-text` | `freeText` (공백 불가 문자열) | 세 도구 모두 — `lsc_ask`의 답변, 그리고 `lsc_select`/`lsc_confirm`의 자유답변 채널 |
 | `selection` | `selections` (비어있지 않은 문자열 배열); 선택적 `freeText` | `lsc_select` 전용 (`freeText` 공존은 다중 선택에서만 — 단일 선택 + `freeText`는 에러) |
-| `selection-index` | 0-기반 옵션 인덱스 (비음수 정수) | `lsc_select` 단일 선택 전용 (라벨이 동적일 때의 위치 기반 탈출구) |
+| `selection-index` | `optionIndex` (0-기반 비음수 정수) | `lsc_select` 단일 선택 전용 (라벨이 동적일 때의 위치 기반 탈출구) |
 | `confirmation` | `confirm` (불리언) | `lsc_confirm` 전용 (`true`→yes, `false`→no) |
 
 키 화이트리스트는 엄격합니다 — 허용되지 않은 키는 파싱 시점에 경로(path)/kind/허용 키 목록을 명시하며 에러를 냅니다:
