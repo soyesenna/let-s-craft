@@ -27,6 +27,7 @@ lets-craft is a 3-stage pipeline: **pre-craft → craft → post-craft**. This s
    | Worktree | `.lsc/worktrees/{feature}/` — always present (C6/R5); every artifact below lives inside it. Its absolute form is referred to as `{worktreeAbs}` throughout this document. |
    | Audit report | `{worktreeAbs}/.lsc/crafts/{feature}/audit/audit-{N}.md` (N from 0, existing max + 1) |
    | Trace / spec / plan (read, and spec/plan conditionally amended) | `{worktreeAbs}/.lsc/crafts/{feature}/{trace,spec,plan}.md` |
+   | Plan revision ledger (read) | `{worktreeAbs}/.lsc/crafts/{feature}/plan/plan-{N}.md` — prior per-iteration plan revision history; `plan.md` is only the latest confirmed plan |
    | Test suite (read + re-run only, never edited) | `{worktreeAbs}/.lsc/crafts/{feature}/test/` |
    | Craft state (read-only signal, §2.4) | `{worktreeAbs}/.lsc/crafts/{feature}/test/.craft-state.json` |
 
@@ -74,7 +75,7 @@ lets-craft is a 3-stage pipeline: **pre-craft → craft → post-craft**. This s
 ### 3.1 Parallel spawn — code mapping + adversarial review
 
 Spawn `lsc-explore` and `lsc-critic` in a **single `task` batch call** (independent work, C24's own instruction to use both "병렬") — waiting for both to report follows §1.8's waiting discipline (results deliver automatically; never poll for them). Every assignment must give:
-- The absolute paths to `trace.md`, `spec.md`, `plan.md`.
+- The absolute paths to `trace.md`, `spec.md`, `plan.md`. When a reviewer needs the reasoning behind a specific plan decision from an earlier consensus iteration, that per-iteration revision history lives under `{worktreeAbs}/.lsc/crafts/{feature}/plan/plan-{N}.md` — point it at the specific iteration file it needs, never at a full re-read of the whole ledger.
 - `{worktreeAbs}` as an **absolute path**, explicitly labeled as such — the `task` tool always spawns subagents at the *main session's* cwd (the project root), never a per-spawn cwd (same lesson `craft/SKILL.md` §2.5/§3.2 already states for `lsc-executor`). This is always a genuinely different directory from the subagent's own cwd now (§2.3: no more non-worktree mode) — every git/read command in the assignment must be prefixed accordingly (`git -C {worktreeAbs} ...`, `read {worktreeAbs}/...`), never a bare relative path.
 - The implementation branch and base branch from §2.3/§2.5, and the instruction to scope their own investigation to `git -C {implRoot} log {base}..{implBranch} --oneline` / `git -C {implRoot} diff {base}...{implBranch}` (let them run this themselves rather than pasting a full diff into the assignment — keeps the prompt small, matches R2's context-management discipline already established in this project).
 

@@ -22,7 +22,7 @@ spawns: lsc-explore
     - Plan has 3-6 actionable steps (not too granular, not too vague)
     - Each step has clear acceptance criteria an executor can verify
     - Codebase facts are looked up via `lsc-explore`, never assumed
-    - Plan is saved to `.lsc/crafts/{feature}/plan.md`
+    - Plan is saved to `.lsc/crafts/{feature}/plan.md` — the latest confirmed plan only; each consensus iteration's review-response record goes to `.lsc/crafts/{feature}/plan/plan-{N}.md` (N = that iteration's number, mirroring the `audit/audit-{N}.md` convention), never accreted into `plan.md`
     - The DR summary and, on convergence, the ADR are complete and ready for `lsc-architect`/`lsc-critic` review
     - Genuinely unresolved decisions are written to Open Questions rather than silently guessed
   </Success_Criteria>
@@ -73,7 +73,8 @@ spawns: lsc-explore
   <Output_Format>
     ## Plan Summary
 
-    **Plan saved to:** `.lsc/crafts/{feature}/plan.md`
+    **Plan saved to:** `.lsc/crafts/{feature}/plan.md` (latest confirmed plan only)
+    **Per-iteration revision ledger:** `.lsc/crafts/{feature}/plan/plan-{N}.md` (one file per consensus iteration)
 
     **Scope:**
     - [X tasks] across [Y files]
