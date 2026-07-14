@@ -29,7 +29,7 @@ export const LSC_FIXTURE_FLAG = "lsc-fixtures";
  */
 export type FixtureAnswerBody =
 	| { kind: "free-text"; freeText: string }
-	| { kind: "selection"; selections: string[]; freeText?: string }
+	| { kind: "selection"; selections: [string, ...string[]]; freeText?: string }
 	| { kind: "selection-index"; optionIndex: number }
 	| { kind: "confirmation"; confirm: boolean };
 
@@ -229,7 +229,7 @@ function parseBody(e: Record<string, unknown>, path: string, pathPrefix: string,
 			let freeText: string | undefined;
 			if (e.freeText !== undefined) freeText = parseFreeText(e.freeText, path, pathPrefix);
 			checkAllowedKeys(e, k, path, pathPrefix, isDefault);
-			const selections = [...(e.selections as string[])];
+			const selections = [...(e.selections as string[])] as [string, ...string[]];
 			return freeText !== undefined ? { kind: "selection", selections, freeText } : { kind: "selection", selections };
 		}
 		case "selection-index": {

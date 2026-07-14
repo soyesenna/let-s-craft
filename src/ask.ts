@@ -101,7 +101,7 @@ function confirmResult(
 ): AgentToolResult<ConfirmResultDetails> {
 	const details: ConfirmResultDetails =
 		freeText !== undefined ? { question, confirmed, freeText, source } : { question, confirmed, source };
-	const text = confirmed === null ? serializeEnvelope([], freeText ?? "") : confirmed ? "yes" : "no";
+	const text = confirmed === null ? serializeEnvelope([], freeText) : confirmed ? "yes" : "no";
 	return { content: [{ type: "text", text }], details };
 }
 
