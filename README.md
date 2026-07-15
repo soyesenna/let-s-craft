@@ -284,11 +284,11 @@ pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`ls
 |---|---|---|---|
 | `free-text` | `freeText`(string) | `lsc_ask`·`lsc_select`·`lsc_confirm` 모두 | 자유 답변(select/confirm에서는 자유답변 채널) |
 | `selection` | `selections`(비어있지 않은 string 배열); `freeText`(선택, multi 전용) | `lsc_select` 전용 | 라벨 선택(단일=정확히 1개, multi=여러 개) |
-| `selection-index` | `optionIndex`(음이 아닌 정수) | `lsc_select` 단일 전용 | 위치로 선택(동적 라벨 탈출구) |
+| `selection-index` | `optionIndex`(0-기반 음이 아닌 정수) | `lsc_select` 단일 전용 | 위치로 선택(동적 라벨 탈출구) |
 | `confirmation` | `confirm`(boolean) | `lsc_confirm` 전용 | `true`=yes, `false`=no |
 
 - **소비 도구 매트릭스**: 도구가 자기 kind가 아닌 body를 받으면 침묵 오답 대신 명확한 에러입니다 — `lsc_select`가 `confirmation`을, `lsc_confirm`이 `selection`을 받으면 오류입니다. `free-text`만 세 도구 공용입니다(인터뷰 질문이 런타임에 select/ask 중 무엇으로 발화되든 흡수). **multi select에서는 `selection-index`를 쓸 수 없습니다** — 동적 라벨 multi는 위치 지정을 표현할 수 없으므로 라벨을 명시하는 `selection`만 가능합니다.
-- **freeText 값 규칙**: canonical 정규화(CRLF와 mandatory break 7종 — LF/VT/FF/CR/NEL/LS/PS — 을 `\n`으로 접기) 후 `trim()`한 결과가 비어 있으면(공백·개행만) 파서가 거부합니다. 저장 시에도 line-break는 canonical `\n`으로 정규화됩니다.
+- **freeText 값 규칙**: canonical 정규화(CRLF와 UAX #14 필수 개행 7종 — LF/VT/FF/CR/NEL(U+0085)/LS(U+2028)/PS(U+2029) — 을 `\n`으로 접기, CRLF는 하나로) 후 `trim()`한 결과가 비어 있으면(공백·개행만) 파서가 거부합니다. 저장 시에도 line-break는 canonical `\n`으로 정규화됩니다.
 - **혼합 응답**: `selection`에 `freeText`를 병기하면(multi 전용) content는 **선택당 `User selected: <라벨>` 행(옵션 배열 순서) → 그 뒤 `User provided free answer:` 블록** 순으로 직렬화됩니다.
 - **default**: 미매칭 질문의 폴백 body이며 `kind`+variant 필드만 허용합니다(`match`/`once` 불가). 생략하면 미매칭 질문이 무한 대기 대신 즉시 에러입니다. **`kind: "free-text"` default는 거부됩니다** — 파괴적 게이트를 포함한 모든 미매칭 질문을 자유답변 재발문 루프에 빠뜨리기 때문이며, 대신 `once: true`를 붙인 명시 규칙을 쓰세요.
 - **top-level 키**: `version`(반드시 2)·`answers`·`default` + `_` 접두 메타데이터 키만 허용됩니다. 그 외(예: `defualt` 오타)는 침묵 무시 대신 거부되어 fallback이 조용히 소실되는 것을 막습니다.
