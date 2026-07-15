@@ -260,22 +260,40 @@ npm run e2e
 
 pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`lsc_select`/`lsc_confirm`을 거칩니다. `LSC_FIXTURE=<answers.json 경로>` 환경변수(또는 `--lsc-fixtures` 플래그)가 설정되면, 이 도구들은 대화형 UI 대신 스크립트된 응답을 반환해 파이프라인 전체를 무인(unattended)으로 실행할 수 있게 합니다.
 
-`answers.json` 스키마:
+`answers.json`는 fixture 스키마 **v2**입니다(v1 하위 호환 없음 — 구포맷은 parse 시 명확한 마이그레이션 에러). 각 규칙과 `default`는 응답의 **의미(kind)를 태깅한 body**를 가지며, 이 태깅 덕분에 "승인과 반대 의사가 한 body에 공존"하는 모순 조합이 parse 단계에서 원천 차단됩니다.
 
 ```json
 {
-  "default": "yes",
+  "version": 2,
+  "_note": "선택적 메타데이터 — '_' 접두 키는 top-level에서만 허용",
   "answers": [
-    { "match": "^\\[Feature Name\\]", "response": "...", "once": false, "optionIndex": 0 }
-  ]
+    { "match": "^\\[Feature Name\\]", "kind": "free-text", "freeText": "..." },
+    { "match": "^\\[Spec Change\\]", "kind": "selection", "selections": ["Accept — apply to spec.md/plan.md"] },
+    { "match": "pick the nth", "kind": "selection-index", "optionIndex": 0, "once": true },
+    { "match": "proceed\\??$", "kind": "confirmation", "confirm": true }
+  ],
+  "default": { "kind": "confirmation", "confirm": true }
 }
 ```
 
-- `match`: 질문 문자열에 대해 먼저 대소문자 무시 정규식으로 시도하고, 유효한 정규식이 아니면 대소문자 무시 부분 문자열 검사로 폴백합니다.
-- `response`: 스크립트된 응답. `lsc_select`의 경우 정확 일치 → 대소문자 무시 일치 → 유일한 단어 단위 포함 매칭 순으로 옵션 라벨에 매칭을 시도합니다.
-- `once`: `true`면 한 번 매칭된 후 그 규칙은 소진되어 다시 매칭되지 않습니다.
-- `optionIndex`: `lsc_select` 전용 — 텍스트 매칭이 실패했을 때 `options[optionIndex]`를 직접 선택하는 탈출구입니다.
-- `default`: 어떤 규칙도 매칭되지 않았을 때의 폴백 응답. 이것도 없으면 무한 대기 대신 즉시 에러로 실패합니다.
+**공통 규칙 필드**: `match`(질문에 대해 먼저 대소문자 무시 정규식, 실패 시 대소문자 무시 부분 문자열 폴백), `once`(true면 첫 매칭 후 규칙 소진). 규칙은 선언 순서대로 first-hit로 평가됩니다.
+
+**kind별 body** — 허용 키는 이 표가 전부이며, 그 외 키는 파서가 path·kind·허용 키 목록을 나열하며 거부합니다:
+
+| kind | 필수 필드 | 소비 도구 | 의미 |
+|---|---|---|---|
+| `free-text` | `freeText`(string) | `lsc_ask`·`lsc_select`·`lsc_confirm` 모두 | 자유 답변(select/confirm에서는 자유답변 채널) |
+| `selection` | `selections`(비어있지 않은 string 배열); `freeText`(선택, multi 전용) | `lsc_select` 전용 | 라벨 선택(단일=정확히 1개, multi=여러 개) |
+| `selection-index` | `optionIndex`(음이 아닌 정수) | `lsc_select` 단일 전용 | 위치로 선택(동적 라벨 탈출구) |
+| `confirmation` | `confirm`(boolean) | `lsc_confirm` 전용 | `true`=yes, `false`=no |
+
+- **소비 도구 매트릭스**: 도구가 자기 kind가 아닌 body를 받으면 침묵 오답 대신 명확한 에러입니다 — `lsc_select`가 `confirmation`을, `lsc_confirm`이 `selection`을 받으면 오류입니다. `free-text`만 세 도구 공용입니다(인터뷰 질문이 런타임에 select/ask 중 무엇으로 발화되든 흡수). **multi select에서는 `selection-index`를 쓸 수 없습니다** — 동적 라벨 multi는 위치 지정을 표현할 수 없으므로 라벨을 명시하는 `selection`만 가능합니다.
+- **freeText 값 규칙**: canonical 정규화(CRLF와 mandatory break 7종 — LF/VT/FF/CR/NEL/LS/PS — 을 `\n`으로 접기) 후 `trim()`한 결과가 비어 있으면(공백·개행만) 파서가 거부합니다. 저장 시에도 line-break는 canonical `\n`으로 정규화됩니다.
+- **혼합 응답**: `selection`에 `freeText`를 병기하면(multi 전용) content는 **선택당 `User selected: <라벨>` 행(옵션 배열 순서) → 그 뒤 `User provided free answer:` 블록** 순으로 직렬화됩니다.
+- **default**: 미매칭 질문의 폴백 body이며 `kind`+variant 필드만 허용합니다(`match`/`once` 불가). 생략하면 미매칭 질문이 무한 대기 대신 즉시 에러입니다. **`kind: "free-text"` default는 거부됩니다** — 파괴적 게이트를 포함한 모든 미매칭 질문을 자유답변 재발문 루프에 빠뜨리기 때문이며, 대신 `once: true`를 붙인 명시 규칙을 쓰세요.
+- **top-level 키**: `version`(반드시 2)·`answers`·`default` + `_` 접두 메타데이터 키만 허용됩니다. 그 외(예: `defualt` 오타)는 침묵 무시 대신 거부되어 fallback이 조용히 소실되는 것을 막습니다.
+- **v1 → v2 마이그레이션**: v1의 `"response"` 필드는 kind 태깅 body로 대체되었습니다 — 자유 텍스트 `response`→`{"kind":"free-text","freeText":...}`, select 라벨→`{"kind":"selection","selections":[...]}` 또는 `{"kind":"selection-index","optionIndex":n}`, yes/no→`{"kind":"confirmation","confirm":true|false}`. 파일 최상위에 `"version": 2`를 반드시 추가하세요(구포맷을 감지하면 파서가 이 매핑을 안내합니다).
+- **게이트 규칙 규약**: 게이트 태그(`^\[…\]`)를 겨냥한 규칙에는 `selection` 또는 `confirmation`을 쓰세요. 게이트에서 `free-text`는 승인으로 해석되지 않고(자유답변=지침, 같은 게이트 재발문 유발) 파괴적 액션을 열지 않습니다.
 
 번들된 샘플 픽스처는 `fixtures/sample-ts-cli/`입니다. 의존성 없는 `node --test` 기반의 최소 TypeScript CLI 프로젝트로, `slugify()`에 의도적인 버그(연속된 구분자를 하나로 합치지 못함)가 남아 있어 craft 루프가 실제로 반복 수정할 거리가 있습니다. `answers.json`(인터뷰 응답 스크립트), `recorded-research.md`(픽스처 모드에서 외부 웹 리서치 대신 읽어들이는 사전 기록 리서치), `run_test.sh`(`node --test`를 실행하고 결과를 요약하는 단일 진입점)를 포함합니다.
 
