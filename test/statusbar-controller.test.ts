@@ -35,12 +35,14 @@ async function flush(rounds = 5): Promise<void> {
 function makeVm(empty = false): UsageViewModel {
 	return {
 		empty,
-		groups: empty
+		columns: empty
 			? []
 			: [
 					{
 						provider: "anthropic",
-						accounts: [{ label: "acct", isSubscription: true, freshness: "fresh", windows: [] }],
+						title: "Anthropic",
+						slots: [{ key: "5h", header: "5h", label: "5 hours" }],
+						accounts: [{ label: "acct", isSubscription: true, freshness: "fresh", cells: [] }],
 					},
 				],
 	};

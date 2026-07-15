@@ -1,32 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildUsageViewModel,
+	classifyLevel,
+	CRIT_LIMIT,
+	NEAR_LIMIT,
+	SUPPORTED_PROVIDERS,
 	type EnumeratedAccount,
 	type UsageInput,
 	type UsedFractionResolver,
-	type WindowVM,
 } from "../src/statusbar/view-model.js";
 
 // ---------------------------------------------------------------------------
-// Pure-core unit tests for `buildUsageViewModel` (plan §6 Step 3 / §9 unit).
+// Pure-core unit tests for `buildUsageViewModel` (columnar redesign).
 //
 // The unit under test imports omp usage types only as `import type`, so it is
-// loadable under vitest-on-Node. The `@oh-my-pi/pi-ai` VALUE package is added
-// as a dependency only at craft Gate 0 and is not resolvable here, so — exactly
-// like the preset suites fake the `AgentModelStore`/`SessionModelApi` seams — we
-// model the runtime shapes the classifier reads with local structural fixtures.
-// No `as` casts: the builders return typed objects the pure core can consume.
+// loadable under vitest-on-Node; the runtime shapes the classifier reads are
+// modeled with local structural fixtures (no `as` casts).
 //
-// Coverage targets (Stage-4 consensus, iteration 2): the resolver→WindowVM
-// sanitize matrix (overage/negative/non-finite/zero/near-limit boundary — so a
-// VM that clamps overage to 1 is caught), a full-scope window-key matrix (so a
-// key = limit.id-only impl is caught), and the DR-F attribution sub-cases
-// (metadata-only vs scope-only, projectId tier, multi-project/-org unsafe,
-// consumed-once, no-identity, positive singleton, empty).
-//
-// These tests are RED until craft implements `src/statusbar/view-model.ts`
-// (a load error on the missing module is the expected pre-implementation state);
-// they turn GREEN once the module is built to the plan's contract.
+// Coverage targets:
+//  * the provider allowlist + fixed COLUMN order (anthropic → openai-codex,
+//    everything else dropped),
+//  * the fixed per-provider window SLOTS — report-limit order must never leak
+//    into the cell order (the bug this redesign kills),
+//  * fable-slot detection by tier / limit-id / label,
+//  * fraction sanitize (overage passthrough, non-finite → undefined) and the
+//    ok/warn/crit level thresholds,
+//  * the DR-F attribution sub-cases (metadata vs scope identity, unsafe
+//    reports, consumed-once, singleton fallback) carried over unchanged.
 // ---------------------------------------------------------------------------
 
 interface FxScope {
@@ -68,30 +68,30 @@ interface FxReport {
 }
 
 const NOW = 1_000_000_000;
-const STALE_AFTER = 7 * 60_000; // plan STALE_AFTER_MS
+const STALE_AFTER = 7 * 60_000;
 
 // Mirrors the real `resolveUsedFraction` closely enough for the classifier: the
 // fixtures set an explicit `usedFraction`, which the real resolver reads first.
 const resolveUsed: UsedFractionResolver = (limit) => limit.amount?.usedFraction;
 
-function win(id: string, opts: { label?: string; resetsAt?: number } = {}): FxWindow {
-	return { id, label: opts.label ?? id, resetsAt: opts.resetsAt };
-}
 function lim(
 	id: string,
 	opts: {
 		provider?: string;
 		scope?: Partial<FxScope>;
-		window?: FxWindow;
+		windowId?: string;
+		resetsAt?: number;
+		noWindow?: boolean;
 		usedFraction?: number;
 		label?: string;
 	} = {},
 ): FxLimit {
+	const windowId = opts.windowId ?? "5h";
 	return {
 		id,
 		label: opts.label ?? id,
-		scope: { provider: opts.provider ?? "anthropic", ...opts.scope },
-		window: opts.window,
+		scope: { provider: opts.provider ?? "anthropic", windowId, ...opts.scope },
+		window: opts.noWindow ? undefined : { id: windowId, label: windowId, resetsAt: opts.resetsAt },
 		amount: { unit: "requests", usedFraction: opts.usedFraction },
 	};
 }
@@ -121,558 +121,316 @@ function input(opts: {
 		now: opts.now ?? NOW,
 		staleAfterMs: opts.staleAfterMs ?? STALE_AFTER,
 		accounts: opts.accounts,
-		reports: opts.reports,
+		reports: opts.reports as unknown as UsageInput["reports"],
 	};
 }
 
-describe("buildUsageViewModel — grouping & labeling (AC2)", () => {
-	it("renders two same-provider accounts as distinct AccountVMs labeled by email local-part", () => {
+/** The standard 3 anthropic limits, in a caller-chosen order. */
+function anthropicLimits(order: Array<"5h" | "7d" | "fable">, fractions: Partial<Record<string, number>> = {}): FxLimit[] {
+	const mk = {
+		"5h": () => lim("anthropic:5h", { windowId: "5h", usedFraction: fractions["5h"] ?? 0.1, resetsAt: NOW + 1000 }),
+		"7d": () => lim("anthropic:7d", { windowId: "7d", usedFraction: fractions["7d"] ?? 0.2, resetsAt: NOW + 2000 }),
+		fable: () =>
+			lim("anthropic:7d:fable", {
+				windowId: "7d",
+				scope: { tier: "fable" },
+				label: "Claude 7 Day (Fable)",
+				usedFraction: fractions.fable ?? 0.3,
+				resetsAt: NOW + 3000,
+			}),
+	};
+	return order.map((k) => mk[k]());
+}
+
+describe("provider allowlist and fixed column order", () => {
+	it("keeps only anthropic and openai-codex, in that order, regardless of account input order", () => {
 		const vm = buildUsageViewModel(
 			input({
 				accounts: [
-					acct({ credentialId: 1, email: "user@x.com", accountId: "acc-1", position: 0 }),
-					acct({ credentialId: 2, email: "user.work@x.com", accountId: "acc-2", position: 1 }),
+					acct({ credentialId: 1, provider: "zai", isSubscription: false, note: "no usage - api key" }),
+					acct({ credentialId: 2, provider: "openai-codex", email: "c@x.com" }),
+					acct({ credentialId: 3, provider: "gemini", email: "g@x.com" }),
+					acct({ credentialId: 4, provider: "anthropic", email: "a@x.com" }),
 				],
-				reports: [
-					rep({
-						metadata: { email: "user@x.com", accountId: "acc-1" },
-						limits: [lim("l1", { scope: { accountId: "acc-1" }, window: win("5h"), usedFraction: 0.5 })],
-					}),
-					rep({
-						metadata: { email: "user.work@x.com", accountId: "acc-2" },
-						limits: [lim("l2", { scope: { accountId: "acc-2" }, window: win("7d"), usedFraction: 0.6 })],
-					}),
-				],
+				reports: [],
 			}),
 			resolveUsed,
 		);
-		const accounts = vm.groups.find((g) => g.provider === "anthropic")?.accounts ?? [];
-		expect(accounts).toHaveLength(2);
-		expect(accounts.map((a) => a.label).sort()).toEqual(["user", "user.work"]);
-		expect(accounts.find((a) => a.label === "user")?.windows).toHaveLength(1);
-		expect(accounts.find((a) => a.label === "user.work")?.windows).toHaveLength(1);
-	});
-
-	it("labels an api-key account with no email using the '#<id>' fallback, never a blank name", () => {
-		const vm = buildUsageViewModel(
-			input({ accounts: [acct({ credentialId: 7, isSubscription: false })], reports: [] }),
-			resolveUsed,
-		);
-		const account = vm.groups.find((g) => g.provider === "anthropic")?.accounts[0];
-		expect(account?.label).toBe("#7");
-	});
-});
-
-describe("buildUsageViewModel — ordering & subscription vs non-subscription (AC4)", () => {
-	it("orders subscription accounts first and dims non-subscription with a 'no usage' note and no fabricated windows", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [
-					// non-subscription listed first in input to prove reordering
-					acct({ credentialId: 7, isSubscription: false }),
-					acct({ credentialId: 1, isSubscription: true, email: "pro@x.com", accountId: "acc-s", position: 0 }),
-				],
-				reports: [
-					rep({
-						metadata: { email: "pro@x.com", accountId: "acc-s" },
-						limits: [lim("l1", { scope: { accountId: "acc-s" }, window: win("5h"), usedFraction: 0.5 })],
-					}),
-				],
-			}),
-			resolveUsed,
-		);
-		const accounts = vm.groups.find((g) => g.provider === "anthropic")?.accounts ?? [];
-		expect(accounts).toHaveLength(2);
-
-		// subscription first, emphasized, carries its matched window
-		expect(accounts[0]?.isSubscription).toBe(true);
-		expect(accounts[0]?.label).toBe("pro");
-		expect(accounts[0]?.windows).toHaveLength(1);
-
-		// non-subscription after: no fabricated 0% windows, an explicit note
-		const nonSub = accounts[1];
-		expect(nonSub?.isSubscription).toBe(false);
-		expect(nonSub?.windows).toHaveLength(0);
-		expect(nonSub?.label).toBe("#7");
-		expect(typeof nonSub?.note).toBe("string");
-		expect((nonSub?.note ?? "").length).toBeGreaterThan(0);
-		expect((nonSub?.note ?? "").toLowerCase()).toContain("no usage");
-	});
-});
-
-describe("buildUsageViewModel — empty view model", () => {
-	it("marks the view model empty when there are zero accounts", () => {
-		const vm = buildUsageViewModel(input({ accounts: [], reports: null }), resolveUsed);
-		expect(vm.empty).toBe(true);
-		expect(vm.groups.every((g) => g.accounts.length === 0)).toBe(true);
-	});
-
-	it("is not empty when at least one account is present", () => {
-		const vm = buildUsageViewModel(
-			input({ accounts: [acct({ credentialId: 1, accountId: "a", email: "u@x.com" })], reports: [] }),
-			resolveUsed,
-		);
+		expect(vm.columns.map((c) => c.provider)).toEqual(["anthropic", "openai-codex"]);
 		expect(vm.empty).toBe(false);
 	});
-});
 
-describe("buildUsageViewModel — freshness (AC5)", () => {
-	it("marks a matched report fresh when within staleAfterMs", () => {
+	it("SUPPORTED_PROVIDERS names exactly the two columns, in display order", () => {
+		expect(SUPPORTED_PROVIDERS).toEqual(["anthropic", "openai-codex"]);
+	});
+
+	it("is empty when only unsupported providers have accounts", () => {
 		const vm = buildUsageViewModel(
 			input({
-				accounts: [acct({ credentialId: 1, accountId: "a" })],
-				reports: [
-					rep({
-						fetchedAt: NOW,
-						metadata: { accountId: "a" },
-						limits: [lim("l1", { scope: { accountId: "a" }, window: win("5h"), usedFraction: 0.5 })],
-					}),
+				accounts: [
+					acct({ credentialId: 1, provider: "zai", isSubscription: false, note: "no usage - api key" }),
+					acct({ credentialId: 2, provider: "gemini", email: "g@x.com" }),
 				],
+				reports: [],
 			}),
 			resolveUsed,
 		);
-		expect(vm.groups.find((g) => g.provider === "anthropic")?.accounts[0]?.freshness).toBe("fresh");
+		expect(vm.columns).toEqual([]);
+		expect(vm.empty).toBe(true);
 	});
 
-	it("marks a report stale when fetchedAt is older than staleAfterMs", () => {
+	it("is empty on zero accounts and omits a provider column with no accounts", () => {
+		expect(buildUsageViewModel(input({ accounts: [], reports: null }), resolveUsed).empty).toBe(true);
+		const vm = buildUsageViewModel(
+			input({ accounts: [acct({ credentialId: 1, provider: "openai-codex", email: "c@x.com" })], reports: [] }),
+			resolveUsed,
+		);
+		expect(vm.columns.map((c) => c.provider)).toEqual(["openai-codex"]);
+	});
+
+	it("exposes display titles and slot metadata on each column", () => {
 		const vm = buildUsageViewModel(
 			input({
-				accounts: [acct({ credentialId: 1, accountId: "a" })],
-				reports: [
-					rep({
-						fetchedAt: NOW - STALE_AFTER - 1_000,
-						metadata: { accountId: "a" },
-						limits: [lim("l1", { scope: { accountId: "a" }, window: win("5h"), usedFraction: 0.5 })],
-					}),
+				accounts: [
+					acct({ credentialId: 1, email: "a@x.com" }),
+					acct({ credentialId: 2, provider: "openai-codex", email: "c@x.com" }),
 				],
+				reports: [],
 			}),
 			resolveUsed,
 		);
-		expect(vm.groups.find((g) => g.provider === "anthropic")?.accounts[0]?.freshness).toBe("stale");
-	});
-
-	// Boundary: staleness is a strict `>` (plan §6 Step 3.5: now - fetchedAt > staleAfterMs).
-	it("treats exactly staleAfterMs since fetchedAt as fresh (boundary is strict >)", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [acct({ credentialId: 1, accountId: "a" })],
-				reports: [
-					rep({
-						fetchedAt: NOW - STALE_AFTER, // now - fetchedAt === staleAfterMs exactly
-						metadata: { accountId: "a" },
-						limits: [lim("l1", { scope: { accountId: "a" }, window: win("5h"), usedFraction: 0.5 })],
-					}),
-				],
-			}),
-			resolveUsed,
-		);
-		expect(vm.groups.find((g) => g.provider === "anthropic")?.accounts[0]?.freshness).toBe("fresh");
-	});
-
-	it("treats one ms beyond staleAfterMs as stale", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [acct({ credentialId: 1, accountId: "a" })],
-				reports: [
-					rep({
-						fetchedAt: NOW - STALE_AFTER - 1,
-						metadata: { accountId: "a" },
-						limits: [lim("l1", { scope: { accountId: "a" }, window: win("5h"), usedFraction: 0.5 })],
-					}),
-				],
-			}),
-			resolveUsed,
-		);
-		expect(vm.groups.find((g) => g.provider === "anthropic")?.accounts[0]?.freshness).toBe("stale");
-	});
-
-	it("marks a subscription account unavailable with no windows when no report matches", () => {
-		const vm = buildUsageViewModel(
-			input({ accounts: [acct({ credentialId: 1, accountId: "a", email: "u@x.com" })], reports: [] }),
-			resolveUsed,
-		);
-		const account = vm.groups.find((g) => g.provider === "anthropic")?.accounts[0];
-		expect(account?.freshness).toBe("unavailable");
-		expect(account?.windows).toHaveLength(0);
+		expect(vm.columns[0].title).toBe("Anthropic");
+		expect(vm.columns[0].slots.map((s) => s.key)).toEqual(["5h", "7d", "fable-7d"]);
+		expect(vm.columns[0].slots.map((s) => s.header)).toEqual(["5h", "7d", "Fable 7d"]);
+		expect(vm.columns[1].title).toBe("OpenAI Codex");
+		expect(vm.columns[1].slots.map((s) => s.key)).toEqual(["7d"]);
 	});
 });
 
-describe("buildUsageViewModel — fraction sanitize resolver matrix (AC9)", () => {
-	it("preserves a 0 fraction as 0 and maps an unresolved fraction to undefined (order preserved)", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [acct({ credentialId: 1, accountId: "a" })],
-				reports: [
-					rep({
-						metadata: { accountId: "a" },
-						limits: [
-							lim("l0", { scope: { accountId: "a" }, window: win("5h"), usedFraction: 0 }),
-							lim("l1", { scope: { accountId: "a" }, window: win("7d") }), // no usedFraction -> resolver undefined
-						],
-					}),
-				],
-			}),
-			resolveUsed,
-		);
-		const account = vm.groups.find((g) => g.provider === "anthropic")?.accounts[0];
-		expect(account?.windows).toHaveLength(2);
-		expect(account?.windows[0]?.fraction).toBe(0); // valid 0% — preserved, not undefined
-		expect(account?.windows[1]?.fraction).toBeUndefined(); // unresolved -> undefined (renders n/a, never 0%)
-	});
-
-	// Table-driven: the WindowVM fraction is exactly what the injected resolver
-	// returns, finite-sanitized — isolating the VM's sanitize + nearLimit rule
-	// from how the real resolver derives the number. A VM that CLAMPS overage to
-	// 1 (a plausible wrong impl) is caught by the 1.4 -> 1.4 row.
-	function soleWindow(resolved: number | undefined): WindowVM | undefined {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [acct({ credentialId: 1, accountId: "a" })],
-				reports: [
-					rep({
-						metadata: { accountId: "a" },
-						limits: [lim("l1", { scope: { accountId: "a" }, window: win("5h") })],
-					}),
-				],
-			}),
-			() => resolved,
-		);
-		return vm.groups.find((g) => g.provider === "anthropic")?.accounts[0]?.windows[0];
-	}
-
-	const cases: Array<{ name: string; resolved: number | undefined; fraction: number | undefined; nearLimit: boolean }> = [
-		{ name: "overage >1 is preserved (NOT clamped) and is near-limit", resolved: 1.4, fraction: 1.4, nearLimit: true },
-		{ name: "a negative fraction is preserved as-is", resolved: -0.1, fraction: -0.1, nearLimit: false },
-		{ name: "NaN sanitizes to undefined", resolved: Number.NaN, fraction: undefined, nearLimit: false },
-		{ name: "+Infinity sanitizes to undefined", resolved: Number.POSITIVE_INFINITY, fraction: undefined, nearLimit: false },
-		{ name: "-Infinity sanitizes to undefined", resolved: Number.NEGATIVE_INFINITY, fraction: undefined, nearLimit: false },
-		{ name: "zero is preserved as 0 (never undefined)", resolved: 0, fraction: 0, nearLimit: false },
-		{ name: "the NEAR_LIMIT boundary 0.75 is near-limit", resolved: 0.75, fraction: 0.75, nearLimit: true },
+describe("fixed anthropic window slots — 5h, 7d, Fable 7d in that order, always", () => {
+	const ORDERS: Array<Array<"5h" | "7d" | "fable">> = [
+		["5h", "7d", "fable"],
+		["fable", "7d", "5h"],
+		["7d", "fable", "5h"],
+		["7d", "5h", "fable"],
 	];
 
-	for (const c of cases) {
-		it(`sanitize: ${c.name}`, () => {
-			const w = soleWindow(c.resolved);
-			expect(w).toBeDefined();
-			expect(w?.fraction).toBe(c.fraction);
-			expect(w?.nearLimit).toBe(c.nearLimit);
-		});
-	}
-});
-
-describe("buildUsageViewModel — generic window keying (AC9)", () => {
-	// Per-limit keying dims (windowId/modelId/tier/shared) legitimately vary
-	// within ONE account's report (they never make it identityUnsafe), so two
-	// limits sharing window.id AND limit.id but differing in exactly one such
-	// dim must yield TWO windows with DISTINCT keys — proving the key serializes
-	// the scope dim, not just limit.id (a key = limit.id-only impl collapses them).
-	const perLimitDims: Array<{ dim: keyof FxScope; a: Partial<FxScope>; b: Partial<FxScope> }> = [
-		{ dim: "windowId", a: { windowId: "wA" }, b: { windowId: "wB" } },
-		{ dim: "modelId", a: { modelId: "mA" }, b: { modelId: "mB" } },
-		{ dim: "tier", a: { tier: "tA" }, b: { tier: "tB" } },
-		{ dim: "shared", a: { shared: true }, b: { shared: false } },
-	];
-
-	for (const { dim, a, b } of perLimitDims) {
-		it(`disambiguates two same-window.id/same-limit.id limits by differing scope.${String(dim)}`, () => {
+	for (const order of ORDERS) {
+		it(`normalizes report order [${order.join(", ")}] into cells [5h, 7d, fable-7d]`, () => {
 			const vm = buildUsageViewModel(
 				input({
-					accounts: [acct({ credentialId: 1, accountId: "acc-1" })],
-					reports: [
-						rep({
-							metadata: { accountId: "acc-1" },
-							limits: [
-								lim("dup", { scope: { accountId: "acc-1", ...a }, window: win("7d") }),
-								lim("dup", { scope: { accountId: "acc-1", ...b }, window: win("7d") }),
-							],
-						}),
-					],
+					accounts: [acct({ credentialId: 1, email: "a@x.com" })],
+					reports: [rep({ metadata: { email: "a@x.com" }, limits: anthropicLimits(order) })],
 				}),
 				resolveUsed,
 			);
-			const windows = vm.groups.find((g) => g.provider === "anthropic")?.accounts[0]?.windows ?? [];
-			expect(windows).toHaveLength(2); // one per limit — never collapsed
-			expect(windows[0]?.key).not.toBe(windows[1]?.key); // disambiguated by the scope dim
-			// the key is not just the bare literal window.id / limit.id:
-			expect(windows[0]?.key).not.toBe("7d");
-			expect(windows[0]?.key).not.toBe("dup");
+			const cells = vm.columns[0].accounts[0].cells;
+			expect(cells.map((c) => c.slotKey)).toEqual(["5h", "7d", "fable-7d"]);
+			expect(cells.map((c) => c.fraction)).toEqual([0.1, 0.2, 0.3]);
+			expect(cells.map((c) => c.resetsAt)).toEqual([NOW + 1000, NOW + 2000, NOW + 3000]);
 		});
 	}
 
-	// Identity-bearing dims (accountId/projectId/orgId) cannot legitimately vary
-	// within one report (that trips identityUnsafe), so isolate each by matching
-	// the account via a STABLE email and rebuilding with only that scope dim
-	// changed — the sole window's key must differ.
-	function soleWindowKey(scopeOverride: Partial<FxScope>): string | undefined {
+	it("keeps every account's cells in the same slot order even when each report is scrambled differently", () => {
 		const vm = buildUsageViewModel(
 			input({
-				accounts: [acct({ credentialId: 1, email: "u@x.com" })], // matched by email; no accountId
+				accounts: [acct({ credentialId: 1, email: "a@x.com" }), acct({ credentialId: 2, email: "b@x.com" })],
 				reports: [
-					rep({
-						metadata: { email: "u@x.com" },
-						limits: [lim("l", { scope: { ...scopeOverride }, window: win("5h") })],
-					}),
+					rep({ metadata: { email: "a@x.com" }, limits: anthropicLimits(["fable", "5h", "7d"]) }),
+					rep({ metadata: { email: "b@x.com" }, limits: anthropicLimits(["7d", "fable", "5h"]) }),
 				],
 			}),
 			resolveUsed,
 		);
-		return vm.groups.find((g) => g.provider === "anthropic")?.accounts[0]?.windows[0]?.key;
-	}
+		for (const account of vm.columns[0].accounts) {
+			expect(account.cells.map((c) => c.slotKey)).toEqual(["5h", "7d", "fable-7d"]);
+		}
+	});
 
-	const identityDims: Array<{ dim: keyof FxScope; a: Partial<FxScope>; b: Partial<FxScope> }> = [
-		{ dim: "accountId", a: { accountId: "idA" }, b: { accountId: "idB" } },
-		{ dim: "projectId", a: { projectId: "pA" }, b: { projectId: "pB" } },
-		{ dim: "orgId", a: { orgId: "oA" }, b: { orgId: "oB" } },
-	];
-	for (const { dim, a, b } of identityDims) {
-		it(`serializes scope.${String(dim)} into the window key`, () => {
-			const keyA = soleWindowKey(a);
-			const keyB = soleWindowKey(b);
-			expect(keyA).toBeDefined();
-			expect(keyA).not.toBe(keyB);
-			expect(keyA).not.toBe("5h"); // not the bare window id
-			expect(keyA).not.toBe("l"); // not the bare limit id
-		});
-	}
-
-	it("falls back to limit.id when scope AND window.id are identical (collision tiebreaker)", () => {
+	it("a missing window leaves its slot present with fraction undefined (cell keeps its position)", () => {
 		const vm = buildUsageViewModel(
 			input({
-				accounts: [acct({ credentialId: 1, accountId: "acc-1" })],
+				accounts: [acct({ credentialId: 1, email: "a@x.com" })],
+				reports: [rep({ metadata: { email: "a@x.com" }, limits: anthropicLimits(["5h", "7d"]) })],
+			}),
+			resolveUsed,
+		);
+		const cells = vm.columns[0].accounts[0].cells;
+		expect(cells).toHaveLength(3);
+		expect(cells[2].slotKey).toBe("fable-7d");
+		expect(cells[2].fraction).toBeUndefined();
+		expect(cells[2].level).toBe("ok");
+	});
+
+	it("detects the fable slot by scope.tier, by limit-id suffix, and by label", () => {
+		const byTier = lim("x1", { windowId: "7d", scope: { tier: "fable" }, usedFraction: 0.4 });
+		const byId = lim("anthropic:7d:fable", { windowId: "7d", usedFraction: 0.5 });
+		const byLabel = lim("x2", { windowId: "7d", label: "Claude 7 Day (Fable)", usedFraction: 0.6 });
+		for (const fable of [byTier, byId, byLabel]) {
+			const vm = buildUsageViewModel(
+				input({
+					accounts: [acct({ credentialId: 1, email: "a@x.com" })],
+					reports: [rep({ metadata: { email: "a@x.com" }, limits: [fable] })],
+				}),
+				resolveUsed,
+			);
+			const cells = vm.columns[0].accounts[0].cells;
+			expect(cells[2].fraction).toBe(fable.amount.usedFraction);
+			expect(cells[1].fraction).toBeUndefined(); // never misfiled into the shared 7d slot
+		}
+	});
+
+	it("ignores windows that fit no slot (scoped non-fable weekly tiers, unknown ids, window-less limits)", () => {
+		const vm = buildUsageViewModel(
+			input({
+				accounts: [acct({ credentialId: 1, email: "a@x.com" })],
 				reports: [
 					rep({
-						metadata: { accountId: "acc-1" },
+						metadata: { email: "a@x.com" },
 						limits: [
-							lim("lim-A", { scope: { accountId: "acc-1", modelId: "same" }, window: win("7d") }),
-							lim("lim-B", { scope: { accountId: "acc-1", modelId: "same" }, window: win("7d") }),
+							lim("anthropic:7d:opus", { windowId: "7d", scope: { tier: "opus" }, usedFraction: 0.99 }),
+							lim("anthropic:monthly", { windowId: "monthly", usedFraction: 0.98 }),
+							lim("anthropic:5h:broken", { windowId: "5h", noWindow: true, usedFraction: 0.97 }),
 						],
 					}),
 				],
 			}),
 			resolveUsed,
 		);
-		const windows = vm.groups.find((g) => g.provider === "anthropic")?.accounts[0]?.windows ?? [];
-		expect(windows).toHaveLength(2);
-		// identical scope + identical window.id -> limit.id is the disambiguator
-		expect(windows[0]?.key).not.toBe(windows[1]?.key);
+		expect(vm.columns[0].accounts[0].cells.map((c) => c.fraction)).toEqual([undefined, undefined, undefined]);
+	});
+
+	it("first matching limit wins when a slot is duplicated", () => {
+		const vm = buildUsageViewModel(
+			input({
+				accounts: [acct({ credentialId: 1, email: "a@x.com" })],
+				reports: [
+					rep({
+						metadata: { email: "a@x.com" },
+						limits: [
+							lim("anthropic:5h", { windowId: "5h", usedFraction: 0.11 }),
+							lim("anthropic:5h:dup", { windowId: "5h", usedFraction: 0.99 }),
+						],
+					}),
+				],
+			}),
+			resolveUsed,
+		);
+		expect(vm.columns[0].accounts[0].cells[0].fraction).toBe(0.11);
 	});
 });
 
-describe("buildUsageViewModel — host-equivalent attribution (DR-F)", () => {
-	it("matches multiple gemini accounts by unique scope.accountId/projectId when metadata has no identity (2 accounts — no singleton rescue)", () => {
+describe("openai-codex slots — only the 7 days window", () => {
+	it("maps the 7d window and ignores 1h/5h primaries", () => {
 		const vm = buildUsageViewModel(
 			input({
-				accounts: [
-					acct({ provider: "google-gemini-cli", credentialId: 1, accountId: "g1", projectId: "p1", position: 0 }),
-					acct({ provider: "google-gemini-cli", credentialId: 2, accountId: "g2", projectId: "p2", position: 1 }),
-				],
+				accounts: [acct({ credentialId: 1, provider: "openai-codex", email: "c@x.com" })],
 				reports: [
-					rep({
-						provider: "google-gemini-cli",
-						metadata: {},
-						limits: [
-							lim("l1a", { provider: "google-gemini-cli", scope: { accountId: "g1", projectId: "p1" }, window: win("5h"), usedFraction: 0.5 }),
-							lim("l1b", { provider: "google-gemini-cli", scope: { accountId: "g1", projectId: "p1" }, window: win("7d"), usedFraction: 0.6 }),
-						],
-					}),
-					rep({
-						provider: "google-gemini-cli",
-						metadata: {},
-						limits: [lim("l2", { provider: "google-gemini-cli", scope: { accountId: "g2", projectId: "p2" }, window: win("5h"), usedFraction: 0.4 })],
-					}),
-				],
-			}),
-			resolveUsed,
-		);
-		const accounts = vm.groups.find((g) => g.provider === "google-gemini-cli")?.accounts ?? [];
-		expect(accounts).toHaveLength(2);
-		// scope.accountId attribution across 2 accounts — a metadata-only join leaves BOTH unavailable (singleton can't rescue 2)
-		expect(accounts.every((a) => a.freshness === "fresh")).toBe(true);
-		expect(accounts.find((a) => a.label === "g1")?.windows).toHaveLength(2);
-		expect(accounts.find((a) => a.label === "g2")?.windows).toHaveLength(1);
-	});
-
-	it("matches multiple kimi-code accounts by unique scope.accountId when metadata carries only an endpoint (2 accounts)", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [
-					acct({ provider: "kimi-code", credentialId: 1, accountId: "k1", position: 0 }),
-					acct({ provider: "kimi-code", credentialId: 2, accountId: "k2", position: 1 }),
-				],
-				reports: [
-					rep({ provider: "kimi-code", metadata: { endpoint: "https://api.example.invalid" }, limits: [lim("l1", { provider: "kimi-code", scope: { accountId: "k1", shared: true }, window: win("monthly"), usedFraction: 0.1 })] }),
-					rep({ provider: "kimi-code", metadata: { endpoint: "https://api.example.invalid" }, limits: [lim("l2", { provider: "kimi-code", scope: { accountId: "k2", shared: true }, window: win("monthly"), usedFraction: 0.2 })] }),
-				],
-			}),
-			resolveUsed,
-		);
-		const accounts = vm.groups.find((g) => g.provider === "kimi-code")?.accounts ?? [];
-		expect(accounts).toHaveLength(2);
-		expect(accounts.every((a) => a.freshness === "fresh")).toBe(true);
-		expect(accounts.every((a) => a.windows.length === 1)).toBe(true);
-	});
-
-	it("matches gemini accounts by unique scope.projectId when they have no accountId (projectId tier, 2 accounts)", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [
-					acct({ provider: "google-gemini-cli", credentialId: 1, projectId: "proj-1", position: 0 }),
-					acct({ provider: "google-gemini-cli", credentialId: 2, projectId: "proj-2", position: 1 }),
-				],
-				reports: [
-					rep({ provider: "google-gemini-cli", metadata: {}, limits: [lim("l1", { provider: "google-gemini-cli", scope: { projectId: "proj-1" }, window: win("1d"), usedFraction: 0.5 })] }),
-					rep({ provider: "google-gemini-cli", metadata: {}, limits: [lim("l2", { provider: "google-gemini-cli", scope: { projectId: "proj-2" }, window: win("1d"), usedFraction: 0.6 })] }),
-				],
-			}),
-			resolveUsed,
-		);
-		const accounts = vm.groups.find((g) => g.provider === "google-gemini-cli")?.accounts ?? [];
-		expect(accounts).toHaveLength(2);
-		// tier-3 projectId — an accountId/metadata-only join leaves both unavailable (singleton can't rescue 2)
-		expect(accounts.every((a) => a.freshness === "fresh")).toBe(true);
-	});
-
-	it("attributes anthropic by metadata identity when scope carries no accountId (2 accounts; a scope-only join would miss them)", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [
-					acct({ credentialId: 1, accountId: "acc-A", email: "a@x.com", position: 0 }),
-					acct({ credentialId: 2, accountId: "acc-B", email: "b@x.com", position: 1 }),
-				],
-				reports: [
-					rep({ metadata: { accountId: "acc-A", email: "a@x.com" }, limits: [lim("l1", { scope: { provider: "anthropic" }, window: win("5h"), usedFraction: 0.5 })] }),
-					rep({ metadata: { accountId: "acc-B", email: "b@x.com" }, limits: [lim("l2", { scope: { provider: "anthropic" }, window: win("5h"), usedFraction: 0.6 })] }),
-				],
-			}),
-			resolveUsed,
-		);
-		const accounts = vm.groups.find((g) => g.provider === "anthropic")?.accounts ?? [];
-		expect(accounts).toHaveLength(2);
-		// metadata-first: scope carries no accountId, so a scope-only join leaves both unavailable
-		expect(accounts.every((a) => a.freshness === "fresh")).toBe(true);
-		expect(accounts.every((a) => a.windows.length === 1)).toBe(true);
-	});
-
-	it("attributes openai-codex by metadata identity when scope carries no accountId (2 accounts)", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [
-					acct({ provider: "openai-codex", credentialId: 1, accountId: "cx-A", email: "carol@openai.com", position: 0 }),
-					acct({ provider: "openai-codex", credentialId: 2, accountId: "cx-B", email: "dan@openai.com", position: 1 }),
-				],
-				reports: [
-					rep({ provider: "openai-codex", metadata: { accountId: "cx-A", email: "carol@openai.com" }, limits: [lim("l1", { provider: "openai-codex", scope: { provider: "openai-codex" }, window: win("weekly"), usedFraction: 0.4 })] }),
-					rep({ provider: "openai-codex", metadata: { accountId: "cx-B", email: "dan@openai.com" }, limits: [lim("l2", { provider: "openai-codex", scope: { provider: "openai-codex" }, window: win("weekly"), usedFraction: 0.5 })] }),
-				],
-			}),
-			resolveUsed,
-		);
-		const accounts = vm.groups.find((g) => g.provider === "openai-codex")?.accounts ?? [];
-		expect(accounts).toHaveLength(2);
-		expect(accounts.every((a) => a.freshness === "fresh")).toBe(true);
-	});
-
-	it("matches by email after trimming and lowercasing, and a sibling must not steal the report (2 accounts)", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [
-					acct({ credentialId: 1, email: "user@x.com", position: 0 }),
-					acct({ credentialId: 2, email: "other@x.com", position: 1 }),
-				],
-				reports: [
-					rep({ metadata: { email: "  User@X.com  " }, limits: [lim("l1", { scope: { provider: "anthropic" }, window: win("5h"), usedFraction: 0.5 })] }),
-				],
-			}),
-			resolveUsed,
-		);
-		const accounts = vm.groups.find((g) => g.provider === "anthropic")?.accounts ?? [];
-		// report-side normalization (" User@X.com " -> user@x.com) is REQUIRED; a 2nd account blocks a singleton rescue
-		expect(accounts.find((a) => a.label === "user")?.freshness).toBe("fresh");
-		expect(accounts.find((a) => a.label === "user")?.windows).toHaveLength(1);
-		expect(accounts.find((a) => a.label === "other")?.freshness).toBe("unavailable");
-	});
-
-	it("renders a metadata/scope-conflict report's account unavailable while a clean sibling still matches", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [
-					acct({ provider: "openai-codex", credentialId: 1, accountId: "acct-A", email: "a@x.com", position: 0 }),
-					acct({ provider: "openai-codex", credentialId: 2, accountId: "acct-C", email: "c@x.com", position: 1 }),
-				],
-				reports: [
-					// conflict: metadata.accountId acct-A but scope.accountId acct-B -> identityUnsafe -> excluded
 					rep({
 						provider: "openai-codex",
-						metadata: { accountId: "acct-A" },
-						limits: [lim("lc", { provider: "openai-codex", scope: { accountId: "acct-B" }, window: win("5h"), usedFraction: 0.9 })],
-					}),
-					// clean: metadata acct-C == scope acct-C -> identity-safe
-					rep({
-						provider: "openai-codex",
-						metadata: { accountId: "acct-C" },
-						limits: [lim("lk", { provider: "openai-codex", scope: { accountId: "acct-C" }, window: win("5h"), usedFraction: 0.3 })],
-					}),
-				],
-			}),
-			resolveUsed,
-		);
-		const accounts = vm.groups.find((g) => g.provider === "openai-codex")?.accounts ?? [];
-		const conflict = accounts.find((a) => a.label === "a");
-		const clean = accounts.find((a) => a.label === "c");
-		// the conflict account never inherits the wrong report's usage
-		expect(conflict?.freshness).toBe("unavailable");
-		expect(conflict?.windows).toHaveLength(0);
-		// the clean sibling is still matched
-		expect(clean?.freshness).toBe("fresh");
-		expect((clean?.windows ?? []).length).toBeGreaterThan(0);
-	});
-
-	it("excludes a report whose limits span two distinct scope accountIds (multi-scope) — account unavailable", () => {
-		const vm = buildUsageViewModel(
-			input({
-				accounts: [acct({ provider: "google-gemini-cli", credentialId: 1, accountId: "acct-A" })],
-				reports: [
-					rep({
-						provider: "google-gemini-cli",
-						metadata: {},
+						metadata: { email: "c@x.com" },
 						limits: [
-							lim("l1", { provider: "google-gemini-cli", scope: { accountId: "acct-A" }, window: win("5h"), usedFraction: 0.5 }),
-							lim("l2", { provider: "google-gemini-cli", scope: { accountId: "acct-B" }, window: win("7d"), usedFraction: 0.6 }),
+							lim("codex:1h", { provider: "openai-codex", windowId: "1h", usedFraction: 0.9 }),
+							lim("codex:7d", { provider: "openai-codex", windowId: "7d", usedFraction: 0.19, resetsAt: NOW + 500 }),
+							lim("codex:5h", { provider: "openai-codex", windowId: "5h", usedFraction: 0.8 }),
 						],
 					}),
 				],
 			}),
 			resolveUsed,
 		);
-		// two distinct scope.accountId -> unique-Set undefined + identityUnsafe -> excluded from all tiers
-		const account = vm.groups.find((g) => g.provider === "google-gemini-cli")?.accounts[0];
-		expect(account?.freshness).toBe("unavailable");
-		expect(account?.windows).toHaveLength(0);
+		const cells = vm.columns[0].accounts[0].cells;
+		expect(cells).toHaveLength(1);
+		expect(cells[0]).toMatchObject({ slotKey: "7d", fraction: 0.19, resetsAt: NOW + 500, level: "ok" });
+	});
+});
+
+describe("fraction sanitize and ok/warn/crit levels", () => {
+	it("classifyLevel: warn at NEAR_LIMIT, crit at CRIT_LIMIT, boundaries inclusive", () => {
+		expect(classifyLevel(undefined)).toBe("ok");
+		expect(classifyLevel(0)).toBe("ok");
+		expect(classifyLevel(NEAR_LIMIT - 0.001)).toBe("ok");
+		expect(classifyLevel(NEAR_LIMIT)).toBe("warn");
+		expect(classifyLevel(CRIT_LIMIT - 0.001)).toBe("warn");
+		expect(classifyLevel(CRIT_LIMIT)).toBe("crit");
+		expect(classifyLevel(1.4)).toBe("crit");
 	});
 
-	it("excludes a report whose limits span two distinct scope.projectId (multi-project) — account unavailable", () => {
+	it("preserves an overage fraction (>1) unclamped and marks it crit", () => {
 		const vm = buildUsageViewModel(
 			input({
-				accounts: [acct({ provider: "google-gemini-cli", credentialId: 1, projectId: "p-A" })],
+				accounts: [acct({ credentialId: 1, email: "a@x.com" })],
+				reports: [rep({ metadata: { email: "a@x.com" }, limits: anthropicLimits(["5h"], { "5h": 1.37 }) })],
+			}),
+			resolveUsed,
+		);
+		expect(vm.columns[0].accounts[0].cells[0]).toMatchObject({ fraction: 1.37, level: "crit" });
+	});
+
+	it("maps a non-finite or missing resolver result to fraction undefined (never NaN)", () => {
+		for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, undefined]) {
+			const vm = buildUsageViewModel(
+				input({
+					accounts: [acct({ credentialId: 1, email: "a@x.com" })],
+					reports: [rep({ metadata: { email: "a@x.com" }, limits: anthropicLimits(["5h"]) })],
+				}),
+				() => bad,
+			);
+			expect(vm.columns[0].accounts[0].cells[0].fraction).toBeUndefined();
+		}
+	});
+});
+
+describe("report → account attribution (DR-F, carried over)", () => {
+	it("matches by metadata accountId first", () => {
+		const vm = buildUsageViewModel(
+			input({
+				accounts: [acct({ credentialId: 1, accountId: "acc-1" }), acct({ credentialId: 2, accountId: "acc-2" })],
 				reports: [
-					rep({
-						provider: "google-gemini-cli",
-						metadata: {},
-						limits: [
-							lim("l1", { provider: "google-gemini-cli", scope: { projectId: "p-A" }, window: win("1d"), usedFraction: 0.5 }),
-							lim("l2", { provider: "google-gemini-cli", scope: { projectId: "p-B" }, window: win("7d"), usedFraction: 0.6 }),
-						],
-					}),
+					rep({ metadata: { accountId: "acc-2" }, limits: anthropicLimits(["5h"], { "5h": 0.22 }) }),
+					rep({ metadata: { accountId: "acc-1" }, limits: anthropicLimits(["5h"], { "5h": 0.11 }) }),
 				],
 			}),
 			resolveUsed,
 		);
-		const account = vm.groups.find((g) => g.provider === "google-gemini-cli")?.accounts[0];
-		expect(account?.freshness).toBe("unavailable");
-		expect(account?.windows).toHaveLength(0);
+		const [a1, a2] = vm.columns[0].accounts;
+		expect(a1.cells[0].fraction).toBe(0.11);
+		expect(a2.cells[0].fraction).toBe(0.22);
 	});
 
-	it("excludes a report whose limits span two distinct scope.orgId (multi-org) even with a consistent accountId", () => {
+	it("matches by scope accountId when metadata is absent", () => {
+		const vm = buildUsageViewModel(
+			input({
+				accounts: [acct({ credentialId: 1, accountId: "acc-1" }), acct({ credentialId: 2, accountId: "acc-2" })],
+				reports: [
+					rep({ limits: [lim("l1", { scope: { accountId: "acc-1" }, usedFraction: 0.11 })] }),
+					rep({ limits: [lim("l2", { scope: { accountId: "acc-2" }, usedFraction: 0.22 })] }),
+				],
+			}),
+			resolveUsed,
+		);
+		const [a1, a2] = vm.columns[0].accounts;
+		expect(a1.cells[0].fraction).toBe(0.11);
+		expect(a2.cells[0].fraction).toBe(0.22);
+	});
+
+	it("matches by email (metadata email or account/user/username label), case-insensitively", () => {
+		const vm = buildUsageViewModel(
+			input({
+				accounts: [acct({ credentialId: 1, email: "A@X.com" }), acct({ credentialId: 2, email: "b@x.com" })],
+				reports: [
+					rep({ metadata: { email: "a@x.com" }, limits: anthropicLimits(["5h"], { "5h": 0.11 }) }),
+					rep({ metadata: { username: "B@x.CoM" }, limits: anthropicLimits(["5h"], { "5h": 0.22 }) }),
+				],
+			}),
+			resolveUsed,
+		);
+		const [a1, a2] = vm.columns[0].accounts;
+		expect(a1.cells[0].fraction).toBe(0.11);
+		expect(a2.cells[0].fraction).toBe(0.22);
+	});
+
+	it("never matches an identity-unsafe report (scope splits across orgs/accounts)", () => {
 		const vm = buildUsageViewModel(
 			input({
 				accounts: [acct({ credentialId: 1, accountId: "acc-1" })],
@@ -680,100 +438,101 @@ describe("buildUsageViewModel — host-equivalent attribution (DR-F)", () => {
 					rep({
 						metadata: { accountId: "acc-1" },
 						limits: [
-							lim("l1", { scope: { accountId: "acc-1", orgId: "org-A" }, window: win("5h"), usedFraction: 0.5 }),
-							lim("l2", { scope: { accountId: "acc-1", orgId: "org-B" }, window: win("7d"), usedFraction: 0.6 }),
+							lim("l1", { scope: { orgId: "org-a" }, usedFraction: 0.5 }),
+							lim("l2", { scope: { orgId: "org-b" }, usedFraction: 0.6 }),
 						],
 					}),
 				],
 			}),
 			resolveUsed,
 		);
-		// scope.accountId is consistent, but two distinct scope.orgId -> identityUnsafe -> excluded
-		const account = vm.groups.find((g) => g.provider === "anthropic")?.accounts[0];
-		expect(account?.freshness).toBe("unavailable");
-		expect(account?.windows).toHaveLength(0);
+		expect(vm.columns[0].accounts[0].freshness).toBe("unavailable");
 	});
 
-	it("does not let the singleton fallback resurrect a lone conflict report for a lone account", () => {
+	it("consumes each report at most once (two accounts cannot share one report)", () => {
 		const vm = buildUsageViewModel(
 			input({
-				accounts: [acct({ provider: "openai-codex", credentialId: 1, accountId: "solo-A", email: "solo@x.com" })],
-				reports: [
-					rep({
-						provider: "openai-codex",
-						metadata: { accountId: "solo-A" },
-						limits: [lim("l1", { provider: "openai-codex", scope: { accountId: "other-B" }, window: win("5h"), usedFraction: 0.7 })],
-					}),
-				],
+				accounts: [acct({ credentialId: 1, email: "a@x.com" }), acct({ credentialId: 2, email: "a@x.com" })],
+				reports: [rep({ metadata: { email: "a@x.com" }, limits: anthropicLimits(["5h"], { "5h": 0.11 }) })],
 			}),
 			resolveUsed,
 		);
-		// lone account + lone identityUnsafe report: the singleton fallback must NOT pair them
-		const account = vm.groups.find((g) => g.provider === "openai-codex")?.accounts[0];
-		expect(account?.freshness).toBe("unavailable");
-		expect(account?.windows).toHaveLength(0);
+		const matched = vm.columns[0].accounts.filter((a) => a.freshness !== "unavailable");
+		expect(matched).toHaveLength(1);
 	});
 
-	it("consumes a matched report once: two accounts matching the same report leave exactly one unavailable", () => {
+	it("falls back to the singleton pairing (one unmatched account + one safe report)", () => {
 		const vm = buildUsageViewModel(
 			input({
-				accounts: [
-					acct({ credentialId: 1, accountId: "dup-acc", email: "dup@x.com", position: 0 }),
-					acct({ credentialId: 2, accountId: "dup-acc", email: "dup@x.com", position: 1 }),
-				],
-				reports: [
-					rep({
-						metadata: { accountId: "dup-acc", email: "dup@x.com" },
-						limits: [lim("l1", { scope: { accountId: "dup-acc" }, window: win("5h"), usedFraction: 0.5 })],
-					}),
-				],
+				accounts: [acct({ credentialId: 1, email: "a@x.com" })],
+				reports: [rep({ limits: anthropicLimits(["5h"], { "5h": 0.11 }) })],
 			}),
 			resolveUsed,
 		);
-		const accounts = vm.groups.find((g) => g.provider === "anthropic")?.accounts ?? [];
-		expect(accounts).toHaveLength(2);
-		expect(accounts.filter((a) => a.freshness === "fresh")).toHaveLength(1); // report consumed once
-		expect(accounts.filter((a) => a.freshness === "unavailable")).toHaveLength(1); // the second can't reuse it
-		expect(accounts.find((a) => a.freshness === "fresh")?.windows).toHaveLength(1);
-		expect(accounts.find((a) => a.freshness === "unavailable")?.windows).toHaveLength(0);
+		expect(vm.columns[0].accounts[0].cells[0].fraction).toBe(0.11);
 	});
 
-	it("leaves two no-identity accounts both unavailable (no positional guess) despite matchable reports", () => {
+	it("classifies an unmatched subscription account as unavailable with all-empty cells", () => {
+		const vm = buildUsageViewModel(
+			input({
+				accounts: [acct({ credentialId: 1, email: "a@x.com" }), acct({ credentialId: 2, email: "b@x.com" })],
+				reports: [rep({ metadata: { email: "a@x.com" }, limits: anthropicLimits(["5h"]) })],
+			}),
+			resolveUsed,
+		);
+		const b = vm.columns[0].accounts[1];
+		expect(b.freshness).toBe("unavailable");
+		expect(b.cells).toHaveLength(3);
+		expect(b.cells.every((c) => c.fraction === undefined)).toBe(true);
+	});
+});
+
+describe("account rows — labels, ordering, staleness, api-key notes", () => {
+	it("labels by email local part, else accountId, else #position/credentialId", () => {
 		const vm = buildUsageViewModel(
 			input({
 				accounts: [
-					acct({ credentialId: 1, position: 0 }), // no accountId / email / projectId
-					acct({ credentialId: 2, position: 1 }),
+					acct({ credentialId: 1, email: "soyesenna@gmail.com", position: 0 }),
+					acct({ credentialId: 2, accountId: "kjy915875", position: 1 }),
+					acct({ credentialId: 3, position: 7 }),
+					acct({ credentialId: 9 }),
 				],
-				reports: [
-					rep({ metadata: { accountId: "x" }, limits: [lim("l1", { scope: { accountId: "x" }, window: win("5h"), usedFraction: 0.5 })] }),
-					rep({ metadata: { accountId: "y" }, limits: [lim("l2", { scope: { accountId: "y" }, window: win("7d"), usedFraction: 0.6 })] }),
-				],
+				reports: [],
 			}),
 			resolveUsed,
 		);
-		const accounts = vm.groups.find((g) => g.provider === "anthropic")?.accounts ?? [];
-		expect(accounts).toHaveLength(2);
-		expect(accounts.every((a) => a.freshness === "unavailable")).toBe(true);
-		expect(accounts.every((a) => a.windows.length === 0)).toBe(true);
+		expect(vm.columns[0].accounts.map((a) => a.label)).toEqual(["soyesenna", "kjy915875", "#7", "#9"]);
 	});
 
-	it("pairs a lone account with the sole identity-safe report via the singleton fallback (positive case)", () => {
+	it("orders subscription accounts by position (then input order), api-key notes last", () => {
 		const vm = buildUsageViewModel(
 			input({
-				accounts: [acct({ credentialId: 1, position: 0 })], // no direct identity to trip a tier
+				accounts: [
+					acct({ credentialId: 1, isSubscription: false, note: "no usage - api key" }),
+					acct({ credentialId: 2, email: "b@x.com", position: 1 }),
+					acct({ credentialId: 3, email: "a@x.com", position: 0 }),
+				],
+				reports: [],
+			}),
+			resolveUsed,
+		);
+		const rows = vm.columns[0].accounts;
+		expect(rows.map((a) => a.label)).toEqual(["a", "b", "#1"]);
+		expect(rows[2]).toMatchObject({ isSubscription: false, note: "no usage - api key", cells: [] });
+	});
+
+	it("marks a report older than staleAfterMs as stale (freshness only — cells still render)", () => {
+		const vm = buildUsageViewModel(
+			input({
+				accounts: [acct({ credentialId: 1, email: "a@x.com" })],
 				reports: [
-					rep({
-						metadata: { accountId: "server-known-id" },
-						limits: [lim("l1", { scope: { accountId: "server-known-id" }, window: win("5h"), usedFraction: 0.5 })],
-					}),
+					rep({ metadata: { email: "a@x.com" }, fetchedAt: NOW - STALE_AFTER - 1, limits: anthropicLimits(["5h"]) }),
 				],
 			}),
 			resolveUsed,
 		);
-		const account = vm.groups.find((g) => g.provider === "anthropic")?.accounts[0];
-		// 1 unmatched account + 1 unconsumed identity-safe report -> singleton fallback pairs them
-		expect(account?.freshness).toBe("fresh");
-		expect(account?.windows).toHaveLength(1);
+		const a = vm.columns[0].accounts[0];
+		expect(a.freshness).toBe("stale");
+		expect(a.cells[0].fraction).toBe(0.1);
 	});
 });

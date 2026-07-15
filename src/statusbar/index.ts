@@ -19,7 +19,7 @@ import { gatherUsageInput } from "./gather.js";
 import { createUsageBarController } from "./controller.js";
 import type { Reporter, UsageLoader, UsageWidgetSink } from "./controller.js";
 import { deriveMaxRows, renderRows } from "./render.js";
-import type { RenderRow, RowStyle } from "./render.js";
+import type { RenderRow, SegmentStyle } from "./render.js";
 import { buildUsageViewModel } from "./view-model.js";
 import type { UsageViewModel } from "./view-model.js";
 
@@ -35,7 +35,7 @@ const WIDGET_KEY = "lsc-usage-bar";
 const COMMAND_NAME = "usage-bar";
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 const STALE_AFTER_MS = 7 * 60_000;
-const EMPTY_VM: UsageViewModel = { groups: [], empty: true };
+const EMPTY_VM: UsageViewModel = { columns: [], empty: true };
 
 // TOGGLE_CHORD collision check (Gate 1): grepped pi-tui keybindings.d.ts (TUI
 // editor defaults) and pi-coding-agent dist (app.* reserved keys + bundled
@@ -45,24 +45,32 @@ const EMPTY_VM: UsageViewModel = { groups: [], empty: true };
 // legacy-byte-synthesizable (0x0E), so the adapter can verify a real chord-close.
 const TOGGLE_CHORD: KeyId = "ctrl+n";
 
-// Static style → theme-color table (never mutated → Record, not Map).
-const STYLE_COLOR: Record<RowStyle, ThemeColor> = {
-	"provider-header": "accent",
-	"account-strong": "text",
-	"account-dim": "dim",
-	window: "text",
-	"window-stale": "muted",
-	"window-na": "dim",
+// Static segment-style → theme-color table (never mutated → Record, not Map).
+const STYLE_COLOR: Record<SegmentStyle, ThemeColor> = {
+	title: "accent",
+	header: "muted",
+	label: "text",
+	stale: "warning",
+	"bar-ok": "success",
+	"bar-warn": "warning",
+	"bar-crit": "error",
+	track: "dim",
+	"pct-ok": "text",
+	"pct-warn": "warning",
+	"pct-crit": "error",
+	reset: "muted",
+	na: "dim",
 	note: "muted",
+	sep: "borderMuted",
 	more: "dim",
 };
 
-/** Map a render row to a themed string. Never throws (falls back to raw text). */
+/** Map a render row's segments to one themed string. Never throws (falls back to raw text). */
 function styleRow(row: RenderRow, theme: Theme): string {
 	try {
-		return theme.fg(STYLE_COLOR[row.style], row.text);
+		return row.segments.map((s) => theme.fg(STYLE_COLOR[s.style], s.text)).join("");
 	} catch {
-		return row.text;
+		return row.segments.map((s) => s.text).join("");
 	}
 }
 

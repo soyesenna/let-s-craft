@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderRows } from "../src/statusbar/render.js";
+import { renderRows, rowText, type RenderRow } from "../src/statusbar/render.js";
 import {
 	buildUsageViewModel,
 	type EnumeratedAccount,
@@ -8,22 +8,23 @@ import {
 } from "../src/statusbar/view-model.js";
 
 // ---------------------------------------------------------------------------
-// Cross-layer PURE PIPELINE test (plan §9 integration: "end-to-end pure
-// pipeline fixture"). A single realistic 4-provider UsageInput is pushed
-// through the REAL buildUsageViewModel (attribution + overage sanitize +
+// Cross-layer PURE PIPELINE test (integration: "end-to-end pure pipeline
+// fixture"). A single realistic UsageInput is pushed through the REAL
+// buildUsageViewModel (allowlist + slotting + attribution + overage sanitize +
 // freshness + ordering) and then the REAL renderRows for BOTH the collapsed
-// and expanded views — tying attribution, overage, packing and the row budget
-// together, which no single-layer suite exercises.
+// (columnar) and expanded views — tying the layers together in ways no
+// single-layer suite exercises.
 //
-// The fixture carries every §9 shape at once: anthropic + openai-codex
-// metadata identity; google-gemini-cli + kimi-code scope identity; a provider
-// with two accounts; an overage (>1) window; an api-key (non-subscription)
-// account; and an unmatched subscription account (-> unavailable).
+// The fixture carries every shape at once: anthropic with two subscription
+// accounts whose reports arrive in DIFFERENT scrambled window orders (the
+// bug the columnar redesign kills), an anthropic api-key credential (note
+// row), an openai-codex account with an OVERAGE (>1) 7d window matched by
+// scope identity, an unmatched codex account (-> unavailable), and unsupported
+// providers (google-gemini-cli, kimi-code) that must be dropped entirely.
 //
-// Both pure modules import omp usage types only as `import type`, so this loads
-// under vitest-on-Node; the runtime report/limit shapes are modeled with local
-// structural fixtures (no `as` casts, no omp value import). RED until craft
-// implements `src/statusbar/{view-model,render}.ts`.
+// Both pure modules import omp usage types only as `import type`, so this
+// loads under vitest-on-Node; the runtime report/limit shapes are modeled with
+// local structural fixtures (no `as` casts, no omp value import).
 // ---------------------------------------------------------------------------
 
 interface FxScope {
@@ -74,8 +75,15 @@ function lim(
 	scope: Partial<FxScope>,
 	window: FxWindow,
 	usedFraction?: number,
+	label = id,
 ): FxLimit {
-	return { id, label: id, scope: { provider, ...scope }, window, amount: { unit: "percent", usedFraction } };
+	return {
+		id,
+		label,
+		scope: { provider, windowId: window.id, ...scope },
+		window,
+		amount: { unit: "percent", usedFraction },
+	};
 }
 function rep(provider: string, metadata: Record<string, unknown>, limits: FxLimit[], fetchedAt = NOW): FxReport {
 	return { provider, fetchedAt, metadata, limits };
@@ -84,135 +92,162 @@ function acct(opts: Partial<EnumeratedAccount> & { provider: string; credentialI
 	return { isSubscription: true, disabled: false, ...opts };
 }
 
-// The single realistic 4-provider fixture used by every case below.
-// anthropic: alice + bob (metadata identity) + an api-key (non-subscription).
-// openai-codex: carol (metadata identity, OVERAGE window 1.4) + dave (no report -> unavailable).
-// google-gemini-cli: matched by scope.accountId/projectId.
-// kimi-code: matched by scope.accountId (metadata carries only an endpoint).
+// The single realistic fixture used by every case below.
+// anthropic: alice (windows scrambled fable→7d→5h) + bob (scrambled 7d→5h→fable,
+//            and bob has NO fable window) + an api-key credential (note row).
+// openai-codex: carol (scope identity, OVERAGE 7d 1.4) + dave (no report -> unavailable).
+// google-gemini-cli / kimi-code: accounts + reports that MUST be dropped (unsupported).
 function pipelineInput(): UsageInput {
 	const accounts: EnumeratedAccount[] = [
 		acct({ provider: "anthropic", credentialId: 1, accountId: "an-alice", email: "alice@x.com", position: 0 }),
 		acct({ provider: "anthropic", credentialId: 2, accountId: "an-bob", email: "bob@x.com", position: 1 }),
-		acct({ provider: "anthropic", credentialId: 3, isSubscription: false, position: 2 }), // api key -> note
+		acct({ provider: "anthropic", credentialId: 3, isSubscription: false, position: 2, note: "no usage - api key" }),
 		acct({ provider: "openai-codex", credentialId: 4, accountId: "cx-carol", email: "carol@openai.com", position: 0 }),
-		acct({ provider: "openai-codex", credentialId: 5, accountId: "cx-dave", email: "dave@openai.com", position: 1 }), // unmatched
+		acct({ provider: "openai-codex", credentialId: 5, accountId: "cx-dave", email: "dave@openai.com", position: 1 }),
 		acct({ provider: "google-gemini-cli", credentialId: 6, accountId: "gm-acc", projectId: "gm-proj", position: 0 }),
 		acct({ provider: "kimi-code", credentialId: 7, accountId: "km-acc", position: 0 }),
 	];
 	const reports: FxReport[] = [
+		// alice: fable → 7d → 5h (scrambled on purpose).
 		rep("anthropic", { accountId: "an-alice", email: "alice@x.com", orgId: "org-1" }, [
-			lim("an-alice-5h", "anthropic", {}, { id: "5h", label: "5h", resetsAt: NOW + HOUR }, 0.5),
+			lim(
+				"anthropic:7d:fable",
+				"anthropic",
+				{ tier: "fable" },
+				{ id: "7d", label: "7 Day", resetsAt: NOW + 3 * 24 * HOUR },
+				0.62,
+				"Claude 7 Day (Fable)",
+			),
+			lim("anthropic:7d", "anthropic", {}, { id: "7d", label: "7 Day", resetsAt: NOW + 3 * 24 * HOUR }, 1.0),
+			lim("anthropic:5h", "anthropic", {}, { id: "5h", label: "5 Hour", resetsAt: NOW + HOUR }, 0.04),
 		]),
+		// bob: 7d → 5h, NO fable window at all.
 		rep("anthropic", { accountId: "an-bob", email: "bob@x.com" }, [
-			lim("an-bob-5h", "anthropic", {}, { id: "5h", label: "5h", resetsAt: NOW + 2 * HOUR }, 0.33),
+			lim("anthropic:7d", "anthropic", {}, { id: "7d", label: "7 Day", resetsAt: NOW + 4 * 24 * HOUR }, 0.31),
+			lim("anthropic:5h", "anthropic", {}, { id: "5h", label: "5 Hour", resetsAt: NOW + 2 * HOUR }, 0.33),
 		]),
-		rep("openai-codex", { accountId: "cx-carol", email: "carol@openai.com" }, [
-			lim("cx-carol-weekly", "openai-codex", {}, { id: "weekly", label: "weekly", resetsAt: NOW + 24 * HOUR }, 1.4), // OVERAGE >1
+		// carol: scope identity (no metadata accountId), OVERAGE 7d.
+		rep("openai-codex", {}, [
+			lim(
+				"codex:7d",
+				"openai-codex",
+				{ accountId: "cx-carol" },
+				{ id: "7d", label: "7 days", resetsAt: NOW + 24 * HOUR },
+				1.4,
+			),
 		]),
+		// Unsupported providers — reports present, but the columns must not exist.
 		rep("google-gemini-cli", {}, [
-			lim("gm-daily", "google-gemini-cli", { accountId: "gm-acc", projectId: "gm-proj" }, { id: "1d", label: "1d", resetsAt: NOW + 12 * HOUR }, 0.6),
+			lim(
+				"gm-daily",
+				"google-gemini-cli",
+				{ accountId: "gm-acc", projectId: "gm-proj" },
+				{ id: "1d", label: "1d", resetsAt: NOW + 12 * HOUR },
+				0.6,
+			),
 		]),
 		rep("kimi-code", { endpoint: "https://api.example.invalid" }, [
-			lim("km-monthly", "kimi-code", { accountId: "km-acc", shared: true }, { id: "monthly", label: "monthly", resetsAt: NOW + 30 * 24 * HOUR }, 0.1),
+			lim(
+				"km-monthly",
+				"kimi-code",
+				{ accountId: "km-acc", shared: true },
+				{ id: "monthly", label: "monthly", resetsAt: NOW + 30 * 24 * HOUR },
+				0.1,
+			),
 		]),
 		// NOTE: there is intentionally NO report for cx-dave -> it must classify as unavailable.
 	];
-	return { now: NOW, staleAfterMs: STALE_AFTER, accounts, reports };
+	return { now: NOW, staleAfterMs: STALE_AFTER, accounts, reports: reports as unknown as UsageInput["reports"] };
 }
 
-const joinText = (rows: Array<{ text: string }>) => rows.map((r) => r.text).join("\n");
+const joinRows = (rows: RenderRow[]) => rows.map((r) => rowText(r)).join("\n");
 
-describe("statusbar pipeline — buildUsageViewModel attribution (§9 end-to-end)", () => {
+describe("statusbar pipeline — buildUsageViewModel (allowlist + slots + attribution)", () => {
 	const vm = buildUsageViewModel(pipelineInput(), resolveUsedFraction);
-	const group = (p: string) => vm.groups.find((g) => g.provider === p);
+	const column = (p: string) => vm.columns.find((c) => c.provider === p);
 
-	it("matches metadata-identity providers (anthropic, openai-codex) to their accounts", () => {
-		const alice = group("anthropic")?.accounts.find((a) => a.label === "alice");
-		const bob = group("anthropic")?.accounts.find((a) => a.label === "bob");
-		const carol = group("openai-codex")?.accounts.find((a) => a.label === "carol");
-		expect(alice?.freshness).toBe("fresh");
-		expect(alice?.windows).toHaveLength(1);
-		expect(bob?.freshness).toBe("fresh");
+	it("keeps exactly the two supported provider columns, in fixed order — gemini/kimi dropped", () => {
+		expect(vm.columns.map((c) => c.provider)).toEqual(["anthropic", "openai-codex"]);
+	});
+
+	it("normalizes both anthropic accounts to the SAME slot order despite scrambled reports", () => {
+		const anth = column("anthropic");
+		const alice = anth?.accounts.find((a) => a.label === "alice");
+		const bob = anth?.accounts.find((a) => a.label === "bob");
+		expect(alice?.cells.map((c) => c.slotKey)).toEqual(["5h", "7d", "fable-7d"]);
+		expect(bob?.cells.map((c) => c.slotKey)).toEqual(["5h", "7d", "fable-7d"]);
+		expect(alice?.cells.map((c) => c.fraction)).toEqual([0.04, 1.0, 0.62]);
+		expect(bob?.cells.map((c) => c.fraction)).toEqual([0.33, 0.31, undefined]); // bob has no fable window
+	});
+
+	it("matches carol by scope identity and preserves the overage fraction unclamped as crit", () => {
+		const carol = column("openai-codex")?.accounts.find((a) => a.label === "carol");
 		expect(carol?.freshness).toBe("fresh");
+		expect(carol?.cells[0]).toMatchObject({ slotKey: "7d", fraction: 1.4, level: "crit" });
 	});
 
-	it("matches scope-identity providers (gemini, kimi) to their accounts", () => {
-		const gem = group("google-gemini-cli")?.accounts[0];
-		const kimi = group("kimi-code")?.accounts[0];
-		expect(gem?.freshness).toBe("fresh");
-		expect(gem?.windows).toHaveLength(1);
-		expect(kimi?.freshness).toBe("fresh");
-		expect(kimi?.windows).toHaveLength(1);
-	});
-
-	it("preserves an overage fraction (>1) unclamped through the view model", () => {
-		const carol = group("openai-codex")?.accounts.find((a) => a.label === "carol");
-		expect(carol?.windows[0]?.fraction).toBe(1.4);
-		expect(carol?.windows[0]?.nearLimit).toBe(true);
-	});
-
-	it("classifies an unmatched subscription account (dave) as unavailable with no windows", () => {
-		const dave = group("openai-codex")?.accounts.find((a) => a.label === "dave");
+	it("classifies the unmatched codex account (dave) as unavailable with an all-empty cell", () => {
+		const dave = column("openai-codex")?.accounts.find((a) => a.label === "dave");
 		expect(dave?.freshness).toBe("unavailable");
-		expect(dave?.windows).toHaveLength(0);
+		expect(dave?.cells.map((c) => c.fraction)).toEqual([undefined]);
 	});
 
 	it("orders subscription accounts before the api-key account and marks the latter with a note (no fabricated 0%)", () => {
-		const anth = group("anthropic")?.accounts ?? [];
-		expect(anth.length).toBeGreaterThanOrEqual(3);
+		const anth = column("anthropic")?.accounts ?? [];
+		expect(anth.length).toBe(3);
 		const apiKey = anth[anth.length - 1];
-		expect(apiKey?.isSubscription).toBe(false); // api-key ordered last
-		expect(apiKey?.windows).toHaveLength(0); // no fabricated windows
+		expect(apiKey?.isSubscription).toBe(false);
+		expect(apiKey?.cells).toHaveLength(0);
 		expect((apiKey?.note ?? "").toLowerCase()).toContain("no usage");
-		expect(anth.slice(0, -1).every((a) => a.isSubscription)).toBe(true); // subscription accounts first
+		expect(anth.slice(0, -1).every((a) => a.isSubscription)).toBe(true);
 	});
 });
 
-describe("statusbar pipeline — collapsed render (packing + budget)", () => {
+describe("statusbar pipeline — collapsed columnar render", () => {
 	const vm = buildUsageViewModel(pipelineInput(), resolveUsedFraction);
 
-	it("packs each account onto one row and passes the overage percent through when the budget is ample", () => {
-		const rows = renderRows(vm, { width: 200, maxRows: 30, expanded: false, now: NOW });
-		expect(rows.every((r) => r.text.length <= 200)).toBe(true);
-		expect(rows.every((r) => r.style !== "more")).toBe(true); // ample budget -> no overflow collapse
-		const joined = joinText(rows);
-		for (const label of ["alice", "bob", "carol"]) {
-			expect(joined).toContain(label);
-		}
+	it("lays providers out side by side (accounts as rows) and passes the overage percent through", () => {
+		const rows = renderRows(vm, { width: 200, maxRows: 12, expanded: false, now: NOW });
+		// Height = 2 chrome rows + max(accounts per provider), NOT the sum of all accounts.
+		expect(rows).toHaveLength(2 + 3);
+		const joined = joinRows(rows);
+		expect(rowText(rows[0])).toMatch(/Anthropic.*│ OpenAI Codex/);
+		expect(rowText(rows[1])).toMatch(/5h\s+7d\s+Fable 7d.*│\s+7d/);
+		for (const label of ["alice", "bob", "carol", "dave"]) expect(joined).toContain(label);
 		expect(joined).toContain("140%"); // overage passed end-to-end, honestly
-		// the api-key note and the unavailable account both surface honestly (never 0%):
 		expect(joined.toLowerCase()).toContain("no usage"); // api-key note
-		expect(joined.includes("n/a") || joined.includes("—")).toBe(true); // dave unavailable
+		expect(joined).toContain("–"); // bob's missing fable + dave's empty cell
+		expect(joined).not.toContain("gm-acc");
+		expect(joined).not.toContain("km-acc");
+		for (const row of rows) expect(rowText(row).length).toBeLessThanOrEqual(200);
 	});
 
-	it("respects a tight row budget with a single '+N more' overflow row (prompt-safe)", () => {
-		const maxRows = 6;
+	it("respects a tight row budget by hiding tail accounts behind a +N title marker", () => {
+		const maxRows = 4; // 2 chrome rows + 2 account rows
 		const rows = renderRows(vm, { width: 200, maxRows, expanded: false, now: NOW });
-		expect(rows.length).toBeLessThanOrEqual(maxRows); // budget respected
-		expect(rows.filter((r) => r.style === "more")).toHaveLength(1); // overflow collapsed into one row
+		expect(rows.length).toBeLessThanOrEqual(maxRows);
+		expect(rowText(rows[0])).toContain("Anthropic +1"); // the api-key row is hidden, honestly counted
 	});
 });
 
 describe("statusbar pipeline — expanded render (completeness)", () => {
 	const vm = buildUsageViewModel(pipelineInput(), resolveUsedFraction);
 
-	it("shows every account and every matched window, with no '+N more' and no elision", () => {
+	it("shows every account and every slot with full labels, no elision, honest n/a rows", () => {
 		const rows = renderRows(vm, { width: 200, maxRows: Number.POSITIVE_INFINITY, expanded: true, now: NOW });
-		const joined = joinText(rows);
-		for (const label of ["alice", "bob", "carol", "dave"]) {
-			expect(joined).toContain(label); // every account present, including the unavailable one
-		}
-		for (const wl of ["5h", "weekly", "1d", "monthly"]) {
-			expect(joined).toContain(wl); // every matched window present
-		}
+		const joined = joinRows(rows);
+		for (const label of ["alice", "bob", "carol", "dave"]) expect(joined).toContain(label);
+		for (const slotLabel of ["5 hours", "7 days", "Fable · 7 days"]) expect(joined).toContain(slotLabel);
 		expect(joined).toContain("140%"); // overage still honest in the expanded view
-		expect(rows.every((r) => r.style !== "more")).toBe(true); // expanded never collapses
-		expect(rows.some((r) => r.style === "window-na")).toBe(true); // dave gets an explicit n/a row, never a bare name
+		expect(joined).toContain("no usage data"); // dave's explicit unavailable row, never a bare name
+		expect(joined).toContain("no usage - api key");
+		expect(joined).not.toContain("+1"); // expanded never collapses
+		expect(joined).not.toContain("gm-"); // unsupported providers stay dropped
 	});
 
-	it("groups accounts under a per-provider header (all four subscription-bearing providers)", () => {
+	it("titles exactly the two supported providers", () => {
 		const rows = renderRows(vm, { width: 200, maxRows: Number.POSITIVE_INFINITY, expanded: true, now: NOW });
-		const headers = rows.filter((r) => r.style === "provider-header");
-		expect(headers.length).toBeGreaterThanOrEqual(4);
+		const titles = rows.filter((r) => r.segments.some((s) => s.style === "title"));
+		expect(titles.map((r) => rowText(r))).toEqual(["Anthropic", "OpenAI Codex"]);
 	});
 });

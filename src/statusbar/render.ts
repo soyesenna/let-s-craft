@@ -1,12 +1,21 @@
-import type { AccountVM, ProviderGroup, UsageViewModel, WindowVM } from "./view-model.js";
+import type { AccountVM, CellVM, ProviderColumnVM, UsageViewModel } from "./view-model.js";
 
 // ---------------------------------------------------------------------------
-// PURE render layer (plan §4/§6 Step 4). Imports NO omp values at all (VM types
-// only, `import type` from ./view-model.js), so it loads under vitest-on-Node.
-// Turns a `UsageViewModel` into styled physical rows for either the collapsed
-// below-editor widget (row-budgeted) or the expanded overlay (complete). All
-// glyphs are the DR-E normative set: fill U+2593 "▓", empty U+2591 "░", the
-// packed-cell separator U+00B7 "·", and the ellipsis U+2026 "…".
+// PURE render layer. Imports NO omp values at all (VM types only, `import
+// type` from ./view-model.js), so it loads under vitest-on-Node.
+//
+// Collapsed layout — providers side by side as COLUMNS, accounts stacked as
+// ROWS inside each column, windows aligned into fixed sub-columns:
+//
+//   Anthropic                                  │ OpenAI Codex
+//              5h          7d         Fable 7d │            7d
+//   soyesenna  ███▏░  62%  ██░░░ 38%  ░░░░░ 2% │ senna      █▏░░░ 12%
+//   work       ████▊  94%  ██░░░ 31%  ░░░░░ 0% │
+//
+// Rows are STYLED SEGMENT lists (the registrar maps each segment style to a
+// theme color), so a single row can mix an ok-green bar, a warning percent and
+// a dim track. Width degradation ladder: drop reset countdowns → shrink bars →
+// drop bars (percent only) → stack providers vertically → single-row strips.
 // ---------------------------------------------------------------------------
 
 /** Below-editor row-budget reserve so the prompt is never pushed off-screen. */
@@ -15,27 +24,46 @@ export const RESERVE_ROWS = 8;
 export const MIN_BAR_ROWS = 1;
 /** Cap the collapsed budget for very tall terminals. */
 export const MAX_BAR_ROWS = 12;
-/** Mini-bar width in cells at full detail. */
+/** Meter width in cells at full detail (collapsed). */
 export const BAR_CELLS = 5;
+/** Meter width in cells in the expanded overlay. */
+export const BAR_CELLS_EXPANDED = 10;
+/** Longest account label shown in the collapsed table before ellipsis. */
+export const LABEL_MAX = 14;
 
-const FILL = "\u2593"; // ▓
-const EMPTY = "\u2591"; // ░
-const SEP = " \u00b7 "; // · packed-cell separator
-const ELLIPSIS = "\u2026"; // …
+const BAR_FULL = "█";
+const BAR_EIGHTHS = ["▏", "▎", "▍", "▌", "▋", "▊", "▉"] as const;
+const BAR_TRACK = "░";
+const ELLIPSIS = "…";
+const NO_DATA = "–";
+const COLUMN_SEP = " │ ";
+const STALE_MARK = " (stale)";
 
-export type RowStyle =
-	| "provider-header"
-	| "account-strong"
-	| "account-dim"
-	| "window"
-	| "window-stale"
-	| "window-na"
+export type SegmentStyle =
+	| "title"
+	| "header"
+	| "label"
+	| "stale"
+	| "bar-ok"
+	| "bar-warn"
+	| "bar-crit"
+	| "track"
+	| "pct-ok"
+	| "pct-warn"
+	| "pct-crit"
+	| "reset"
+	| "na"
 	| "note"
+	| "sep"
 	| "more";
 
-export interface RenderRow {
+export interface RowSegment {
 	text: string;
-	style: RowStyle;
+	style: SegmentStyle;
+}
+
+export interface RenderRow {
+	segments: RowSegment[];
 }
 
 export interface RenderOptions {
@@ -45,12 +73,23 @@ export interface RenderOptions {
 	now: number;
 }
 
-/** Quantized mini-bar: round(clamp01(raw)*cells) filled cells; never throws. */
-export function miniBar(raw: number, cells: number): string {
-	const safe = Number.isFinite(raw) ? raw : 0;
-	const clamped = Math.min(1, Math.max(0, safe));
-	const filled = Math.min(cells, Math.max(0, Math.round(clamped * cells)));
-	return FILL.repeat(filled) + EMPTY.repeat(cells - filled);
+/** Plain text of a row (segment concatenation) — also the row's visual width. */
+export function rowText(row: RenderRow): string {
+	return row.segments.map((s) => s.text).join("");
+}
+
+/**
+ * Sub-cell meter: fraction quantized to eighth-blocks over `cells` columns.
+ * Returns the filled part (full blocks + at most one partial glyph) and the
+ * `░` track remainder; `fill.length + track.length === cells`. Never throws.
+ */
+export function meterBar(raw: number, cells: number): { fill: string; track: string } {
+	const safe = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0;
+	const units = Math.round(safe * cells * 8);
+	const full = Math.floor(units / 8);
+	const rem = units % 8;
+	const fill = BAR_FULL.repeat(full) + (rem > 0 ? BAR_EIGHTHS[rem - 1] : "");
+	return { fill, track: BAR_TRACK.repeat(cells - fill.length) };
 }
 
 /** Raw percent used; overage passes through, negatives floor at 0. */
@@ -70,193 +109,350 @@ export function formatCountdown(ms: number): string {
 	return `${m}m`;
 }
 
-/** Email local part (before @). */
-export function localPart(email: string): string {
-	return email.split("@")[0];
-}
-
 /** Collapsed row budget from terminal height: clamp(H - RESERVE, MIN, MAX); 0 at H<=1. */
 export function deriveMaxRows(height: number): number {
 	return height <= 1 ? 0 : Math.min(MAX_BAR_ROWS, Math.max(MIN_BAR_ROWS, height - RESERVE_ROWS));
 }
 
-/** Hard-truncate to `width`, appending the ellipsis so the result length is exactly `width`. */
-function clip(text: string, width: number): string {
+// ---------------------------------------------------------------------------
+// Segment helpers
+// ---------------------------------------------------------------------------
+
+function seg(text: string, style: SegmentStyle): RowSegment {
+	return { text, style };
+}
+
+function pad(n: number): string {
+	return " ".repeat(Math.max(0, n));
+}
+
+/** Hard-truncate plain text to `width`, appending the ellipsis when clipped. */
+function clipText(text: string, width: number): string {
 	if (text.length <= width) return text;
 	if (width <= 1) return ELLIPSIS.slice(0, Math.max(0, width));
 	return text.slice(0, width - 1) + ELLIPSIS;
 }
 
-/** Near-limit windows first (stable), then the rest in original order. */
-function orderWindows(windows: WindowVM[]): WindowVM[] {
-	const near = windows.filter((w) => w.nearLimit);
-	const rest = windows.filter((w) => !w.nearLimit);
-	return [...near, ...rest];
+/** Clip a segment row to `width` plain characters, ellipsis on the cut. */
+function clipRow(row: RenderRow, width: number): RenderRow {
+	if (width <= 0) return { segments: [] };
+	let total = 0;
+	for (const s of row.segments) total += s.text.length;
+	if (total <= width) return row;
+	const out: RowSegment[] = [];
+	let used = 0;
+	for (const s of row.segments) {
+		if (used >= width - 1) break;
+		const room = width - 1 - used;
+		const text = s.text.length <= room ? s.text : s.text.slice(0, room);
+		out.push(seg(text, s.style));
+		used += text.length;
+	}
+	out.push(seg(ELLIPSIS, "na"));
+	return { segments: out };
 }
 
-interface CellOptions {
-	cells: number;
-	bar: boolean;
+// ---------------------------------------------------------------------------
+// Collapsed cell / row construction
+// ---------------------------------------------------------------------------
+
+/** A width variant of the collapsed table (degradation ladder step). */
+interface Variant {
+	bar: number;
 	countdown: boolean;
 }
 
-/** One packed window cell: `label [bar] pct%` (+ countdown), or `label n/a`. */
-function cellText(w: WindowVM, opts: CellOptions, now: number): string {
-	if (w.fraction === undefined) return `${w.label} n/a`;
-	const parts = [w.label];
-	if (opts.bar) parts.push(miniBar(w.fraction, opts.cells));
-	parts.push(`${usedPercent(w.fraction)}%`);
-	let s = parts.join(" ");
-	if (opts.countdown && w.resetsAt !== undefined) s += ` ${formatCountdown(w.resetsAt - now)}`;
-	return s;
+const VARIANTS: readonly Variant[] = [
+	{ bar: BAR_CELLS, countdown: true },
+	{ bar: BAR_CELLS, countdown: false },
+	{ bar: 3, countdown: false },
+	{ bar: 0, countdown: false },
+];
+
+interface CellRender {
+	segments: RowSegment[];
+	width: number;
 }
 
-/** Pack a subscription account's windows onto one row, shedding detail to fit `width`. */
-function packSubscriptionRow(label: string, windows: WindowVM[], now: number, width: number): string {
-	const ordered = orderWindows(windows);
-	const near = ordered.filter((w) => w.nearLimit);
-	const nonNear = ordered.filter((w) => !w.nearLimit);
-	const join = (cells: string[]): string => (cells.length > 0 ? `${label} ${cells.join(SEP)}` : label);
-
-	// 0: full — 5-cell bars, countdown on near windows only.
-	const c0 = join(ordered.map((w) => cellText(w, { cells: 5, bar: true, countdown: w.nearLimit }, now)));
-	if (c0.length <= width) return c0;
-	// 1: all bars shrink to 3 cells.
-	const c1 = join(ordered.map((w) => cellText(w, { cells: 3, bar: true, countdown: w.nearLimit }, now)));
-	if (c1.length <= width) return c1;
-	// 2: non-near windows lose the bar (keep `label pct%`); near keep bar + countdown.
-	const c2 = join(ordered.map((w) => cellText(w, { cells: 3, bar: w.nearLimit, countdown: w.nearLimit }, now)));
-	if (c2.length <= width) return c2;
-	// 3: drop non-near windows entirely; near-only + trailing ellipsis if any were dropped.
-	const nearCells = near.map((w) => cellText(w, { cells: 3, bar: true, countdown: true }, now));
-	const c3base = join(nearCells);
-	const c3 = nonNear.length > 0 ? `${c3base} ${ELLIPSIS}` : c3base;
-	if (c3.length <= width) return c3;
-	// 4: near-only, truncate the account label to fit.
-	if (near.length > 0) {
-		const joined = nearCells.join(SEP);
-		const budget = width - (1 + joined.length);
-		if (budget >= 1) {
-			const c4 = `${clip(label, budget)} ${joined}`;
-			if (c4.length <= width) return c4;
-		}
+/** One table cell: `<bar> <pct>` (+ ` <countdown>` on warn/crit), or `–`. */
+function renderCell(cell: CellVM, variant: Variant, now: number): CellRender {
+	if (cell.fraction === undefined) {
+		return { segments: [seg(NO_DATA, "na")], width: NO_DATA.length };
 	}
-	// 5: last resort — hard-truncate the fullest row.
-	return clip(c0, width);
+	const segments: RowSegment[] = [];
+	let width = 0;
+	if (variant.bar > 0) {
+		const { fill, track } = meterBar(cell.fraction, variant.bar);
+		if (fill.length > 0) segments.push(seg(fill, `bar-${cell.level}`));
+		if (track.length > 0) segments.push(seg(track, "track"));
+		segments.push(seg(" ", "track"));
+		width += variant.bar + 1;
+	}
+	const pct = `${usedPercent(cell.fraction)}%`.padStart(4);
+	segments.push(seg(pct, `pct-${cell.level}`));
+	width += pct.length;
+	if (variant.countdown && cell.level !== "ok" && cell.resetsAt !== undefined) {
+		const cd = ` ${formatCountdown(cell.resetsAt - now)}`;
+		segments.push(seg(cd, "reset"));
+		width += cd.length;
+	}
+	return { segments, width };
 }
 
-/** Collapsed packed text for any account (no style). */
-function packAccountText(a: AccountVM, now: number, width: number): string {
-	if (!a.isSubscription) return clip(`${a.label} (${a.note ?? "no usage"})`, width);
-	if (a.freshness === "unavailable" || a.windows.length === 0) return clip(`${a.label} - n/a`, width);
-	const stale = a.freshness === "stale" ? " (stale)" : "";
-	return packSubscriptionRow(`${a.label}${stale}`, a.windows, now, width);
+/** Collapsed account label: clipped label + optional stale marker. */
+function labelSegments(a: AccountVM): { segments: RowSegment[]; width: number } {
+	const text = clipText(a.label, LABEL_MAX);
+	const segments: RowSegment[] = [seg(text, "label")];
+	let width = text.length;
+	if (a.freshness === "stale") {
+		segments.push(seg(STALE_MARK, "stale"));
+		width += STALE_MARK.length;
+	}
+	return { segments, width };
 }
 
-function accountStyle(a: AccountVM): RowStyle {
-	return a.isSubscription ? "account-strong" : "account-dim";
+/** A provider column laid out for one variant: independent rows of equal width. */
+interface LaidOutColumn {
+	rows: RenderRow[];
+	width: number;
 }
 
-/** A flattened account with its owning group index/provider, in VM order. */
-interface FlatAccount {
-	group: number;
-	provider: string;
-	account: AccountVM;
-}
+const CELL_GAP = 2;
 
-function flatten(groups: ProviderGroup[]): FlatAccount[] {
-	const flat: FlatAccount[] = [];
-	groups.forEach((g, group) => {
-		for (const account of g.accounts) flat.push({ group, provider: g.provider, account });
+/**
+ * Lay out one provider as a table: title row, header row, then one row per
+ * visible account. `visible` accounts render; the title carries a dim `+N`
+ * when the row budget hid any.
+ */
+function layoutProvider(column: ProviderColumnVM, visible: number, variant: Variant, now: number): LaidOutColumn {
+	const shown = column.accounts.slice(0, Math.max(1, visible));
+	const hidden = column.accounts.length - shown.length;
+
+	const labels = shown.map((a) => labelSegments(a));
+	const labelW = Math.max(...labels.map((l) => l.width), 1);
+
+	const cellRows = shown.map((a) => (a.isSubscription ? a.cells.map((c) => renderCell(c, variant, now)) : []));
+	const slotW = column.slots.map((slot, j) => {
+		let w = slot.header.length;
+		for (const cells of cellRows) if (cells[j] !== undefined) w = Math.max(w, cells[j].width);
+		return w;
 	});
-	return flat;
-}
-
-/** Priority order for retention: near-limit accounts first (stable), then the rest. */
-function byRisk(flat: FlatAccount[]): FlatAccount[] {
-	const isNear = (a: AccountVM): boolean => a.windows.some((w) => w.nearLimit);
-	return [...flat.filter((f) => isNear(f.account)), ...flat.filter((f) => !isNear(f.account))];
-}
-
-/** Collapsed render at maxRows >= 3: greedy near-first retention grouped by provider. */
-function renderCollapsedBudget(groups: ProviderGroup[], flat: FlatAccount[], opts: RenderOptions): RenderRow[] {
-	const priority = byRisk(flat);
-	const selected: FlatAccount[] = [];
-	for (const f of priority) {
-		const candidate = [...selected, f];
-		const distinctProviders = new Set(candidate.map((c) => c.group)).size;
-		const hidden = flat.length - candidate.length;
-		const rowsNeeded = distinctProviders + candidate.length + (hidden > 0 ? 1 : 0);
-		if (rowsNeeded <= opts.maxRows) selected.push(f);
-	}
-	const chosen = new Set(selected.map((s) => s.account));
-	const hidden = flat.length - selected.length;
+	const cellsRegionW = slotW.reduce((sum, w) => sum + w, 0) + CELL_GAP * Math.max(0, slotW.length - 1);
 
 	const rows: RenderRow[] = [];
-	for (const g of groups) {
-		const groupChosen = g.accounts.filter((a) => chosen.has(a));
-		if (groupChosen.length === 0) continue;
-		rows.push({ text: clip(g.provider, opts.width), style: "provider-header" });
-		for (const a of groupChosen) {
-			rows.push({ text: packAccountText(a, opts.now, opts.width), style: accountStyle(a) });
+
+	// Title row: provider name + dim overflow count when accounts were hidden.
+	const title: RowSegment[] = [seg(column.title, "title")];
+	if (hidden > 0) title.push(seg(` +${hidden}`, "more"));
+	rows.push({ segments: title });
+
+	// Header row: blank label gutter, then each slot header over its sub-column.
+	const header: RowSegment[] = [seg(pad(labelW + CELL_GAP), "header")];
+	column.slots.forEach((slot, j) => {
+		const gap = j < column.slots.length - 1 ? CELL_GAP : 0;
+		header.push(seg(slot.header + pad(slotW[j] - slot.header.length + gap), "header"));
+	});
+	rows.push({ segments: header });
+
+	// Account rows.
+	shown.forEach((a, i) => {
+		const segments: RowSegment[] = [...labels[i].segments, seg(pad(labelW - labels[i].width + CELL_GAP), "label")];
+		if (!a.isSubscription) {
+			segments.push(seg(clipText(a.note ?? "no usage", Math.max(cellsRegionW, 24)), "note"));
+		} else {
+			a.cells.forEach((_, j) => {
+				const cell = cellRows[i][j];
+				const gap = j < a.cells.length - 1 ? CELL_GAP : 0;
+				segments.push(...cell.segments);
+				segments.push(seg(pad(slotW[j] - cell.width + gap), "track"));
+			});
 		}
+		rows.push({ segments });
+	});
+
+	// Uniform column width so side-by-side joining stays aligned.
+	const width = Math.max(...rows.map((r) => rowText(r).length));
+	for (const row of rows) {
+		const short = width - rowText(row).length;
+		if (short > 0) row.segments.push(seg(pad(short), "sep"));
 	}
-	if (hidden > 0) rows.push({ text: clip(`+${hidden} more`, opts.width), style: "more" });
+	return { rows, width };
+}
+
+/** Join laid-out provider columns side by side with a vertical rule. */
+function joinColumns(columns: LaidOutColumn[]): RenderRow[] {
+	const height = Math.max(...columns.map((c) => c.rows.length));
+	const rows: RenderRow[] = [];
+	for (let r = 0; r < height; r++) {
+		const segments: RowSegment[] = [];
+		columns.forEach((col, i) => {
+			if (i > 0) segments.push(seg(COLUMN_SEP, "sep"));
+			const row = col.rows[r];
+			if (row !== undefined) segments.push(...row.segments);
+			else segments.push(seg(pad(col.width), "sep"));
+		});
+		rows.push({ segments });
+	}
 	return rows;
 }
 
-/** Collapsed render at maxRows 1 or 2: one synthesized top-risk row (+ optional header). */
-function renderTiny(flat: FlatAccount[], opts: RenderOptions): RenderRow[] {
-	const priority = byRisk(flat);
-	const top = priority[0];
-	const n = flat.length - 1;
-	const suffix = n > 0 ? `${SEP}+${n} more` : "";
-	const text = packAccountText(top.account, opts.now, Math.max(0, opts.width - suffix.length)) + suffix;
-	const synth: RenderRow = { text, style: accountStyle(top.account) };
-	if (opts.maxRows === 1) return [synth];
-	return [{ text: clip(top.provider, opts.width), style: "provider-header" }, synth];
-}
+// ---------------------------------------------------------------------------
+// Tiny-budget strips (maxRows 1–2): one compact row per provider.
+// ---------------------------------------------------------------------------
 
-/** One expanded window row. */
-function expandedWindowRow(a: AccountVM, w: WindowVM, opts: RenderOptions): RenderRow {
-	const style: RowStyle = w.fraction === undefined ? "window-na" : a.freshness === "stale" ? "window-stale" : "window";
-	let text: string;
-	if (w.fraction === undefined) {
-		text = `${w.label} - n/a`;
-	} else {
-		text = `${w.label} ${miniBar(w.fraction, BAR_CELLS)} ${usedPercent(w.fraction)}%`;
-		if (w.resetsAt !== undefined) text += ` ${formatCountdown(w.resetsAt - opts.now)}`;
-	}
-	return { text: clip(text, opts.width), style };
-}
-
-/** Expanded render: every group, account, and window on its own line — no elision. */
-function renderExpanded(groups: ProviderGroup[], opts: RenderOptions): RenderRow[] {
-	const rows: RenderRow[] = [];
-	for (const g of groups) {
-		if (g.accounts.length === 0) continue;
-		rows.push({ text: clip(g.provider, opts.width), style: "provider-header" });
-		for (const a of g.accounts) {
-			const stale = a.freshness === "stale" ? " (stale)" : "";
-			rows.push({ text: clip(`${a.label}${stale}`, opts.width), style: accountStyle(a) });
-			if (!a.isSubscription) {
-				rows.push({ text: clip(a.note ?? "no usage", opts.width), style: "note" });
-			} else if (a.freshness === "unavailable" || a.windows.length === 0) {
-				rows.push({ text: clip(`- n/a`, opts.width), style: "window-na" });
-			} else {
-				for (const w of a.windows) rows.push(expandedWindowRow(a, w, opts));
+/** The account whose worst cell has the highest fraction (undefined counts as -1). */
+function worstAccount(column: ProviderColumnVM): { account: AccountVM; cell: CellVM | undefined } {
+	let best: { account: AccountVM; cell: CellVM | undefined; score: number } | undefined;
+	for (const account of column.accounts) {
+		let cell: CellVM | undefined;
+		let score = -1;
+		for (const c of account.cells) {
+			const s = c.fraction ?? -1;
+			if (s > score) {
+				score = s;
+				cell = c;
 			}
 		}
+		if (best === undefined || score > best.score) best = { account, cell, score };
 	}
+	const chosen = best ?? { account: column.accounts[0], cell: undefined, score: -1 };
+	return { account: chosen.account, cell: chosen.cell };
+}
+
+/** One strip: `Title label 5h 94% 1h12m +2` — the provider's highest-risk cell. */
+function stripSegments(column: ProviderColumnVM, now: number): RowSegment[] {
+	const { account, cell } = worstAccount(column);
+	const segments: RowSegment[] = [seg(column.title, "title")];
+	segments.push(seg(` ${clipText(account.label, LABEL_MAX)}`, "label"));
+	if (account.freshness === "stale") segments.push(seg(STALE_MARK, "stale"));
+	if (!account.isSubscription) {
+		segments.push(seg(` ${account.note ?? "no usage"}`, "note"));
+	} else if (cell?.fraction === undefined) {
+		segments.push(seg(` ${NO_DATA}`, "na"));
+	} else {
+		const slot = column.slots.find((s) => s.key === cell.slotKey);
+		if (slot !== undefined) segments.push(seg(` ${slot.header}`, "header"));
+		segments.push(seg(` ${usedPercent(cell.fraction)}%`, `pct-${cell.level}`));
+		if (cell.level !== "ok" && cell.resetsAt !== undefined) {
+			segments.push(seg(` ${formatCountdown(cell.resetsAt - now)}`, "reset"));
+		}
+	}
+	const rest = column.accounts.length - 1;
+	if (rest > 0) segments.push(seg(` +${rest}`, "more"));
+	return segments;
+}
+
+function renderStrips(columns: ProviderColumnVM[], opts: RenderOptions): RenderRow[] {
+	if (opts.maxRows >= columns.length) {
+		return columns.map((c) => clipRow({ segments: stripSegments(c, opts.now) }, opts.width));
+	}
+	// One row for everything: join provider strips on a single line.
+	const segments: RowSegment[] = [];
+	columns.forEach((c, i) => {
+		if (i > 0) segments.push(seg(COLUMN_SEP, "sep"));
+		segments.push(...stripSegments(c, opts.now));
+	});
+	return [clipRow({ segments }, opts.width)];
+}
+
+// ---------------------------------------------------------------------------
+// Collapsed top-level: side-by-side → stacked → strips.
+// ---------------------------------------------------------------------------
+
+function renderCollapsed(columns: ProviderColumnVM[], opts: RenderOptions): RenderRow[] {
+	if (opts.maxRows <= 2) return renderStrips(columns, opts);
+
+	// Side-by-side: every provider gets (maxRows - 2) account rows.
+	const visible = opts.maxRows - 2;
+	for (const variant of VARIANTS) {
+		const laid = columns.map((c) => layoutProvider(c, visible, variant, opts.now));
+		const total = laid.reduce((sum, c) => sum + c.width, 0) + COLUMN_SEP.length * (laid.length - 1);
+		if (total <= opts.width) return joinColumns(laid);
+	}
+
+	// Stacked: providers vertically, each at full width with its own best variant.
+	const minRows = 3 * columns.length;
+	if (opts.maxRows >= minRows) {
+		// Distribute the row budget: 3 rows each, remainder in column order.
+		const visibles = columns.map(() => 1);
+		let leftover = opts.maxRows - minRows;
+		columns.forEach((c, i) => {
+			const want = c.accounts.length - 1;
+			const take = Math.min(want, leftover);
+			visibles[i] += take;
+			leftover -= take;
+		});
+		const rows: RenderRow[] = [];
+		columns.forEach((column, i) => {
+			const variant =
+				VARIANTS.find((v) => layoutProvider(column, visibles[i], v, opts.now).width <= opts.width) ??
+				VARIANTS[VARIANTS.length - 1];
+			for (const row of layoutProvider(column, visibles[i], variant, opts.now).rows) {
+				rows.push(clipRow(row, opts.width));
+			}
+		});
+		return rows;
+	}
+
+	return renderStrips(columns, opts);
+}
+
+// ---------------------------------------------------------------------------
+// Expanded overlay: full detail, vertical, no elision.
+// ---------------------------------------------------------------------------
+
+function expandedAccountRows(column: ProviderColumnVM, a: AccountVM, opts: RenderOptions): RenderRow[] {
+	const rows: RenderRow[] = [];
+	const labelSegs: RowSegment[] = [seg(`  ${a.label}`, "label")];
+	if (a.freshness === "stale") labelSegs.push(seg(STALE_MARK, "stale"));
+	rows.push({ segments: labelSegs });
+
+	if (!a.isSubscription) {
+		rows.push({ segments: [seg(`    ${a.note ?? "no usage"}`, "note")] });
+		return rows;
+	}
+	if (a.freshness === "unavailable" || a.cells.length === 0) {
+		rows.push({ segments: [seg("    no usage data", "na")] });
+		return rows;
+	}
+
+	const slotLabelW = Math.max(...column.slots.map((s) => s.label.length));
+	a.cells.forEach((cell, j) => {
+		const slot = column.slots[j];
+		const segments: RowSegment[] = [seg(`    ${slot.label}${pad(slotLabelW - slot.label.length)}  `, "header")];
+		if (cell.fraction === undefined) {
+			segments.push(seg(NO_DATA, "na"));
+		} else {
+			const { fill, track } = meterBar(cell.fraction, BAR_CELLS_EXPANDED);
+			if (fill.length > 0) segments.push(seg(fill, `bar-${cell.level}`));
+			if (track.length > 0) segments.push(seg(track, "track"));
+			segments.push(seg(`${usedPercent(cell.fraction)}%`.padStart(6), `pct-${cell.level}`));
+			if (cell.resetsAt !== undefined) {
+				segments.push(seg(`  resets ${formatCountdown(cell.resetsAt - opts.now)}`, "reset"));
+			}
+		}
+		rows.push({ segments });
+	});
 	return rows;
 }
 
-/** Render the view model to styled rows for the collapsed or expanded surface. */
+/** Expanded render: every column, account, and slot on its own line — no elision. */
+function renderExpanded(columns: ProviderColumnVM[], opts: RenderOptions): RenderRow[] {
+	const rows: RenderRow[] = [];
+	columns.forEach((column, i) => {
+		if (column.accounts.length === 0) return;
+		if (i > 0 && rows.length > 0) rows.push({ segments: [seg("", "sep")] });
+		rows.push({ segments: [seg(column.title, "title")] });
+		for (const a of column.accounts) rows.push(...expandedAccountRows(column, a, opts));
+	});
+	return rows.map((r) => clipRow(r, opts.width));
+}
+
+/** Render the view model to styled segment rows for the collapsed or expanded surface. */
 export function renderRows(vm: UsageViewModel, opts: RenderOptions): RenderRow[] {
-	if (opts.expanded) return renderExpanded(vm.groups, opts);
+	const columns = vm.columns.filter((c) => c.accounts.length > 0);
+	if (columns.length === 0) return [];
+	if (opts.expanded) return renderExpanded(columns, opts);
 	if (opts.maxRows <= 0) return [];
-	const flat = flatten(vm.groups);
-	if (flat.length === 0) return [];
-	if (opts.maxRows === 1 || opts.maxRows === 2) return renderTiny(flat, opts);
-	return renderCollapsedBudget(vm.groups, flat, opts);
+	return renderCollapsed(columns, opts).map((r) => clipRow(r, opts.width));
 }

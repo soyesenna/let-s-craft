@@ -1,12 +1,13 @@
-import type { UsageLimit, UsageReport, UsageScope, UsageWindow } from "@oh-my-pi/pi-ai";
+import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 
 // ---------------------------------------------------------------------------
-// PURE view-model transform (plan §4/§6 Step 3). Imports omp usage types ONLY
-// as `import type` so the module loads under vitest-on-Node (the `@oh-my-pi/*`
-// value packages ship TS source Node cannot execute — DR-C). It turns the
-// gather layer's `UsageInput` into a render-ready `UsageViewModel`, doing all
-// host-equivalent attribution (DR-F), window keying, fraction sanitize and
-// ordering without any I/O.
+// PURE view-model transform. Imports omp usage types ONLY as `import type` so
+// the module loads under vitest-on-Node (the `@oh-my-pi/*` value packages ship
+// TS source Node cannot execute). It turns the gather layer's `UsageInput`
+// into a render-ready `UsageViewModel`: a fixed-order list of provider COLUMNS
+// (anthropic, openai-codex — the only supported providers), each holding its
+// account ROWS whose usage windows are normalized into fixed per-provider
+// SLOTS so every account shows the same windows in the same order.
 // ---------------------------------------------------------------------------
 
 /** Resolves a limit's used fraction (0..1; >1 = overage). Host: `resolveUsedFraction`. */
@@ -33,39 +34,128 @@ export interface UsageInput {
 	reports: UsageReport[] | null;
 }
 
-export interface WindowVM {
+/** Visual escalation of a usage cell: ok < warn (NEAR_LIMIT) < crit (CRIT_LIMIT). */
+export type UsageLevel = "ok" | "warn" | "crit";
+
+/** A fixed window slot of a provider: same key/labels for every account. */
+export interface SlotSpec {
 	key: string;
+	/** Compact column header for the collapsed table (e.g. "5h"). */
+	header: string;
+	/** Full row label for the expanded overlay (e.g. "5 hours"). */
 	label: string;
+}
+
+/** One account's value for one slot; `fraction === undefined` renders as "no data". */
+export interface CellVM {
+	slotKey: string;
 	fraction: number | undefined;
 	resetsAt: number | undefined;
-	nearLimit: boolean;
+	level: UsageLevel;
 }
 
 export interface AccountVM {
 	label: string;
 	isSubscription: boolean;
 	freshness: "fresh" | "stale" | "unavailable";
-	windows: WindowVM[];
+	/** Aligned 1:1 with the owning column's `slots`; `[]` for note-only rows. */
+	cells: CellVM[];
 	note?: string;
 }
 
-export interface ProviderGroup {
+/** A provider column: fixed slots + its account rows, in display order. */
+export interface ProviderColumnVM {
 	provider: string;
+	title: string;
+	slots: SlotSpec[];
 	accounts: AccountVM[];
 }
 
 export interface UsageViewModel {
-	groups: ProviderGroup[];
+	columns: ProviderColumnVM[];
 	empty: boolean;
 }
 
-/** Fraction at/above which a window is flagged near its limit (DR-E). */
+/** Fraction at/above which a cell escalates to "warn". */
 export const NEAR_LIMIT = 0.75;
+/** Fraction at/above which a cell escalates to "crit". */
+export const CRIT_LIMIT = 0.9;
 
 /** Longest account label before a soft ellipsis truncation (render enforces width). */
 const MAX_LABEL = 40;
 
-/** Per-report attribution digest, computed once (DR-F). */
+/** Classify a sanitized fraction into its visual escalation level. */
+export function classifyLevel(fraction: number | undefined): UsageLevel {
+	if (fraction === undefined) return "ok";
+	if (fraction >= CRIT_LIMIT) return "crit";
+	if (fraction >= NEAR_LIMIT) return "warn";
+	return "ok";
+}
+
+// ---------------------------------------------------------------------------
+// Provider specs — the ONLY providers the status bar shows, in display order.
+// Each spec maps a report limit onto one of its fixed slots (or none), which is
+// what pins the per-account window ORDER regardless of report.limits order.
+// ---------------------------------------------------------------------------
+
+interface ProviderSpec {
+	provider: string;
+	title: string;
+	slots: SlotSpec[];
+	slotOf(limit: UsageLimit): string | undefined;
+}
+
+function limitWindowId(limit: UsageLimit): string | undefined {
+	return (limit.scope.windowId ?? limit.window?.id)?.toLowerCase();
+}
+
+/** The model-scoped "Fable only" weekly cap, by tier, limit id, or label. */
+function isFableScoped(limit: UsageLimit): boolean {
+	if (limit.scope.tier === "fable") return true;
+	if (limit.id.toLowerCase().endsWith(":fable")) return true;
+	return /\bfable\b/i.test(limit.label);
+}
+
+const PROVIDER_SPECS: readonly ProviderSpec[] = [
+	{
+		provider: "anthropic",
+		title: "Anthropic",
+		slots: [
+			{ key: "5h", header: "5h", label: "5 hours" },
+			{ key: "7d", header: "7d", label: "7 days" },
+			{ key: "fable-7d", header: "Fable 7d", label: "Fable · 7 days" },
+		],
+		slotOf(limit) {
+			const windowId = limitWindowId(limit);
+			const tier = limit.scope.tier;
+			if (windowId === "5h" && tier === undefined) return "5h";
+			if (windowId === "7d") {
+				if (isFableScoped(limit)) return "fable-7d";
+				if (tier === undefined) return "7d";
+			}
+			return undefined;
+		},
+	},
+	{
+		provider: "openai-codex",
+		title: "OpenAI Codex",
+		slots: [{ key: "7d", header: "7d", label: "7 days" }],
+		slotOf(limit) {
+			return limitWindowId(limit) === "7d" ? "7d" : undefined;
+		},
+	},
+];
+
+/** Providers the status bar supports, in display (column) order. */
+export const SUPPORTED_PROVIDERS: readonly string[] = PROVIDER_SPECS.map((s) => s.provider);
+
+// ---------------------------------------------------------------------------
+// Report → account attribution (unchanged contract): identity-safe digests,
+// per-account matching tiers (accountId > email > projectId), consumed-once,
+// then a singleton fallback.
+// ---------------------------------------------------------------------------
+
+/** Per-report attribution digest, computed once. */
 interface ReportDigest {
 	report: UsageReport;
 	provider: string;
@@ -126,98 +216,52 @@ function digestReport(report: UsageReport): ReportDigest {
 	};
 }
 
-/** Stable serialization of every defined scope dim + window.id + limit.id. */
-function windowKey(limit: UsageLimit, window: UsageWindow): string {
-	const s: UsageScope = limit.scope;
-	const parts: string[] = [];
-	const add = (k: string, v: string | number | boolean | undefined): void => {
-		if (v === undefined) return;
-		if (typeof v === "string" && v.length === 0) return;
-		parts.push(`${k}=${String(v)}`);
-	};
-	add("provider", s.provider);
-	add("accountId", s.accountId);
-	add("projectId", s.projectId);
-	add("orgId", s.orgId);
-	add("modelId", s.modelId);
-	add("tier", s.tier);
-	add("windowId", s.windowId);
-	add("shared", s.shared);
-	return `${parts.join("|")}#${window.id}#${limit.id}`;
-}
-
 /** email → local part; else accountId (soft-truncated); else `#<position|credentialId>`. */
 function accountLabel(acc: EnumeratedAccount): string {
 	const email = acc.email?.trim();
 	if (email !== undefined && email.length > 0) return email.split("@")[0];
 	const accountId = acc.accountId?.trim();
 	if (accountId !== undefined && accountId.length > 0) {
-		return accountId.length > MAX_LABEL ? `${accountId.slice(0, MAX_LABEL - 1)}\u2026` : accountId;
+		return accountId.length > MAX_LABEL ? `${accountId.slice(0, MAX_LABEL - 1)}…` : accountId;
 	}
 	return `#${acc.position ?? acc.credentialId}`;
 }
 
-function buildSubscriptionVM(
-	acc: EnumeratedAccount,
-	digest: ReportDigest | undefined,
-	input: UsageInput,
-	resolveFraction: UsedFractionResolver,
-): AccountVM {
-	const label = accountLabel(acc);
-	if (digest === undefined) {
-		return { label, isSubscription: true, freshness: "unavailable", windows: [] };
+/** Map a matched report onto the spec's fixed slots (first matching limit wins). */
+function buildCells(spec: ProviderSpec, report: UsageReport | undefined, resolveFraction: UsedFractionResolver): CellVM[] {
+	const bySlot = new Map<string, UsageLimit>();
+	if (report !== undefined) {
+		for (const limit of report.limits) {
+			if (!limit.window) continue;
+			const slot = spec.slotOf(limit);
+			if (slot !== undefined && !bySlot.has(slot)) bySlot.set(slot, limit);
+		}
 	}
-	const report = digest.report;
-	const freshness: AccountVM["freshness"] = input.now - report.fetchedAt > input.staleAfterMs ? "stale" : "fresh";
-	const windows: WindowVM[] = [];
-	for (const limit of report.limits) {
-		if (!limit.window) continue;
+	return spec.slots.map((slot) => {
+		const limit = bySlot.get(slot.key);
+		if (limit === undefined) return { slotKey: slot.key, fraction: undefined, resetsAt: undefined, level: "ok" as const };
 		const raw = resolveFraction(limit);
 		const fraction = typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
-		windows.push({
-			key: windowKey(limit, limit.window),
-			label: limit.window.label ?? limit.window.id ?? limit.id,
-			fraction,
-			resetsAt: limit.window.resetsAt,
-			nearLimit: fraction !== undefined && fraction >= NEAR_LIMIT,
-		});
-	}
-	return { label, isSubscription: true, freshness, windows };
+		return { slotKey: slot.key, fraction, resetsAt: limit.window?.resetsAt, level: classifyLevel(fraction) };
+	});
 }
 
-function buildNonSubscriptionVM(acc: EnumeratedAccount): AccountVM {
-	return {
-		label: accountLabel(acc),
-		isSubscription: false,
-		freshness: "unavailable",
-		windows: [],
-		note: acc.note ?? "no usage",
-	};
-}
-
-/** Build the render view model from the gathered input (pure, host-equivalent DR-F). */
+/** Build the render view model from the gathered input (pure). */
 export function buildUsageViewModel(input: UsageInput, resolveFraction: UsedFractionResolver): UsageViewModel {
 	const digests = (input.reports ?? []).map((r) => digestReport(r));
 
-	// Preserve first-appearance provider order and per-provider input order.
-	const providerOrder: string[] = [];
-	const byProvider = new Map<string, Array<{ acc: EnumeratedAccount; idx: number }>>();
-	input.accounts.forEach((acc, idx) => {
-		let list = byProvider.get(acc.provider);
-		if (list === undefined) {
-			list = [];
-			byProvider.set(acc.provider, list);
-			providerOrder.push(acc.provider);
-		}
-		list.push({ acc, idx });
-	});
+	const columns: ProviderColumnVM[] = [];
+	for (const spec of PROVIDER_SPECS) {
+		const entries = input.accounts
+			.map((acc, idx) => ({ acc, idx }))
+			.filter((e) => e.acc.provider === spec.provider);
+		if (entries.length === 0) continue;
 
-	const matched = new Map<EnumeratedAccount, ReportDigest>();
-
-	for (const provider of providerOrder) {
-		const entries = byProvider.get(provider) ?? [];
 		const subs = entries.filter((e) => e.acc.isSubscription);
-		const pool = digests.filter((d) => d.provider === provider);
+		const nonSubs = entries.filter((e) => !e.acc.isSubscription);
+
+		const pool = digests.filter((d) => d.provider === spec.provider);
+		const matched = new Map<EnumeratedAccount, ReportDigest>();
 		const safe = (): ReportDigest[] => pool.filter((d) => !d.consumed && !d.identityUnsafe);
 		const claim = (acc: EnumeratedAccount, d: ReportDigest): void => {
 			d.consumed = true;
@@ -260,29 +304,43 @@ export function buildUsageViewModel(input: UsageInput, resolveFraction: UsedFrac
 		if (unmatchedSubs.length === 1 && safeUnconsumed.length === 1) {
 			claim(unmatchedSubs[0].acc, safeUnconsumed[0]);
 		}
-	}
 
-	const groups: ProviderGroup[] = [];
-	for (const provider of providerOrder) {
-		const entries = byProvider.get(provider) ?? [];
-		const subs = entries.filter((e) => e.acc.isSubscription);
-		const nonSubs = entries.filter((e) => !e.acc.isSubscription);
 		// Subscription accounts first: stable by position, then input order.
 		const sortedSubs = [...subs].sort((a, b) => {
 			const pa = a.acc.position ?? Number.MAX_SAFE_INTEGER;
 			const pb = b.acc.position ?? Number.MAX_SAFE_INTEGER;
 			return pa !== pb ? pa - pb : a.idx - b.idx;
 		});
+
 		const accounts: AccountVM[] = [];
-		for (const { acc } of sortedSubs) accounts.push(buildSubscriptionVM(acc, matched.get(acc), input, resolveFraction));
-		for (const { acc } of nonSubs) accounts.push(buildNonSubscriptionVM(acc));
-		groups.push({ provider, accounts });
+		for (const { acc } of sortedSubs) {
+			const digest = matched.get(acc);
+			const label = accountLabel(acc);
+			if (digest === undefined) {
+				accounts.push({ label, isSubscription: true, freshness: "unavailable", cells: buildCells(spec, undefined, resolveFraction) });
+				continue;
+			}
+			const freshness: AccountVM["freshness"] =
+				input.now - digest.report.fetchedAt > input.staleAfterMs ? "stale" : "fresh";
+			accounts.push({
+				label,
+				isSubscription: true,
+				freshness,
+				cells: buildCells(spec, digest.report, resolveFraction),
+			});
+		}
+		for (const { acc } of nonSubs) {
+			accounts.push({
+				label: accountLabel(acc),
+				isSubscription: false,
+				freshness: "unavailable",
+				cells: [],
+				note: acc.note ?? "no usage",
+			});
+		}
+
+		columns.push({ provider: spec.provider, title: spec.title, slots: spec.slots, accounts });
 	}
 
-	// Subscription-bearing groups first, otherwise stable (first-appearance) order.
-	const withSub = groups.filter((g) => g.accounts.some((a) => a.isSubscription));
-	const withoutSub = groups.filter((g) => !g.accounts.some((a) => a.isSubscription));
-	const ordered = [...withSub, ...withoutSub];
-
-	return { groups: ordered, empty: ordered.every((g) => g.accounts.length === 0) };
+	return { columns, empty: columns.length === 0 };
 }
