@@ -143,27 +143,34 @@ describe("collapsed side-by-side layout — providers as columns, accounts as ro
 		codexColumn([codexAcc("senna", 0.19)]),
 	]);
 
-	it("row 0 carries BOTH provider titles side by side, separated by the vertical rule", () => {
+	it("row 0 is a blank spacer separating the table from the prompt editor above", () => {
 		const rows = renderRows(vm, WIDE);
-		expect(texts(rows)[0]).toMatch(/Anthropic\s+│ OpenAI Codex/);
+		expect(texts(rows)[0]).toBe("");
 	});
 
-	it("row 1 is the shared header row with the fixed slot order 5h, 7d, Fable 7d │ 7d", () => {
+	it("row 1 carries BOTH provider titles side by side, separated by the vertical rule", () => {
 		const rows = renderRows(vm, WIDE);
-		expect(texts(rows)[1]).toMatch(/5h\s+7d\s+Fable 7d\s+│\s+7d/);
+		expect(texts(rows)[1]).toMatch(/Anthropic\s+│ OpenAI Codex/);
 	});
 
-	it("accounts stack as rows INSIDE their provider column (height = 2 + max accounts, not the sum)", () => {
+	it("row 2 is the shared header row with the fixed slot order 5h, 7d, Fable 7d │ 7d", () => {
 		const rows = renderRows(vm, WIDE);
-		expect(rows).toHaveLength(2 + 2);
-		expect(texts(rows)[2]).toMatch(/^kjy915875\s/);
-		expect(texts(rows)[2]).toContain("senna"); // codex account rides the SAME physical row
-		expect(texts(rows)[3]).toMatch(/^senna\s/);
+		expect(texts(rows)[2]).toMatch(/5h\s+7d\s+Fable 7d\s+│\s+7d/);
 	});
 
-	it("every row is padded to equal per-column width so the vertical rule aligns", () => {
+	it("accounts stack as rows INSIDE their provider column (height = spacer + 2 + max accounts, not the sum)", () => {
 		const rows = renderRows(vm, WIDE);
-		const rulePositions = texts(rows).map((t) => t.indexOf("│"));
+		expect(rows).toHaveLength(1 + 2 + 2);
+		expect(texts(rows)[3]).toMatch(/^kjy915875\s/);
+		expect(texts(rows)[3]).toContain("senna"); // codex account rides the SAME physical row
+		expect(texts(rows)[4]).toMatch(/^senna\s/);
+	});
+
+	it("every table row is padded to equal per-column width so the vertical rule aligns", () => {
+		const rows = renderRows(vm, WIDE);
+		const rulePositions = texts(rows)
+			.filter((t) => t.length > 0)
+			.map((t) => t.indexOf("│"));
 		expect(new Set(rulePositions).size).toBe(1);
 		expect(rulePositions[0]).toBeGreaterThan(0);
 	});
@@ -171,7 +178,7 @@ describe("collapsed side-by-side layout — providers as columns, accounts as ro
 	it("renders percents with bars at full width and a no-data slot as '–'", () => {
 		const vm2 = mkVm([anthColumn([anthAcc("a", [0.62, 0.31, undefined])])]);
 		const rows = renderRows(vm2, WIDE);
-		const accountRow = texts(rows)[2];
+		const accountRow = texts(rows)[3];
 		expect(accountRow).toContain("62%");
 		expect(accountRow).toContain("31%");
 		expect(accountRow).toContain("–");
@@ -182,7 +189,7 @@ describe("collapsed side-by-side layout — providers as columns, accounts as ro
 		const vm2 = mkVm([
 			anthColumn([anthAcc("hot", [0.95, 0.5, undefined], { resetsAt: NOW + 3 * HOUR + 28 * MIN })]),
 		]);
-		const row = texts(renderRows(vm2, WIDE))[2];
+		const row = texts(renderRows(vm2, WIDE))[3];
 		expect(row).toContain("95% 3h28m"); // crit cell carries its countdown
 		expect(row).not.toContain("50% 3h28m"); // ok cell does not
 	});
@@ -195,13 +202,13 @@ describe("collapsed side-by-side layout — providers as columns, accounts as ro
 
 	it("marks a stale account inline on its label", () => {
 		const vm2 = mkVm([anthColumn([anthAcc("old", [0.1, 0.2, 0.3], { freshness: "stale" })])]);
-		expect(texts(renderRows(vm2, WIDE))[2]).toContain("old (stale)");
+		expect(texts(renderRows(vm2, WIDE))[3]).toContain("old (stale)");
 	});
 
 	it("clips long account labels to LABEL_MAX with an ellipsis", () => {
 		const long = "a".repeat(LABEL_MAX + 10);
 		const vm2 = mkVm([anthColumn([anthAcc(long, [0.1, 0.2, 0.3])])]);
-		const row = texts(renderRows(vm2, WIDE))[2];
+		const row = texts(renderRows(vm2, WIDE))[3];
 		expect(row).toContain(`${"a".repeat(LABEL_MAX - 1)}…`);
 		expect(row).not.toContain(long);
 	});
@@ -231,7 +238,7 @@ describe("width degradation ladder", () => {
 		expect(body).not.toContain("█");
 		expect(body).toContain("100%");
 		expect(body).toContain("│");
-		expect(rows).toHaveLength(4);
+		expect(rows).toHaveLength(5);
 	});
 
 	it("~40 cols: providers stack vertically — each table gets the full width", () => {
@@ -240,7 +247,7 @@ describe("width degradation ladder", () => {
 		expect(body.join("\n")).not.toContain("│");
 		const anthTitle = body.findIndex((t) => t.startsWith("Anthropic"));
 		const codexTitle = body.findIndex((t) => t.startsWith("OpenAI Codex"));
-		expect(anthTitle).toBe(0);
+		expect(anthTitle).toBe(1); // row 0 is the prompt spacer
 		expect(codexTitle).toBeGreaterThan(anthTitle + 2); // full anthropic table in between
 	});
 
@@ -262,14 +269,23 @@ describe("row budget", () => {
 	]);
 	const vm = mkVm([many, codexColumn([codexAcc("c1", 0.19)])]);
 
-	it("shows maxRows-2 accounts per column and flags hidden ones as +N on the title", () => {
-		const rows = renderRows(vm, { ...WIDE, maxRows: 4 });
-		expect(rows).toHaveLength(4);
+	it("spends one row on the spacer, shows the rest, and flags hidden accounts as +N on the title", () => {
+		const rows = renderRows(vm, { ...WIDE, maxRows: 5 });
+		expect(rows).toHaveLength(5);
 		const body = texts(rows);
-		expect(body[0]).toContain("Anthropic +2");
+		expect(body[0]).toBe(""); // spacer
+		expect(body[1]).toContain("Anthropic +2");
 		expect(body.join("\n")).toContain("a1");
 		expect(body.join("\n")).toContain("a2");
 		expect(body.join("\n")).not.toContain("a3");
+	});
+
+	it("maxRows=3: spacer + one compact strip per provider (table needs more rows)", () => {
+		const rows = renderRows(vm, { ...WIDE, maxRows: 3 });
+		expect(rows).toHaveLength(3);
+		expect(rowText(rows[0])).toBe("");
+		expect(rowText(rows[1])).toMatch(/^Anthropic /);
+		expect(rowText(rows[2])).toMatch(/^OpenAI Codex /);
 	});
 
 	it("returns nothing at maxRows<=0 and on an empty view model", () => {
@@ -360,7 +376,7 @@ describe("expanded overlay — complete, vertical, resets always shown", () => {
 describe("segment styling — level escalation is per-cell, not per-row", () => {
 	it("gives ok/warn/crit cells distinct pct styles within ONE row", () => {
 		const vm = mkVm([anthColumn([anthAcc("mix", [0.5, 0.8, 0.95])])]);
-		const row = renderRows(vm, WIDE)[2];
+		const row = renderRows(vm, WIDE)[3];
 		const styles = row.segments.map((s) => s.style);
 		expect(styles).toContain("pct-ok");
 		expect(styles).toContain("pct-warn");
@@ -374,15 +390,15 @@ describe("segment styling — level escalation is per-cell, not per-row", () => 
 			codexColumn([codexAcc("c", 0.1)]),
 		]);
 		const rows = renderRows(vm, WIDE);
-		expect(rows[0].segments.some((s) => s.style === "title" && s.text === "Anthropic")).toBe(true);
-		expect(rows[0].segments.some((s) => s.style === "sep" && s.text.includes("│"))).toBe(true);
-		expect(rows[1].segments.every((s) => ["header", "sep"].includes(s.style))).toBe(true);
-		expect(rows[3].segments.some((s) => s.style === "note")).toBe(true);
+		expect(rows[1].segments.some((s) => s.style === "title" && s.text === "Anthropic")).toBe(true);
+		expect(rows[1].segments.some((s) => s.style === "sep" && s.text.includes("│"))).toBe(true);
+		expect(rows[2].segments.every((s) => ["header", "sep"].includes(s.style))).toBe(true);
+		expect(rows[4].segments.some((s) => s.style === "note")).toBe(true);
 	});
 
 	it("collapsed meters honor BAR_CELLS", () => {
 		const vm = mkVm([anthColumn([anthAcc("a", [1.0, 0.2, 0.3])])]);
-		const row = texts(renderRows(vm, WIDE))[2];
+		const row = texts(renderRows(vm, WIDE))[3];
 		expect(row).toContain("█".repeat(BAR_CELLS));
 	});
 });

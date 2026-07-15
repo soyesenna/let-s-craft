@@ -454,5 +454,11 @@ export function renderRows(vm: UsageViewModel, opts: RenderOptions): RenderRow[]
 	if (columns.length === 0) return [];
 	if (opts.expanded) return renderExpanded(columns, opts);
 	if (opts.maxRows <= 0) return [];
-	return renderCollapsed(columns, opts).map((r) => clipRow(r, opts.width));
+	// Breathing room between the prompt editor above and the table: one blank
+	// spacer row, spent from the row budget (so the prompt-safety bound holds).
+	// Tiny budgets (1–2 rows) keep every row for content instead.
+	const spacer = opts.maxRows >= 3;
+	const budget = spacer ? opts.maxRows - 1 : opts.maxRows;
+	const rows = renderCollapsed(columns, { ...opts, maxRows: budget }).map((r) => clipRow(r, opts.width));
+	return spacer ? [{ segments: [] }, ...rows] : rows;
 }
