@@ -12,3 +12,4 @@ node_modules/
 .lsc/crafts/*/test/.craft-state.json
 .lsc/crafts/*/test/.hash-manifest.json
 dogfooding.html
+gajae-code/
