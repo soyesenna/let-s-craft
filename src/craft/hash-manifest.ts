@@ -308,7 +308,9 @@ function registerRestoreTestsTool(pi: ExtensionAPI): void {
 			"Call this only after the user has explicitly approved a restore via lsc_confirm on a [Hash Violation] " +
 			"prompt (C23b) — never call it unprompted. Re-verifies via the same diff logic as lsc_verify_hash and " +
 			"reports the result directly (details.passed / details.violations), so a separate lsc_verify_hash call " +
-			"afterward is optional.",
+			"afterward is optional. Trigger this only on an explicit lsc_confirm approval (the Yes selection / content " +
+			"exactly `yes`); a free answer (content starting `User provided free answer:`) is neither approve nor reject — " +
+			"reflect it as an instruction and re-ask, never restore on it.",
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<RestoreTestsDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);

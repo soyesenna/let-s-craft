@@ -1,0 +1,76 @@
+{
+  "verdict": "ACCEPT-WITH-RESERVATIONS",
+  "iteration": 5,
+  "feature": "ask-tool-enhancement",
+  "consensus_reached": true,
+  "r4_upgrade_conditions": {
+    "P0-J": "해소 — UAX #14 BK∪CR∪LF∪NL 7종 규범 정의(plan.md:48,97) + active 본문 19지점 sweep 완전(grep 실측: 5종 잔존은 §10-§12 개정 대장 역사 기록·:307 무관 suffix 서술뿐) + AC3/AC6 VT·FF adversarial·AC10 7종 table(plan.md:223,226,230)",
+    "P0-K": "해소 — canonicalizeFreeText 명명+src/fixtures.ts 단일 소유(plan.md:97,144,302; src/ask.ts:17 ask→fixtures·src/fixtures.ts:13 node:fs 단독 실측으로 cycle 0 확증)+양 ingress 공통 순서(plan.md:111,144)+직접 table/idempotence(plan.md:223)+4 callsite(plan.md:163,225,230)+fixture positive 저장 케이스(plan.md:227)",
+    "Minor-1": "해소 — unavailable 후·dispatch 전 3지점 일치(plan.md:50,100,114)+precedence 테스트(plan.md:221)",
+    "Minor-2": "해소 — _customMetadata top-level 허용/rule-local 거부 쌍(plan.md:227)",
+    "Minor-3": "핵심 해소 — 정직화+전역 택1 근거(plan.md:105,102,306)+두 stem×case 케이스(plan.md:226); 잔여는 DONE 테스트/진단(신규 Minor 2)",
+    "Minor-4": "대표 해소 — .min(1)+semantic 가드+UI/fixture 쌍(plan.md:72,106,221); 잔여는 NEL edge(신규 Minor 1)"
+  },
+  "architect_r5_cross_check": {
+    "N1_NEL_description": "동의(확증) — node 실측 '\\u0085'.trim().length===1, ' \\u0085 '도 1(VT/FF/LS/PS/NBSP는 0) → raw trim 가드는 정확히 NEL만 누락, plan.md:106 주장 vs :144 자기 사실 모순; 표시 전용이라 non-blocking 동의",
+    "N2_DONE_pin": "동의 — AC2(:222)/AC6(:226)에 DONE 충돌 케이스 부재+:102 에러 문구가 DONE을 free-text entry로 오서술; 네임스페이스 위생 표면이라 non-blocking 동의",
+    "principle_violations": "0건 — 독립 확인 일치",
+    "rebuttals": 0
+  },
+  "critical_findings": [],
+  "major_findings": [],
+  "minor_findings": [
+    {
+      "id": "M1",
+      "title": "NEL-only description이 raw-trim 실질성 가드 통과 (plan.md:106 vs :144 내부 모순, =architect N1)",
+      "confidence": "HIGH"
+    },
+    {
+      "id": "M2",
+      "title": "DONE 전역 예약 테스트 미고정+진단 문구 부정확 (plan.md:102,222,226, =architect N2)",
+      "confidence": "HIGH"
+    },
+    {
+      "id": "M3",
+      "title": "multi 첫 호출 initialIndex 미지정 (plan.md:116 vs :115)",
+      "confidence": "HIGH"
+    },
+    {
+      "id": "M4",
+      "title": "1-C 절 제목 소유 표기 stale (plan.md:92)",
+      "confidence": "HIGH"
+    },
+    {
+      "id": "M5",
+      "title": "ADR ⑩ raw 분리자 목록에 'mandatory break 7종 전부' 라벨 오기 (plan.md:306)",
+      "confidence": "HIGH"
+    }
+  ],
+  "reservations_for_stage4_craft": [
+    {
+      "id": "R-1",
+      "binding": true,
+      "action": "description 실질성 predicate를 canonicalizeFreeText(description).trim().length===0 → isError로 구현(검사 전용, 저장값 무변형, 신규 의존 0); Stage 4는 AC1에 U+0085-only description → isError UI·fixture 쌍 케이스 추가; cutover 커밋에서 plan.md:106 문면 1줄 정정"
+    },
+    {
+      "id": "R-2",
+      "binding": true,
+      "action": "single-select options에 DONE_OPTION 정확+case-insensitive 변형 → preflight isError focused unit을 AC2/AC6 집합에 추가; DONE 거부 진단을 reserved-control 취지 문구로 분리 또는 정확한 공통 문구로 교체; plan.md:102 문면 1줄 정정"
+    },
+    {
+      "id": "R-3",
+      "binding": false,
+      "action": "editorial 일괄: (a) plan.md:92 절 제목 소유 표기, (b) plan.md:306 ⑩ 괄호 재라벨(비-canonical raw 분리자 목록), (c) plan.md:116 multi 첫 호출 initialIndex=recommended??0 명시"
+    }
+  ],
+  "consensus_gates": {
+    "architect_cross_check": "Pass — 동의 2/2·반박 0·sweep 감사 독립 재확인 일치",
+    "principle_option_consistency": "Pass — Principles 3·4가 7종 집합·양 ingress·공통 preflight 위에서 성립(R4 Fail 사유 소멸); :106 잔여 과잉 주장은 표시 전용 국한(R-1)",
+    "alternatives_depth": "Pass — iter-5 택1 3건 전부 대안·기각 근거 동반(plan.md:97,102,100,304)",
+    "risk_verification_rigor": "Pass(유보 2건) — 7종 table·idempotence·4 callsite·parity 쌍·precedence·namespace 핀·stem×case 계약화; 잔여 테스트 핀은 R-1/R-2",
+    "deliberate_additions": "Pass — 프리모템 P4 iter-4 반례 갱신(plan.md:318)+확장 테스트 플랜 완비"
+  },
+  "review_mode": "THOROUGH(ADVERSARIAL 승격 불요 — Critical 0·Major 0·체계적 패턴 없음)",
+  "realist_check": "전 발견 MINOR 상한 확인 — 최악 케이스가 비가시 description 렌더/제어행 위생/첫 커서 위치, 전부 단위·스모크·리뷰에서 즉시 검출, 데이터 손실·보안·파괴적 게이트 오독 무관; 승격·강등 0건",
+  "verification_notes": "코드베이스 앵커 전수 실측(메인 체크아웃): src/ask.ts:5-8,17,141-172,250-296 · src/fixtures.ts:13,110-129 · src/main.ts:23 · package.json:16,19 · test/ask.test.ts:5 · test/enforcement-rules.test.ts:153-156,198-200,330-339,350-351,369-371 · test/e2e-helpers.ts:276-287 · README.md:90,259-280 · src/craft/{abort:41-53,release:49-65,hash-manifest:303-311} · skills 3종 게이트 앵커 · vitest.config.ts include — 전부 플랜 인용과 일치, 오인용 0건"
+}

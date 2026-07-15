@@ -1,0 +1,56 @@
+{
+  "verdict": "REVISE",
+  "iteration": 2,
+  "r1_upgrade_conditions": {
+    "total": 8,
+    "resolved": 8,
+    "detail": "P0/B1-B5, P1/M1, P1/NB2, P2(m1·NB3·NB4·m3) 전건 해소 — 각 항 file:line 실증 완료"
+  },
+  "architect_n1": {
+    "agree": true,
+    "blocking": true,
+    "note": "actual ui.select 호출의 description 단언 0건(grep 전수) — 반례 성립. 단 수정 사양 정정: 전 dispatch 입력이 알파벳순이라 비-알파벳순 canonical 입력으로 prefix를 단언해야 순서 절반이 닫힘(C-c)"
+  },
+  "architect_n2": {
+    "agree": true,
+    "blocking": true,
+    "note": "version 부재 + 순수 v2 body 동치류 0건(grep 전수) — optional-version 파서 반례 성립, commonBoundaryCases 1행 추가로 폐쇄"
+  },
+  "new_findings": [
+    {
+      "id": "C-a",
+      "severity": "MINOR",
+      "summary": "취소 4경로 전부 details===undefined 미단언 (plan.md:35 불변식, architect NB1의 확장)"
+    },
+    {
+      "id": "C-b",
+      "severity": "MINOR",
+      "summary": "resolveAskChannel(path, false) truth-table 행 부재 — 테스트명 과잉 주장 (ask.test.ts:222-225)"
+    },
+    {
+      "id": "C-c",
+      "severity": "FIX-SPEC",
+      "summary": "N1 수정은 비-알파벳순 입력 필수 — 알파벳 정렬 구현이 BASE_OPTIONS deep-equal도 통과"
+    },
+    {
+      "id": "C-d",
+      "severity": "MINOR",
+      "summary": "once:false positive 경계 0건 (architect NB3 동의)"
+    }
+  ],
+  "upgrade_conditions": [
+    "[P0/N1] 비-알파벳순 입력으로 single/multi 첫 호출 canonical prefix(순서+label+description) toMatchObject 단언 + recommended 행 원본 description 보존",
+    "[P0/N2] commonBoundaryCases에 version-부재 v2 body 거부 1행 (/version/+/2/)",
+    "[P1/C-a] 취소 4경로에 details.toBeUndefined() 각 1줄",
+    "[P1/C-d] once:false 보존 1케이스",
+    "[P2/C-b] resolveAskChannel(path,false)===fixture 1줄"
+  ],
+  "consensus_gates": {
+    "architect_cross_check": "전건 동의, 반박 0, 신규 2건 추가",
+    "principle_option_consistency": "Pass",
+    "alternatives_depth": "Pass",
+    "risk_verification_rigor": "Fail (N1/N2 한정)",
+    "deliberate_additions": "Pass (P6 폐쇄 확인; N1/N2는 Principle 1·4/2 proof gap으로 게이트4와 동근원)"
+  },
+  "expected_next": "5항 반영 시 ACCEPT 예정 — 전부 기계적 추가, 구조 재작업 없음"
+}
