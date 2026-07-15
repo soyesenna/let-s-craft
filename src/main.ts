@@ -9,6 +9,7 @@ import { LSC_FIXTURE_FLAG } from "./fixtures.js";
 import { registerPresetCommand } from "./preset/command.js";
 import { applyActivePreset } from "./preset/inject.js";
 import { applySessionDefaultModel, entryTypeHistogram, isFreshMainSession } from "./preset/session-default.js";
+import { registerUsageStatusBar } from "./statusbar/index.js";
 
 export default function (pi: ExtensionAPI): void {
 	// Bonus alias for LSC_FIXTURE (fixtures.ts) — the env var is the primary signal
@@ -23,6 +24,7 @@ export default function (pi: ExtensionAPI): void {
 	registerAskTools(pi);
 	registerCraftAbortTool(pi);
 	registerCraftReleaseTool(pi);
+	registerUsageStatusBar(pi);
 
 	// Re-apply the active model preset on every session start: self-healing from
 	// models.yaml into the live session (runtime override, seen by the next task
