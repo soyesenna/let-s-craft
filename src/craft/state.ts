@@ -9,10 +9,11 @@
 // Every mutation goes through the functions below rather than the module-scope
 // variable directly, so persistence and every reader (enforcement.ts,
 // hash-manifest.ts, run-tests.ts) always see the same state.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftStatePath } from "../artifacts/paths.js";
+import { writeFileAtomicSync } from "../utils/atomic-write.js";
 
 export interface CraftState {
 	feature: string;
@@ -45,7 +46,7 @@ let activeCraft: CraftState | undefined;
 function persist(state: CraftState): void {
 	const path = craftStatePath(state.worktreeRoot ?? state.projectRoot, state.feature);
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, JSON.stringify(state, null, 2));
+	writeFileAtomicSync(path, JSON.stringify(state, null, 2));
 }
 
 /** The in-flight craft, if any. */

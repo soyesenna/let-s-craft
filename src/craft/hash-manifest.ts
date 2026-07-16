@@ -11,12 +11,13 @@
 // and the two bookkeeping files below record craft/hash state itself. Including
 // either in the fingerprint would make every iteration report a false violation.
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftHashManifestPath, craftSnapshotDir, craftTestDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
 import { ensureSnapshotsGitignored } from "../artifacts/gitignore.js";
 import { getActiveCraft, setActiveCraft } from "./state.js";
+import { writeFileAtomicSync } from "../utils/atomic-write.js";
 
 // `pi.registerTool<TParams, TDetails>({ parameters: z.object({...}), async execute(...) {...} })`
 // hits TS2589 ("excessively deep" type instantiation) under this SDK's TSchema
@@ -117,7 +118,7 @@ export function loadManifest(manifestPath: string): HashManifest | undefined {
 
 export function saveManifest(manifestPath: string, manifest: HashManifest): void {
 	mkdirSync(dirname(manifestPath), { recursive: true });
-	writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+	writeFileAtomicSync(manifestPath, JSON.stringify(manifest, null, 2));
 }
 
 /**
