@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { registerAskTools } from "./ask.js";
 import { registerCraftAbortTool } from "./craft/abort.js";
@@ -6,10 +7,12 @@ import { registerHashManifestTools } from "./craft/hash-manifest.js";
 import { registerCraftReleaseTool } from "./craft/release.js";
 import { registerRunTestsTool } from "./craft/run-tests.js";
 import { LSC_FIXTURE_FLAG } from "./fixtures.js";
+import { BUILD_INFO } from "./generated/version.js";
 import { registerPresetCommand } from "./preset/command.js";
 import { applyActivePreset } from "./preset/inject.js";
 import { applySessionDefaultModel, entryTypeHistogram, isFreshMainSession } from "./preset/session-default.js";
 import { registerUsageStatusBar } from "./statusbar/index.js";
+import { driftWarning, hashSrcDir, resolveSrcDir } from "./utils/src-hash.js";
 
 export default function (pi: ExtensionAPI): void {
 	// Bonus alias for LSC_FIXTURE (fixtures.ts) — the env var is the primary signal
@@ -25,6 +28,11 @@ export default function (pi: ExtensionAPI): void {
 	registerCraftAbortTool(pi);
 	registerCraftReleaseTool(pi);
 	registerUsageStatusBar(pi);
+
+	// Guards the dist↔src drift banner below to a single warning per process — session_start
+	// only fires once per real session in practice, but this is cheap insurance against a
+	// duplicate notify if the host ever re-fires it (e.g. a future retry path).
+	let driftChecked = false;
 
 	// Re-apply the active model preset on every session start: self-healing from
 	// models.yaml into the live session (runtime override, seen by the next task
@@ -64,6 +72,26 @@ export default function (pi: ExtensionAPI): void {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			ctx.ui.notify(`lets-craft: could not apply model preset — ${message}`, "warning");
+		}
+
+		// dist↔src drift banner (QW6): a src/ tree present but hashing differently from the
+		// dist/ build's own recorded fingerprint means a TS edit landed without a rebuild —
+		// warn once, never block session start. A missing src/ (non-dev install shipping
+		// only dist/) skips the check entirely rather than misreporting drift.
+		if (!driftChecked) {
+			driftChecked = true;
+			try {
+				const srcDir = resolveSrcDir(ctx.cwd);
+				if (existsSync(srcDir)) {
+					const warning = driftWarning(BUILD_INFO.srcHash, hashSrcDir(srcDir));
+					if (warning) ctx.ui.notify(warning, "warning");
+				}
+			} catch (driftError) {
+				if (process.env.LSC_DEBUG) {
+					const message = driftError instanceof Error ? driftError.message : String(driftError);
+					console.error(`lets-craft: dist/src drift check failed — ${message}`);
+				}
+			}
 		}
 	});
 }

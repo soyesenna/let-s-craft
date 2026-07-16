@@ -6,6 +6,7 @@ lazycodex/
 oh-my-claudecode/
 pi/
 dist/
+src/generated/
 node_modules/
 .lsc/worktrees/
 .lsc/crafts/*/test/.snapshots/
