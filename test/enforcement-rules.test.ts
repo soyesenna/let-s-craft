@@ -266,11 +266,16 @@ describe.skipIf(!RUN_E2E)("enforcement rules + ask select gate (AC5/AC7/AC10b, r
 				cwd: projectDir,
 				sessionDir,
 				timeoutMs: PER_RUN_TIMEOUT_MS,
+				// Deliberately NO skill reference in this prompt: mentioning "§3.1" made the driven
+				// model `read` the craft skill first, whose §2.5 worktree presence check then told it
+				// to STOP without ever calling init (observed: glob .lsc/worktrees → not found →
+				// headless lsc_confirm hard-error → 300s kill ceiling). Direct tool instruction only.
 				prompt:
-					"lsc_craft_init 툴을 feature_dir='demo'로 정확히 한 번 호출하라. " +
-					"이 세션에는 서브에이전트 스폰 권한과 구현 권한이 없다 — 스킬 §3.1의 baseline 확인(lsc_run_tests 1회)까지는 " +
-					"허용되지만, 그 결과와 무관하게 executor 스폰·구현·수정·abort를 시도하지 말고 '끝났습니다'라고만 말하고 멈춰라.",
-				earlyExit: stdout => /craft "demo" active\. Recorded hash manifest/.test(stdout),
+					"다른 어떤 툴도(read/glob/bash 포함) 먼저 호출하지 말고, lsc_craft_init 툴을 feature_dir='demo'로 " +
+					"정확히 한 번 호출하라. 그 결과를 확인한 뒤 아무 툴도 더 호출하지 말고 '끝났습니다'라고만 말하고 멈춰라.",
+				// Quote-free pattern on purpose: the `-p` stream is JSONL, so quotes inside tool
+				// result text arrive escaped (`craft \"demo\"`) and a quoted literal never matches.
+				earlyExit: stdout => /Recorded hash manifest for \d+ test asset/.test(stdout),
 			});
 
 			expect(result.timedOut, debugSummary(result)).toBe(false);
