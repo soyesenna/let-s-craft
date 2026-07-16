@@ -170,6 +170,18 @@ describe("computeFailureSignature (C-1)", () => {
 		const b = "FAIL test/a.test.ts\nFAIL test/b.test.ts\nError: boom";
 		expect(computeFailureSignature(a)).toBe(computeFailureSignature(b));
 	});
+
+	// Regression: `\b` after the symbol markers never matched (`✗`/`✘` are non-word chars, so
+	// `✗ name` has no word boundary before the space) — the failing-test-name set stayed empty for
+	// that runner style and two DIFFERENT failure sets collapsed into one signature.
+	it("recognizes ✗/✘ symbol markers as test-name lines (not bare error lines)", () => {
+		const a = "✗ test/a.test.ts\n✗ test/b.test.ts\nError: boom";
+		const b = "✗ test/a.test.ts\n✗ test/c.test.ts\nError: boom";
+		expect(computeFailureSignature(a)).not.toBe(computeFailureSignature(b));
+		const heavy = "✘ test/a.test.ts\nError: boom";
+		const fail = "FAIL test/a.test.ts\nError: boom";
+		expect(computeFailureSignature(heavy)).toBe(computeFailureSignature(fail));
+	});
 });
 
 describe("noProgressEscalationText / composeRunTestsResultText (C-1)", () => {

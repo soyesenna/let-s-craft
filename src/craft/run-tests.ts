@@ -22,8 +22,8 @@ import { getActiveCraft, recordTestResult } from "./state.js";
 const FAILURE_LINE_RE = /fail|error|✗|✘|not ok/i;
 const MAX_FAILURE_LINES = 40;
 
-/** A failure-summary line naming a specific failing test (vs. a bare error/stack line) — the marker prefix is captured off, the rest is the test name. */
-const TEST_NAME_LINE_RE = /^(?:FAIL|✗|✘|not ok)\b\s*(.*)$/i;
+/** A failure-summary line naming a specific failing test (vs. a bare error/stack line) — the marker prefix is captured off, the rest is the test name. `\b` would never match after the symbol markers (✗/✘ are non-word chars, so `✗ name` has no word boundary before the space), so the boundary is an explicit colon/whitespace/end-of-line. */
+const TEST_NAME_LINE_RE = /^(?:FAIL|✗|✘|not ok)(?::|\s|$)\s*(.*)$/i;
 
 export type ExecFn = (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>;
 
