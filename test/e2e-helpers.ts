@@ -70,8 +70,12 @@ function syncModeConfigPath(): string {
 }
 
 /** Authenticated zai-provider model (see module header for why both main and subagent moved off the very cheapest tier) — confirmed via `omp models list` (zai/glm-5.2, 1M context, effort levels minimal/low/medium/high/xhigh, so `:low` is supported). Overridable for local runs against a different provider. */
-export const E2E_MAIN_MODEL = process.env.LSC_E2E_MAIN_MODEL ?? "zai/glm-5.2:low";
-export const E2E_SUBAGENT_MODEL = process.env.LSC_E2E_SUBAGENT_MODEL ?? "zai/glm-5.2:low";
+// 2026-07-16: zai's catalog dropped `low` from glm-5.2's supported efforts (now high,max only),
+// so `zai/glm-5.2:low` stopped resolving mid-day — validatePreset dropped the explore override and
+// the preset E2E failed on default-fallback. glm-5.1 still supports the full effort ladder and
+// keeps the invariant these tests need (MAIN/SUBAGENT base ≠ DEFAULT base) at the same price class.
+export const E2E_MAIN_MODEL = process.env.LSC_E2E_MAIN_MODEL ?? "zai/glm-5.1:low";
+export const E2E_SUBAGENT_MODEL = process.env.LSC_E2E_SUBAGENT_MODEL ?? "zai/glm-5.1:low";
 export const E2E_DEFAULT_MODEL = process.env.LSC_E2E_DEFAULT_MODEL ?? "zai/glm-4.5-flash:low";
 
 export interface OmpEvent {
