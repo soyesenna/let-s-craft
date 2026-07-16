@@ -1,5 +1,7 @@
+import { existsSync } from "node:fs";
+import { sep } from "node:path";
 import { describe, expect, it } from "vitest";
-import { computeSrcHash as tsComputeSrcHash, driftWarning, type SrcFileEntry } from "../src/utils/src-hash.js";
+import { computeSrcHash as tsComputeSrcHash, driftWarning, resolvePluginSrcDir, type SrcFileEntry } from "../src/utils/src-hash.js";
 import { computeSrcHash as mjsComputeSrcHash, renderVersionFile } from "../scripts/gen-version.mjs";
 
 // ---------------------------------------------------------------------------
@@ -90,5 +92,18 @@ describe("renderVersionFile — generated version.ts format", () => {
 	it("JSON-escapes values so untrusted-looking content still parses as valid TS", () => {
 		const content = renderVersionFile({ version: '1.0.0"; console.log("pwned', gitHash: "unknown", srcHash: "deadbeef0000" });
 		expect(content).toContain('version: "1.0.0\\"; console.log(\\"pwned",');
+	});
+});
+
+describe("resolvePluginSrcDir", () => {
+	it("anchors to the module location (plugin's own src/), never the process cwd", () => {
+		// Regression: anchoring to ctx.cwd hashed USER projects' src/ against the plugin's
+		// BUILD_INFO and produced bogus "dist is stale" warnings on every session start.
+		const fromDist = resolvePluginSrcDir("file:///opt/plugins/lets-craft/dist/utils/src-hash.js");
+		expect(fromDist).toBe(["", "opt", "plugins", "lets-craft", "src"].join(sep));
+		// Default (this repo's own checkout): resolves to an existing absolute src/ dir.
+		const own = resolvePluginSrcDir();
+		expect(own.endsWith(`${sep}src`)).toBe(true);
+		expect(existsSync(own)).toBe(true);
 	});
 });

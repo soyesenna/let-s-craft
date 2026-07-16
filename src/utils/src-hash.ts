@@ -8,7 +8,8 @@
 // stale relative to the current src/ tree (dist↔src drift banner).
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface SrcFileEntry {
 	relPath: string;
@@ -68,9 +69,17 @@ export function hashSrcDir(srcDir: string): string {
 	return computeSrcHash(readSrcEntries(srcDir));
 }
 
-/** `srcDir` joined onto a project root, matching gen-version.mjs's SRC_DIR. */
-export function resolveSrcDir(projectRoot: string): string {
-	return join(projectRoot, "src");
+/**
+ * The PLUGIN's own `src/` directory, anchored to this module's compiled location
+ * (`dist/utils/src-hash.js` → `../../src`), never the session cwd. Anchoring to
+ * `ctx.cwd` was a real bug: any *user project* that happened to have a `src/`
+ * directory got hashed against the plugin's BUILD_INFO and produced a bogus
+ * "dist is stale" warning on every session start (and, in fixture E2E runs,
+ * polluted every driven session's context with that banner).
+ */
+export function resolvePluginSrcDir(moduleUrl: string = import.meta.url): string {
+	const moduleDir = dirname(fileURLToPath(moduleUrl));
+	return join(moduleDir, "..", "..", "src");
 }
 
 /** Null when the runtime src hash matches the build-time one; else the stale-dist warning text. */

@@ -12,7 +12,7 @@ import { registerPresetCommand } from "./preset/command.js";
 import { applyActivePreset } from "./preset/inject.js";
 import { applySessionDefaultModel, entryTypeHistogram, isFreshMainSession } from "./preset/session-default.js";
 import { registerUsageStatusBar } from "./statusbar/index.js";
-import { driftWarning, hashSrcDir, resolveSrcDir } from "./utils/src-hash.js";
+import { driftWarning, hashSrcDir, resolvePluginSrcDir } from "./utils/src-hash.js";
 
 export default function (pi: ExtensionAPI): void {
 	// Bonus alias for LSC_FIXTURE (fixtures.ts) — the env var is the primary signal
@@ -74,14 +74,16 @@ export default function (pi: ExtensionAPI): void {
 			ctx.ui.notify(`lets-craft: could not apply model preset — ${message}`, "warning");
 		}
 
-		// dist↔src drift banner (QW6): a src/ tree present but hashing differently from the
-		// dist/ build's own recorded fingerprint means a TS edit landed without a rebuild —
-		// warn once, never block session start. A missing src/ (non-dev install shipping
-		// only dist/) skips the check entirely rather than misreporting drift.
+		// dist↔src drift banner (QW6): the PLUGIN's own src/ tree present but hashing
+		// differently from the dist/ build's recorded fingerprint means a TS edit landed
+		// without a rebuild — warn once, never block session start. A missing src/
+		// (non-dev install shipping only dist/) skips the check entirely. Anchored to the
+		// plugin module's location, never ctx.cwd — a user project's own src/ must not
+		// be hashed against BUILD_INFO (that produced bogus stale warnings).
 		if (!driftChecked) {
 			driftChecked = true;
 			try {
-				const srcDir = resolveSrcDir(ctx.cwd);
+				const srcDir = resolvePluginSrcDir();
 				if (existsSync(srcDir)) {
 					const warning = driftWarning(BUILD_INFO.srcHash, hashSrcDir(srcDir));
 					if (warning) ctx.ui.notify(warning, "warning");

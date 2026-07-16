@@ -257,8 +257,11 @@ describe.skipIf(!RUN_E2E)("enforcement rules + ask select gate (AC5/AC7/AC10b, r
 				"#!/bin/bash\necho 'not implemented yet' >&2\nexit 1\n",
 			);
 
-			// No earlyExit: the model stops on its own after init (+ at most a §3.1 baseline round),
-			// so the process exits well within PER_RUN_TIMEOUT_MS.
+			// earlyExit on the init tool result itself (Phase-3 gate repair): the state this test
+			// asserts is persisted synchronously INSIDE lsc_craft_init, so the moment its success
+			// marker hits the stream the run is decided — waiting for the model's follow-up turns
+			// only re-introduces obedience bets (observed: a skill-following model opened lsc_confirm,
+			// hard-errored headless, and stalled to the 300s kill ceiling under 3-file contention).
 			const result = await runOmpPrint({
 				cwd: projectDir,
 				sessionDir,
@@ -267,6 +270,7 @@ describe.skipIf(!RUN_E2E)("enforcement rules + ask select gate (AC5/AC7/AC10b, r
 					"lsc_craft_init 툴을 feature_dir='demo'로 정확히 한 번 호출하라. " +
 					"이 세션에는 서브에이전트 스폰 권한과 구현 권한이 없다 — 스킬 §3.1의 baseline 확인(lsc_run_tests 1회)까지는 " +
 					"허용되지만, 그 결과와 무관하게 executor 스폰·구현·수정·abort를 시도하지 말고 '끝났습니다'라고만 말하고 멈춰라.",
+				earlyExit: stdout => /craft "demo" active\. Recorded hash manifest/.test(stdout),
 			});
 
 			expect(result.timedOut, debugSummary(result)).toBe(false);
