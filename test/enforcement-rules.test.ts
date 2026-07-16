@@ -46,15 +46,18 @@ afterEach(() => {
 	}
 });
 
-/** A minimal `.lsc/crafts/{feature}/test/run_test.sh` + git repo — just enough for lsc_craft_init/lsc_verify_hash/tool_call block to have something real to protect. */
-function setupMinimalCraftProject(feature = "demo"): { projectDir: string; sessionDir: string; scriptPath: string } {
+/** A minimal `.lsc/crafts/{feature}/test/run_test.sh` + git repo — just enough for lsc_craft_init/lsc_verify_hash/tool_call block to have something real to protect. `scriptContent` lets a scenario seed a failing suite (e.g. scenario 3 needs testsPassed to stay false no matter how far the model follows the craft skill). */
+function setupMinimalCraftProject(
+	feature = "demo",
+	scriptContent = "#!/bin/bash\necho ok\nexit 0\n",
+): { projectDir: string; sessionDir: string; scriptPath: string } {
 	const base = mkdtempSync(join(tmpdir(), "lsc-e2e-enforcement-"));
 	cleanupDirs.push(base);
 	const projectDir = join(base, "project");
 	const testDir = join(projectDir, ".lsc", "crafts", feature, "test");
 	mkdirSync(testDir, { recursive: true });
 	const scriptPath = join(testDir, "run_test.sh");
-	writeFileSync(scriptPath, "#!/bin/bash\necho ok\nexit 0\n");
+	writeFileSync(scriptPath, scriptContent);
 	execFileSync("chmod", ["+x", scriptPath]);
 
 	execFileSync("git", ["init", "-q"], { cwd: projectDir });
@@ -232,19 +235,29 @@ describe.skipIf(!RUN_E2E)("enforcement rules + ask select gate (AC5/AC7/AC10b, r
 	it(
 		"3. session_stop continue — an active craft with failing/unrun tests leaves state that mandates continuation",
 		async () => {
-			const { projectDir, sessionDir } = setupMinimalCraftProject();
+			// Harness note (2026-07-16, Phase-0 baseline repair): craft/SKILL.md §3.1 now mandates one
+			// lsc_run_tests baseline call immediately after lsc_craft_init (AWC contract commits,
+			// 2026-07-15), so the old premise — "the model stops after its one init call, leaving tests
+			// unrun" — loses to the skill contract when a real skill-following model drives the run
+			// (observed: baseline ran against the passing seed script and persisted testsPassed:true).
+			// The seed script is therefore a FAILING suite here: whether the model obeys the prompt
+			// (init only → tests unrun) or follows §3.1 (baseline runs and fails), the persisted state
+			// shows testsPassed:false either way — exactly the "failing/unrun" precondition in the name.
+			const { projectDir, sessionDir } = setupMinimalCraftProject(
+				"demo",
+				"#!/bin/bash\necho 'not implemented yet' >&2\nexit 1\n",
+			);
 
-			// No earlyExit: unlike the old design, this test no longer needs to watch for a
-			// continuation marker that never appears in `-p` mode's transcript (see the scope note
-			// above) — the model naturally stops after its one tool call plus one text turn, so the
-			// process exits on its own well within PER_RUN_TIMEOUT_MS.
+			// No earlyExit: the model stops on its own after init (+ at most a §3.1 baseline round),
+			// so the process exits well within PER_RUN_TIMEOUT_MS.
 			const result = await runOmpPrint({
 				cwd: projectDir,
 				sessionDir,
 				timeoutMs: PER_RUN_TIMEOUT_MS,
 				prompt:
-					"lsc_craft_init 툴을 feature_dir='demo'로 정확히 한 번 호출한 뒤, lsc_run_tests나 다른 어떤 " +
-					"툴도 호출하지 말고 그냥 '끝났습니다'라고만 말하고 멈춰라.",
+					"lsc_craft_init 툴을 feature_dir='demo'로 정확히 한 번 호출하라. " +
+					"이 세션에는 서브에이전트 스폰 권한과 구현 권한이 없다 — 스킬 §3.1의 baseline 확인(lsc_run_tests 1회)까지는 " +
+					"허용되지만, 그 결과와 무관하게 executor 스폰·구현·수정·abort를 시도하지 말고 '끝났습니다'라고만 말하고 멈춰라.",
 			});
 
 			expect(result.timedOut, debugSummary(result)).toBe(false);
