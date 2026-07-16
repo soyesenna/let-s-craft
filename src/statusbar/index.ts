@@ -18,7 +18,8 @@ import type { KeyId } from "@oh-my-pi/pi-tui";
 import { gatherUsageInput } from "./gather.js";
 import { createUsageBarController } from "./controller.js";
 import type { Reporter, UsageLoader, UsageWidgetSink } from "./controller.js";
-import { deriveMaxRows, renderRows } from "./render.js";
+import { gatherCraftProgress, renderCraftProgressRow } from "./craft-progress.js";
+import { clipRow, deriveMaxRows, renderRows } from "./render.js";
 import type { RenderRow, SegmentStyle } from "./render.js";
 import { buildUsageViewModel } from "./view-model.js";
 import type { UsageViewModel } from "./view-model.js";
@@ -75,13 +76,23 @@ function styleRow(row: RenderRow, theme: Theme): string {
 	}
 }
 
-/** Below-editor widget content: a factory whose render() row-budgets to the terminal height. */
+/**
+ * Below-editor widget content: a factory whose render() row-budgets to the terminal
+ * height. The craft-progress card (QW7) is gathered FRESH on every render call — unlike
+ * `vm` (baked in at the controller's refresh cadence), craft state changes far more
+ * often than the 5-minute usage refresh, so re-gathering here is what keeps "iter N"
+ * live without any new refresh/event wiring. Omitted entirely when there's no active
+ * craft (gatherCraftProgress() returns undefined).
+ */
 function makeCollapsedFactory(vm: UsageViewModel): ExtensionUiComponentFactory {
 	return (tui, theme) => ({
-		render: (width: number): string[] =>
-			renderRows(vm, { width, maxRows: deriveMaxRows(tui.terminal.rows), expanded: false, now: Date.now() }).map((r) =>
-				styleRow(r, theme),
-			),
+		render: (width: number): string[] => {
+			const craftInput = gatherCraftProgress();
+			const craftLines = craftInput ? [styleRow(clipRow(renderCraftProgressRow(craftInput), width), theme)] : [];
+			const maxRows = Math.max(0, deriveMaxRows(tui.terminal.rows) - craftLines.length);
+			const usageLines = renderRows(vm, { width, maxRows, expanded: false, now: Date.now() }).map((r) => styleRow(r, theme));
+			return [...craftLines, ...usageLines];
+		},
 	});
 }
 

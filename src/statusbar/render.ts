@@ -145,7 +145,7 @@ function clipText(text: string, width: number): string {
 }
 
 /** Clip a segment row to `width` plain characters, ellipsis on the cut. */
-function clipRow(row: RenderRow, width: number): RenderRow {
+export function clipRow(row: RenderRow, width: number): RenderRow {
 	if (width <= 0) return { segments: [] };
 	let total = 0;
 	for (const s of row.segments) total += s.text.length;
