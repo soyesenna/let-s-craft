@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { computeManifest, diffManifests, loadManifest, restoreFromSnapshots, saveManifest, writeSnapshots } from "../src/craft/hash-manifest";
+import { computeManifest, diffManifests, loadManifest, restoreFromSnapshots, saveManifest, validateCraftArtifacts, writeSnapshots } from "../src/craft/hash-manifest";
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -208,5 +208,50 @@ describe("writeSnapshots / restoreFromSnapshots", () => {
 		const recorded = computeManifest("f", testDir);
 		// Deliberately never call writeSnapshots — simulates a missing/corrupted snapshot dir.
 		expect(() => restoreFromSnapshots("f", testDir, snapshotDir, recorded)).not.toThrow();
+	});
+});
+
+// A-3 축소형: pre-craft의 trace.md/spec.md/plan.md 없이는 craft가 시작되지 않아야 한다
+// (lsc_craft_init이 이 함수를 test/ 실존 검사 직후 호출한다 — hash-manifest.ts).
+describe("validateCraftArtifacts", () => {
+	function tmpFeatureDir(): string {
+		const dir = mkdtempSync(join(tmpdir(), "lsc-hash-artifacts-"));
+		tempDirs.push(dir);
+		return dir;
+	}
+
+	it("returns no violations when trace/spec/plan all exist with non-blank content", () => {
+		const dir = tmpFeatureDir();
+		writeFileSync(join(dir, "trace.md"), "trace content\n");
+		writeFileSync(join(dir, "spec.md"), "spec content\n");
+		writeFileSync(join(dir, "plan.md"), "plan content\n");
+
+		expect(validateCraftArtifacts(dir)).toEqual([]);
+	});
+
+	it("reports a violation when trace.md is missing", () => {
+		const dir = tmpFeatureDir();
+		writeFileSync(join(dir, "spec.md"), "spec content\n");
+		writeFileSync(join(dir, "plan.md"), "plan content\n");
+
+		const violations = validateCraftArtifacts(dir);
+		expect(violations).toHaveLength(1);
+		expect(violations[0]).toMatch(/trace\.md/);
+	});
+
+	it("reports a violation when spec.md is whitespace-only", () => {
+		const dir = tmpFeatureDir();
+		writeFileSync(join(dir, "trace.md"), "trace content\n");
+		writeFileSync(join(dir, "spec.md"), "   \n\t\n");
+		writeFileSync(join(dir, "plan.md"), "plan content\n");
+
+		const violations = validateCraftArtifacts(dir);
+		expect(violations).toHaveLength(1);
+		expect(violations[0]).toMatch(/spec\.md/);
+	});
+
+	it("reports 3 violations when all three files are missing", () => {
+		const dir = tmpFeatureDir();
+		expect(validateCraftArtifacts(dir)).toHaveLength(3);
 	});
 });

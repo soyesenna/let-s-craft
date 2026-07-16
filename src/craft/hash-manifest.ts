@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { craftHashManifestPath, craftSnapshotDir, craftTestDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
+import { craftDir, craftHashManifestPath, craftSnapshotDir, craftTestDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
 import { ensureSnapshotsGitignored } from "../artifacts/gitignore.js";
 import { getActiveCraft, setActiveCraft } from "./state.js";
 import { writeFileAtomicSync } from "../utils/atomic-write.js";
@@ -174,6 +174,32 @@ export function restoreFromSnapshots(feature: string, testDir: string, snapshotD
 	return { feature, restoredPaths, removedPaths, passed: violations.length === 0, violations };
 }
 
+const REQUIRED_PRECRAFT_ARTIFACTS = ["trace.md", "spec.md", "plan.md"];
+
+/**
+ * Verify that pre-craft's three artifacts (trace.md/spec.md/plan.md) exist directly
+ * under `featureDir` (`.lsc/crafts/{feature}/`, the parent of `test/`) and are
+ * non-blank. Codifies the invariant that pre-craft's output is craft's only input
+ * (design contract A-3): without this check, lsc_craft_init would happily start a
+ * craft loop against a missing or empty trace/spec/plan, silently discarding
+ * pre-craft's role. Pure — returns a list of "{file}: {reason}" violations, empty
+ * when all three pass.
+ */
+export function validateCraftArtifacts(featureDir: string): string[] {
+	const violations: string[] = [];
+	for (const name of REQUIRED_PRECRAFT_ARTIFACTS) {
+		const path = join(featureDir, name);
+		if (!existsSync(path)) {
+			violations.push(`${name}: missing`);
+			continue;
+		}
+		if (readFileSync(path, "utf8").trim().length === 0) {
+			violations.push(`${name}: empty`);
+		}
+	}
+	return violations;
+}
+
 function registerCraftInitTool(pi: ExtensionAPI): void {
 	const z = pi.zod;
 	const parameters = z.object({
@@ -217,6 +243,21 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 				return {
 					isError: true,
 					content: [{ type: "text", text: `lets-craft: no test/ directory at ${testDir}. Run pre-craft's test stage (C18) before craft.` }],
+				};
+			}
+
+			const artifactViolations = validateCraftArtifacts(craftDir(root, feature));
+			if (artifactViolations.length > 0) {
+				return {
+					isError: true,
+					content: [
+						{
+							type: "text",
+							text:
+								`lets-craft: missing or empty pre-craft artifact(s) under ${craftDir(root, feature)}: ` +
+								`${artifactViolations.join(", ")}. Run (or re-run) pre-craft to produce trace.md/spec.md/plan.md before craft.`,
+						},
+					],
 				};
 			}
 

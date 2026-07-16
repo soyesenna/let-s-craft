@@ -54,11 +54,20 @@ function setupMinimalCraftProject(
 	const base = mkdtempSync(join(tmpdir(), "lsc-e2e-enforcement-"));
 	cleanupDirs.push(base);
 	const projectDir = join(base, "project");
-	const testDir = join(projectDir, ".lsc", "crafts", feature, "test");
+	const featureDir = join(projectDir, ".lsc", "crafts", feature);
+	const testDir = join(featureDir, "test");
 	mkdirSync(testDir, { recursive: true });
 	const scriptPath = join(testDir, "run_test.sh");
 	writeFileSync(scriptPath, scriptContent);
 	execFileSync("chmod", ["+x", scriptPath]);
+
+	// lsc_craft_init also requires trace.md/spec.md/plan.md to exist and be non-blank
+	// (validateCraftArtifacts, hash-manifest.ts) — seed minimal stand-ins so this
+	// fixture keeps passing init; these scenarios are about the enforcement seam, not
+	// pre-craft content, so the exact text doesn't matter.
+	writeFileSync(join(featureDir, "trace.md"), "seed trace\n");
+	writeFileSync(join(featureDir, "spec.md"), "seed spec\n");
+	writeFileSync(join(featureDir, "plan.md"), "seed plan\n");
 
 	execFileSync("git", ["init", "-q"], { cwd: projectDir });
 	execFileSync("git", ["config", "user.email", "lsc-e2e@example.com"], { cwd: projectDir });
