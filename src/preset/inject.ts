@@ -3,7 +3,7 @@
 // seen by the next `task` spawn, not persisted to config.yml. Re-run on
 // session_start (self-healing from models.yaml) and on `/lsc-preset` switch.
 import type { ExtensionModelQuery } from "@oh-my-pi/pi-coding-agent";
-import { loadEffectiveModelsFile } from "./models-file.js";
+import { loadEffectiveModelsFile, type PresetSourceLayer } from "./models-file.js";
 import { type AgentModelOverrides, type AgentModelStore, applySessionAgentModelOverrides } from "./spike.js";
 import { validatePreset } from "./validate.js";
 
@@ -16,6 +16,10 @@ export interface InjectResult {
 	warnings: string[];
 	/** Validated session-default model spec, or null when absent or dropped. */
 	defaultSpec: string | null;
+	/** Which models.yaml layer the active preset's own entry came from — null when no preset is active or it was not found. */
+	presetSource: PresetSourceLayer | null;
+	/** Which layer supplied `defaultSpec` specifically — null when there is no default. */
+	defaultSource: PresetSourceLayer | null;
 }
 
 /**
@@ -29,7 +33,7 @@ export function applyActivePreset(args: {
 	cwd: string;
 }): InjectResult {
 	const file = loadEffectiveModelsFile(args.cwd);
-	if (!file.active) return { preset: null, applied: {}, warnings: [], defaultSpec: null };
+	if (!file.active) return { preset: null, applied: {}, warnings: [], defaultSpec: null, presetSource: null, defaultSource: null };
 
 	const preset = file.presets[file.active];
 	if (!preset) {
@@ -38,6 +42,8 @@ export function applyActivePreset(args: {
 			applied: {},
 			warnings: [`active preset "${file.active}" not found in models.yaml`],
 			defaultSpec: null,
+			presetSource: null,
+			defaultSource: null,
 		};
 	}
 
@@ -45,5 +51,12 @@ export function applyActivePreset(args: {
 	const applied: AgentModelOverrides = {};
 	for (const entry of valid) applied[entry.taskAgent] = entry.spec;
 	applySessionAgentModelOverrides(args.settings, applied);
-	return { preset: file.active, applied, warnings, defaultSpec };
+	return {
+		preset: file.active,
+		applied,
+		warnings,
+		defaultSpec,
+		presetSource: file.presetSource[file.active] ?? null,
+		defaultSource: defaultSpec !== null ? (file.defaultSource[file.active] ?? null) : null,
+	};
 }

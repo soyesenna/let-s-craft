@@ -34,7 +34,10 @@ export default function (pi: ExtensionAPI): void {
 			const result = applyActivePreset({ settings: pi.pi.settings, models: ctx.models, cwd: ctx.cwd });
 			const count = Object.keys(result.applied).length;
 			if (result.preset && count > 0) {
-				ctx.ui.notify(`lets-craft: preset "${result.preset}" active (${count} agent override(s)).`, "info");
+				ctx.ui.notify(
+					`lets-craft: preset "${result.preset}" active (${count} agent override(s), source: ${result.presetSource ?? "unknown"}).`,
+					"info",
+				);
 			}
 			for (const warning of result.warnings) ctx.ui.notify(`lets-craft preset: ${warning}`, "warning");
 

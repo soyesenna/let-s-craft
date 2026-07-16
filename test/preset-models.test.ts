@@ -194,6 +194,47 @@ describe("mergeModelsFiles", () => {
 		const merged = mergeModelsFiles({ active: "a", presets: {} }, { active: "b", presets: {} });
 		expect(merged.active).toBe("b");
 	});
+
+	// QW5: provenance tagging — which models.yaml layer (project|global) each merged preset's
+	// entry, and its `default` specifically, actually came from (previously discarded by the merge).
+	describe("provenance (presetSource / defaultSource)", () => {
+		it("tags a same-name preset present in both layers as project (project wins, C10)", () => {
+			const merged = mergeModelsFiles(
+				{ active: "a", presets: { a: { default: "g/default", agents: { explore: "g/explore" } } } },
+				{ active: null, presets: { a: { default: "p/default", agents: { explore: "p/explore" } } } },
+			);
+			expect(merged.presetSource.a).toBe("project");
+			expect(merged.defaultSource.a).toBe("project");
+		});
+
+		it("tags a preset present only in the global layer as global", () => {
+			const merged = mergeModelsFiles(
+				{ active: "a", presets: { a: { default: "g/default", agents: { explore: "g/explore" } } } },
+				{ active: null, presets: {} },
+			);
+			expect(merged.presetSource.a).toBe("global");
+			expect(merged.defaultSource.a).toBe("global");
+		});
+
+		it("tracks defaultSource independently of presetSource when the project preset overrides agents only, inheriting the global default", () => {
+			const merged = mergeModelsFiles(
+				{ active: "a", presets: { a: { default: "g/default:high", agents: { explore: "g/explore" } } } },
+				{ active: null, presets: { a: { agents: { tracer: "p/tracer" } } } },
+			);
+			// The preset's own entry is project-defined (it overrides `agents.tracer`)...
+			expect(merged.presetSource.a).toBe("project");
+			// ...but its `default` field itself still falls through from the global layer.
+			expect(merged.defaultSource.a).toBe("global");
+		});
+
+		it("omits defaultSource for a preset with no default in either layer", () => {
+			const merged = mergeModelsFiles(
+				{ active: "a", presets: { a: { agents: { explore: "g/explore" } } } },
+				{ active: null, presets: { a: { agents: { tracer: "p/tracer" } } } },
+			);
+			expect(merged.defaultSource.a).toBeUndefined();
+		});
+	});
 });
 
 describe("toTaskAgentName", () => {

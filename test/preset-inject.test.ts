@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyActivePreset } from "../src/preset/inject";
+import { globalModelsPath } from "../src/preset/models-file";
 import {
 	AGENT_MODEL_OVERRIDES_KEY,
 	type AgentModelOverrides,
@@ -48,6 +49,13 @@ function projectWithModelsYaml(lines: string[]): string {
 	mkdirSync(lscDir, { recursive: true });
 	writeFileSync(join(lscDir, "models.yaml"), `${lines.join("\n")}\n`);
 	return cwd;
+}
+
+/** Writes to the global models.yaml location — relies on `process.env.HOME` already being set to this test's temp home (beforeEach runs first). */
+function writeGlobalModelsYaml(lines: string[]): void {
+	const path = globalModelsPath();
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${lines.join("\n")}\n`);
 }
 
 function modelsResolving(...authenticated: string[]) {
@@ -105,7 +113,14 @@ describe("applyActivePreset", () => {
 
 		const result = applyActivePreset({ settings: store, models: modelsResolving(), cwd });
 
-		expect(result).toEqual({ preset: null, applied: {}, warnings: [], defaultSpec: null });
+		expect(result).toEqual({
+			preset: null,
+			applied: {},
+			warnings: [],
+			defaultSpec: null,
+			presetSource: null,
+			defaultSource: null,
+		});
 		expect(store.value).toEqual({ "external-agent": "external/model" });
 		expect(store.lastWrite).toBeNull();
 	});
@@ -199,5 +214,92 @@ describe("applyActivePreset", () => {
 		expect(store.value).toEqual(result.applied);
 		expect(store.lastWrite).toBe("override");
 		expect(result.warnings).toEqual([]);
+	});
+
+	// QW5: the active preset's provenance (which models.yaml layer it/its default came from)
+	// surfaces all the way through applyActivePreset, not just the raw merge in models-file.ts.
+	describe("presetSource / defaultSource", () => {
+		it("tags source: project when the active preset is defined in both layers (project wins, C10)", () => {
+			writeGlobalModelsYaml([
+				"active: balanced",
+				"presets:",
+				"  balanced:",
+				"    default: anthropic/claude-sonnet-4-5:high",
+				"    agents:",
+				"      executor: g/executor",
+			]);
+			const cwd = projectWithModelsYaml([
+				"presets:",
+				"  balanced:",
+				"    default: anthropic/claude-sonnet-4-5:high",
+				"    agents:",
+				"      executor: zai/glm-4.6:medium",
+			]);
+
+			const result = applyActivePreset({
+				settings: new FakeStore(),
+				models: modelsResolving("anthropic/claude-sonnet-4-5", "zai/glm-4.6"),
+				cwd,
+			});
+
+			expect(result.presetSource).toBe("project");
+			expect(result.defaultSource).toBe("project");
+		});
+
+		it("tags source: global when the active preset exists only in the global layer", () => {
+			writeGlobalModelsYaml([
+				"active: balanced",
+				"presets:",
+				"  balanced:",
+				"    default: anthropic/claude-sonnet-4-5:high",
+				"    agents:",
+				"      executor: zai/glm-4.6:medium",
+			]);
+			const cwd = projectWithModelsYaml(["presets: {}"]);
+
+			const result = applyActivePreset({
+				settings: new FakeStore(),
+				models: modelsResolving("anthropic/claude-sonnet-4-5", "zai/glm-4.6"),
+				cwd,
+			});
+
+			expect(result.presetSource).toBe("global");
+			expect(result.defaultSource).toBe("global");
+		});
+
+		it("tags defaultSource: global independently of presetSource: project when the project preset overrides agents only", () => {
+			writeGlobalModelsYaml([
+				"active: balanced",
+				"presets:",
+				"  balanced:",
+				"    default: anthropic/claude-sonnet-4-5:high",
+				"    agents:",
+				"      executor: g/executor",
+			]);
+			const cwd = projectWithModelsYaml([
+				"presets:",
+				"  balanced:",
+				"    agents:",
+				"      executor: zai/glm-4.6:medium",
+			]);
+
+			const result = applyActivePreset({
+				settings: new FakeStore(),
+				models: modelsResolving("anthropic/claude-sonnet-4-5", "zai/glm-4.6"),
+				cwd,
+			});
+
+			expect(result.presetSource).toBe("project"); // project's models.yaml does define "balanced" (agents-only)
+			expect(result.defaultSource).toBe("global"); // ...but its default still falls through from global
+		});
+
+		it("leaves presetSource/defaultSource null when no preset is active", () => {
+			const cwd = projectWithModelsYaml(["presets: {}"]);
+
+			const result = applyActivePreset({ settings: new FakeStore(), models: modelsResolving(), cwd });
+
+			expect(result.presetSource).toBeNull();
+			expect(result.defaultSource).toBeNull();
+		});
 	});
 });

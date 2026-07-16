@@ -32,6 +32,23 @@ export interface ModelsFile {
 	presets: Record<string, PresetEntry>;
 }
 
+/** Which models.yaml layer a merged preset's value actually came from (project always wins, C10). */
+export type PresetSourceLayer = "project" | "global";
+
+/**
+ * `mergeModelsFiles`' return type: the merged file (unchanged shape, `ModelsFile`-compatible)
+ * plus provenance the merge itself already knows but previously discarded — which layer each
+ * preset entry and each preset's `default` came from. Kept as a strict superset of `ModelsFile`
+ * (not a change to that interface) so every existing caller that only reads `.active`/`.presets`
+ * keeps working unmodified.
+ */
+export interface MergedModelsFile extends ModelsFile {
+	/** Per-preset name -> the layer that supplied its entry ("project" whenever the project file defines that preset at all, even a partial agents-only override — mirrors mergeModelsFiles' own per-name precedence). */
+	presetSource: Record<string, PresetSourceLayer>;
+	/** Per-preset name -> the layer that supplied its `default` field specifically. Tracked independently of `presetSource`: a project preset can override only `agents` while its `default` still falls through from the global preset of the same name. Absent for a preset with no `default` in either layer. */
+	defaultSource: Record<string, PresetSourceLayer>;
+}
+
 /** The eight lets-craft agents, by short name (as written in models.yaml presets). */
 export const LSC_AGENT_NAMES = [
 	"explore",
@@ -115,22 +132,32 @@ export function loadModelsFileAt(path: string): ModelsFile {
 /**
  * Merge two models files, `override` winning. Presets merge by name; within a
  * shared preset, override agent entries replace base ones. `active` prefers the
- * override value unless it is null.
+ * override value unless it is null. Also returns provenance (`presetSource`/
+ * `defaultSource`) for which layer each preset/default actually came from —
+ * see `MergedModelsFile`.
  */
-export function mergeModelsFiles(base: ModelsFile, override: ModelsFile): ModelsFile {
+export function mergeModelsFiles(base: ModelsFile, override: ModelsFile): MergedModelsFile {
 	const presets: Record<string, PresetEntry> = {};
+	const presetSource: Record<string, PresetSourceLayer> = {};
+	const defaultSource: Record<string, PresetSourceLayer> = {};
 	for (const name of new Set([...Object.keys(base.presets), ...Object.keys(override.presets)])) {
-		const mergedDefault = override.presets[name]?.default ?? base.presets[name]?.default;
+		const overrideEntry = override.presets[name];
+		const baseEntry = base.presets[name];
+		const mergedDefault = overrideEntry?.default ?? baseEntry?.default;
 		presets[name] = {
 			...(mergedDefault !== undefined ? { default: mergedDefault } : {}),
-			agents: { ...base.presets[name]?.agents, ...override.presets[name]?.agents },
+			agents: { ...baseEntry?.agents, ...overrideEntry?.agents },
 		};
+		presetSource[name] = overrideEntry !== undefined ? "project" : "global";
+		if (mergedDefault !== undefined) {
+			defaultSource[name] = overrideEntry?.default !== undefined ? "project" : "global";
+		}
 	}
-	return { active: override.active ?? base.active, presets };
+	return { active: override.active ?? base.active, presets, presetSource, defaultSource };
 }
 
 /** Effective config: global overlaid by project (project wins, C10). */
-export function loadEffectiveModelsFile(cwd: string): ModelsFile {
+export function loadEffectiveModelsFile(cwd: string): MergedModelsFile {
 	return mergeModelsFiles(loadModelsFileAt(globalModelsPath()), loadModelsFileAt(projectModelsPath(cwd)));
 }
 
