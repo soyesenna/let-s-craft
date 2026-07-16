@@ -22,6 +22,9 @@ import { getActiveCraft, recordTestResult } from "./state.js";
 const FAILURE_LINE_RE = /fail|error|✗|✘|not ok/i;
 const MAX_FAILURE_LINES = 40;
 
+/** A failure-summary line naming a specific failing test (vs. a bare error/stack line) — the marker prefix is captured off, the rest is the test name. */
+const TEST_NAME_LINE_RE = /^(?:FAIL|✗|✘|not ok)\b\s*(.*)$/i;
+
 export type ExecFn = (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>;
 
 /** Best-effort extraction of failure-looking lines from arbitrary run_test.sh output. */
@@ -109,6 +112,76 @@ export function failureSummaryFor(details: RunTestsDetails): string | undefined 
 	return `run_test.sh exited ${details.exitCode}${details.killed ? " (killed)" : ""} — see ${details.logPath}.`;
 }
 
+/**
+ * Strip volatile, non-deterministic tokens from a single failure-summary line before it
+ * participates in a no-progress signature (C-1): absolute paths collapse to their basename, ANSI
+ * color escapes and hex addresses are removed, and any remaining digit run (timestamps, ms/s
+ * durations, line:col numbers, ...) becomes `#`. Lowercased throughout so capitalization
+ * differences between otherwise-identical runs don't count as a new failure.
+ */
+function normalizeSignatureLine(line: string): string {
+	return line
+		.toLowerCase()
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: matching literal ANSI escape bytes is the point here.
+		.replace(/\x1b\[[0-9;]*m/g, "")
+		.replace(/0x[0-9a-f]+/gi, "0x#")
+		.replace(/(?:\/[\w.-]+){2,}/g, match => match.slice(match.lastIndexOf("/") + 1))
+		.replace(/\d+/g, "#")
+		.trim();
+}
+
+/**
+ * A structured no-progress signature (C-1): the sorted set of normalized failing-test names plus
+ * one normalized non-test error line, derived from the same failure-summary text
+ * `failureSummaryFor` produces above. Two summaries differing only in volatile tokens (paths,
+ * timestamps, durations, color codes, hex addresses, line:col numbers) collapse to the same
+ * signature; a genuinely different failing-test set or error message does not. Pure — this is
+ * the code-layer half of the no-progress backstop; `recordTestResult` (state.ts) owns comparing
+ * consecutive signatures and counting, and craft/SKILL.md §3.5 owns the resulting gate.
+ */
+export function computeFailureSignature(failureSummary: string): string {
+	const lines = failureSummary
+		.split(/\r?\n/)
+		.map(line => line.trim())
+		.filter(line => line.length > 0);
+
+	const testNames = new Set<string>();
+	const errorLines: string[] = [];
+	for (const line of lines) {
+		const match = TEST_NAME_LINE_RE.exec(line);
+		if (match) {
+			const name = normalizeSignatureLine(match[1].length > 0 ? match[1] : line);
+			if (name.length > 0) testNames.add(name);
+		} else {
+			errorLines.push(normalizeSignatureLine(line));
+		}
+	}
+
+	return JSON.stringify({ tests: [...testNames].sort(), error: errorLines.find(errorLine => errorLine.length > 0) ?? "" });
+}
+
+/**
+ * The `[No Progress]` escalation notice (C-1), appended to the `lsc_run_tests` result text once
+ * `recordTestResult` reports `noProgress: true`. This is the code-layer half of the backstop: the
+ * tool result is a live seam that reaches the model on every iteration regardless of whether
+ * `session_stop` fires this turn (unlike the session_stop backstop itself, which never fires for
+ * a subagent and never fires at all in headless print-mode single-shot runs). The skill-layer
+ * half — the actual `[No Progress]` gate this notice points at — is craft/SKILL.md §3.5.
+ */
+export function noProgressEscalationText(consecutiveFailures: number): string {
+	return (
+		`\n\n[No Progress] The same failure signature has now repeated for ${consecutiveFailures} consecutive lsc_run_tests ` +
+		'runs. Do not start another executor iteration — open the "[No Progress]" gate (craft/SKILL.md §3.5) and ask the ' +
+		"user to choose: (1) switch strategy and resume §3.2, (2) spawn lsc-architect for a read-only consult then resume, " +
+		"or (3) abort via lsc_craft_abort."
+	);
+}
+
+/** Compose the final `lsc_run_tests` result text: the base pass/fail text, plus the `[No Progress]` notice above when `record.noProgress` is true. Pure so the composition itself (not just its ingredient parts) is directly unit-testable without the omp SDK. */
+export function composeRunTestsResultText(baseText: string, record: { noProgress: boolean; consecutiveFailures: number }): string {
+	return record.noProgress ? `${baseText}${noProgressEscalationText(record.consecutiveFailures)}` : baseText;
+}
+
 /** Register `lsc_run_tests`. */
 export function registerRunTestsTool(pi: ExtensionAPI): void {
 	const z = pi.zod;
@@ -166,8 +239,10 @@ export function registerRunTestsTool(pi: ExtensionAPI): void {
 				};
 			}
 
-			recordTestResult(outcome.details.passed, failureSummaryFor(outcome.details));
-			return { content: [{ type: "text", text: outcome.text }], details: outcome.details };
+			const failureSummary = failureSummaryFor(outcome.details);
+			const failureSignature = failureSummary !== undefined ? computeFailureSignature(failureSummary) : undefined;
+			const record = recordTestResult(outcome.details.passed, failureSummary, failureSignature);
+			return { content: [{ type: "text", text: composeRunTestsResultText(outcome.text, record) }], details: outcome.details };
 		},
 	});
 }

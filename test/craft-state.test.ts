@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { craftStatePath } from "../src/artifacts/paths";
 import {
@@ -83,6 +83,66 @@ describe("recordTestResult", () => {
 	it("is a no-op when there is no active craft", () => {
 		recordTestResult(true);
 		expect(getActiveCraft()).toBeUndefined();
+	});
+});
+
+describe("recordTestResult — no-progress detection (C-1)", () => {
+	it("returns noProgress:true on the 3rd consecutive matching-signature failure", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+
+		expect(recordTestResult(false, "run 1", "sig-a")).toEqual({ consecutiveFailures: 1, noProgress: false });
+		expect(recordTestResult(false, "run 2", "sig-a")).toEqual({ consecutiveFailures: 2, noProgress: false });
+		expect(recordTestResult(false, "run 3", "sig-a")).toEqual({ consecutiveFailures: 3, noProgress: true });
+		expect(getActiveCraft()?.consecutiveFailures).toBe(3);
+		expect(getActiveCraft()?.failureSignature).toBe("sig-a");
+	});
+
+	it("resets the counter to 1 when the failure signature changes — progress happened even though the suite still fails", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+
+		recordTestResult(false, "run 1", "sig-a");
+		recordTestResult(false, "run 2", "sig-a");
+		const outcome = recordTestResult(false, "run 3", "sig-b");
+
+		expect(outcome).toEqual({ consecutiveFailures: 1, noProgress: false });
+		expect(getActiveCraft()?.failureSignature).toBe("sig-b");
+	});
+
+	it("clears failureSignature and consecutiveFailures on a pass", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+
+		recordTestResult(false, "run 1", "sig-a");
+		recordTestResult(true);
+
+		expect(getActiveCraft()?.failureSignature).toBeUndefined();
+		expect(getActiveCraft()?.consecutiveFailures).toBeUndefined();
+	});
+
+	it("treats a missing failureSignature as always-progressed (never accumulates toward no-progress)", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+
+		recordTestResult(false, "run 1");
+		recordTestResult(false, "run 2");
+		const outcome = recordTestResult(false, "run 3");
+
+		expect(outcome).toEqual({ consecutiveFailures: 1, noProgress: false });
+	});
+
+	it("loads a legacy state file with no failureSignature/consecutiveFailures fields without throwing, and treats it as a clean slate", () => {
+		const projectRoot = tmpProject();
+		const path = craftStatePath(projectRoot, "my-feature");
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, JSON.stringify({ feature: "my-feature", projectRoot, testsPassed: false, aborted: false }));
+
+		const restored = loadActiveCraft(projectRoot, "my-feature");
+		expect(restored?.failureSignature).toBeUndefined();
+		expect(restored?.consecutiveFailures).toBeUndefined();
+
+		expect(recordTestResult(false, "new failure", "sig-x")).toEqual({ consecutiveFailures: 1, noProgress: false });
 	});
 });
 

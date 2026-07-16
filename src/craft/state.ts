@@ -32,6 +32,21 @@ export interface CraftState {
 	/** Structured summary of the last failure, re-injected into the next executor call (C21). */
 	lastFailureSummary?: string;
 	/**
+	 * Structured signature of the last failure (C-1 no-progress detection) — recordTestResult's
+	 * own comparison key, derived by computeFailureSignature (src/craft/run-tests.ts) from the
+	 * same failure-summary text as lastFailureSummary above. Optional so older persisted state
+	 * files (written before this field existed) still parse: JSON.parse in loadActiveCraft never
+	 * validates shape, so an absent field simply reads as undefined, not a parse error.
+	 */
+	failureSignature?: string;
+	/**
+	 * Consecutive `lsc_run_tests` failures whose failureSignature matched the immediately
+	 * preceding one — i.e. no forward movement, not merely "failed again" (C-1). Reset to 1 when
+	 * the signature changes (a different failure IS progress, even though the suite still fails),
+	 * cleared on a pass. Same backward-compat rationale as failureSignature above.
+	 */
+	consecutiveFailures?: number;
+	/**
 	 * Set once the user has explicitly declined to continue (a hash-violation
 	 * restore decline, a run_test.sh-unrunnable escalation decline — C23; Phase
 	 * 3.5/5 wire the actual confirmation prompt). The session_stop backstop must
@@ -75,11 +90,42 @@ export function loadActiveCraft(projectRoot: string, feature: string): CraftStat
 	return activeCraft;
 }
 
-/** Update pass/fail status after an lsc_run_tests call. No-op when there is no active craft. */
-export function recordTestResult(passed: boolean, failureSummary?: string): void {
-	if (!activeCraft) return;
-	activeCraft = { ...activeCraft, testsPassed: passed, lastFailureSummary: passed ? undefined : failureSummary };
+/** Consecutive same-signature test failures at which the loop is considered stuck, not merely retrying (C-1). */
+export const NO_PROGRESS_THRESHOLD = 3;
+
+/** What recordTestResult reports back, so callers (the lsc_run_tests tool wrapper) know whether to escalate. */
+export interface RecordTestResultOutcome {
+	consecutiveFailures: number;
+	noProgress: boolean;
+}
+
+/**
+ * Update pass/fail status after an lsc_run_tests call, and own the no-progress counting/reset
+ * semantics (C-1): on failure, compare `failureSignature` against the one already recorded — an
+ * unchanged signature increments `consecutiveFailures` (same failure, no forward movement); a
+ * changed one resets it to 1 (a different failure IS progress, even though the suite still
+ * fails). A pass clears both fields. `failureSignature` is caller-supplied rather than computed
+ * here — computeFailureSignature lives in run-tests.ts, which already imports this module, so
+ * computing it here too would create a cycle; the caller (run-tests.ts) derives it once from the
+ * same failure-summary text as `failureSummary` and threads it through. No-op when there is no
+ * active craft.
+ */
+export function recordTestResult(passed: boolean, failureSummary?: string, failureSignature?: string): RecordTestResultOutcome {
+	if (!activeCraft) return { consecutiveFailures: 0, noProgress: false };
+
+	if (passed) {
+		activeCraft = { ...activeCraft, testsPassed: true, lastFailureSummary: undefined, failureSignature: undefined, consecutiveFailures: undefined };
+		persist(activeCraft);
+		return { consecutiveFailures: 0, noProgress: false };
+	}
+
+	const progressed = failureSignature === undefined || failureSignature !== activeCraft.failureSignature;
+	const consecutiveFailures = progressed ? 1 : (activeCraft.consecutiveFailures ?? 0) + 1;
+	const noProgress = consecutiveFailures >= NO_PROGRESS_THRESHOLD;
+
+	activeCraft = { ...activeCraft, testsPassed: false, lastFailureSummary: failureSummary, failureSignature, consecutiveFailures };
 	persist(activeCraft);
+	return { consecutiveFailures, noProgress };
 }
 
 /** Mark the active craft as user-aborted. Stops the session_stop backstop (see CraftState.aborted). */
