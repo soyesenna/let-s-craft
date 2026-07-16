@@ -208,12 +208,14 @@ describe("statusbar pipeline — collapsed columnar render", () => {
 
 	it("lays providers out side by side (accounts as rows) and passes the overage percent through", () => {
 		const rows = renderRows(vm, { width: 200, maxRows: 12, expanded: false, now: NOW });
-		// Height = spacer + 2 chrome rows + max(accounts per provider), NOT the sum of all accounts.
-		expect(rows).toHaveLength(1 + 2 + 3);
+		// Height = spacer + frame(2) + 2 chrome rows + max(accounts per provider), NOT the sum of all accounts.
+		expect(rows).toHaveLength(1 + 2 + 2 + 3);
 		const joined = joinRows(rows);
 		expect(rowText(rows[0])).toBe(""); // prompt spacer
-		expect(rowText(rows[1])).toMatch(/Anthropic.*│ OpenAI Codex/);
-		expect(rowText(rows[2])).toMatch(/5h\s+7d\s+Fable 7d.*│\s+7d/);
+		expect(rowText(rows[1]).startsWith("╭")).toBe(true); // prompt-box-like frame
+		expect(rowText(rows[rows.length - 1]).startsWith("╰")).toBe(true);
+		expect(rowText(rows[2])).toMatch(/Anthropic.*│ OpenAI Codex/);
+		expect(rowText(rows[3])).toMatch(/5h\s+7d\s+Fable 7d.*│\s+7d/);
 		for (const label of ["alice", "bob", "carol", "dave"]) expect(joined).toContain(label);
 		expect(joined).toContain("140%"); // overage passed end-to-end, honestly
 		expect(joined.toLowerCase()).toContain("no usage"); // api-key note
@@ -224,7 +226,7 @@ describe("statusbar pipeline — collapsed columnar render", () => {
 	});
 
 	it("respects a tight row budget by hiding tail accounts behind a +N title marker", () => {
-		const maxRows = 5; // spacer + 2 chrome rows + 2 account rows
+		const maxRows = 5; // too tight for the frame: spacer + 2 chrome rows + 2 account rows
 		const rows = renderRows(vm, { width: 200, maxRows, expanded: false, now: NOW });
 		expect(rows.length).toBeLessThanOrEqual(maxRows);
 		expect(rowText(rows[1])).toContain("Anthropic +1"); // the api-key row is hidden, honestly counted

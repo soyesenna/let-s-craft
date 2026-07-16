@@ -51,6 +51,7 @@ const STYLE_COLOR: Record<SegmentStyle, ThemeColor> = {
 	header: "muted",
 	label: "text",
 	stale: "warning",
+	border: "border",
 	"bar-ok": "success",
 	"bar-warn": "warning",
 	"bar-crit": "error",

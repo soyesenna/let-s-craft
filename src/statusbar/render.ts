@@ -39,11 +39,22 @@ const NO_DATA = "–";
 const COLUMN_SEP = " │ ";
 const STALE_MARK = " (stale)";
 
+/** Inner left/right padding between the box frame and the table. */
+export const BOX_PAD = 2;
+// Rounded frame matching the prompt editor's box (pi-tui unicode preset).
+const BOX_TL = "╭";
+const BOX_TR = "╮";
+const BOX_BL = "╰";
+const BOX_BR = "╯";
+const BOX_H = "─";
+const BOX_V = "│";
+
 export type SegmentStyle =
 	| "title"
 	| "header"
 	| "label"
 	| "stale"
+	| "border"
 	| "bar-ok"
 	| "bar-warn"
 	| "bar-crit"
@@ -448,15 +459,45 @@ function renderExpanded(columns: ProviderColumnVM[], opts: RenderOptions): Rende
 	return rows.map((r) => clipRow(r, opts.width));
 }
 
+/** Wrap content rows in the rounded full-width frame (side padding included). */
+function frame(content: RenderRow[], width: number): RenderRow[] {
+	const inner = width - 2 - 2 * BOX_PAD;
+	const rows: RenderRow[] = [{ segments: [seg(BOX_TL + BOX_H.repeat(width - 2) + BOX_TR, "border")] }];
+	for (const row of content) {
+		rows.push({
+			segments: [
+				seg(BOX_V + pad(BOX_PAD), "border"),
+				...row.segments,
+				seg(pad(inner - rowText(row).length + BOX_PAD), "border"),
+				seg(BOX_V, "border"),
+			],
+		});
+	}
+	rows.push({ segments: [seg(BOX_BL + BOX_H.repeat(width - 2) + BOX_BR, "border")] });
+	return rows;
+}
+
 /** Render the view model to styled segment rows for the collapsed or expanded surface. */
 export function renderRows(vm: UsageViewModel, opts: RenderOptions): RenderRow[] {
 	const columns = vm.columns.filter((c) => c.accounts.length > 0);
 	if (columns.length === 0) return [];
 	if (opts.expanded) return renderExpanded(columns, opts);
 	if (opts.maxRows <= 0) return [];
-	// Breathing room between the prompt editor above and the table: one blank
-	// spacer row, spent from the row budget (so the prompt-safety bound holds).
-	// Tiny budgets (1–2 rows) keep every row for content instead.
+	// Preferred shape: one blank spacer row for breathing room under the prompt
+	// editor, then the table inside a rounded frame like the editor's own box.
+	// The spacer and both frame rows are spent from the row budget, so the
+	// prompt-safety bound (rows <= maxRows) always holds. The frame costs 3 of
+	// the budget's rows, so it only engages once a real table (title + header +
+	// account) still fits inside; tighter budgets degrade to the bare table,
+	// and at 1–2 rows every row goes to content.
+	const boxed = opts.maxRows >= 6 && opts.width >= 24;
+	if (boxed) {
+		const inner = opts.width - 2 - 2 * BOX_PAD;
+		const content = renderCollapsed(columns, { ...opts, width: inner, maxRows: opts.maxRows - 3 }).map((r) =>
+			clipRow(r, inner),
+		);
+		return [{ segments: [] }, ...frame(content, opts.width)];
+	}
 	const spacer = opts.maxRows >= 3;
 	const budget = spacer ? opts.maxRows - 1 : opts.maxRows;
 	const rows = renderCollapsed(columns, { ...opts, maxRows: budget }).map((r) => clipRow(r, opts.width));
