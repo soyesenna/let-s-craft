@@ -341,30 +341,41 @@ describe.skipIf(!RUN_E2E)("enforcement rules + ask select gate (AC5/AC7/AC10b, r
 		TEST_TIMEOUT_MS,
 	);
 
-	// R8 yes-path (plan Step 9 test contract): the symmetric case to test 2 above (hash-violation
-	// no -> abort). Here the user APPROVES an intentional protected-canon fix via lsc_confirm, which
-	// routes through lsc_craft_release (clearActiveCraft — release.ts) instead of lsc_craft_abort.
-	// Once released, the tool_call block no longer applies (getActiveCraft() is undefined — same
-	// "no active craft" state enforcement.ts's evaluateToolCallForActiveCraft early-returns
-	// undefined for), so the canon edit goes through, and a fresh lsc_craft_init call re-baselines
-	// the manifest against the now-intentionally-modified content — RK8's required re-init, verified
-	// here by asserting the immediately-following lsc_verify_hash reports zero violations.
+	// R8 yes-path + AC1 e2e arm (plan Step 4d / §4 W3): the symmetric partner to test 2 above
+	// (hash-violation "no" -> abort). This scenario drives TWO lsc_craft_release outcomes through a
+	// SINGLE run (CS9 — one runOmpPrint, since each real-omp invocation spends tokens): first a
+	// PREMATURE release with no approval in flight, which the nonce gate must reject fail-closed
+	// (AC1's end-to-end arm — lsc_craft_init has already armed the active craft, so this exercises
+	// the NEW approval gate, not release.ts's pre-existing "no active craft to release" path); then
+	// the user APPROVES an intentional protected-canon fix via lsc_confirm, whose [Canon Amendment]
+	// tag makes the freshly-issued nonce consumable, so the second release succeeds (clearActiveCraft
+	// — release.ts) instead of routing through lsc_craft_abort. Once released, the tool_call block no
+	// longer applies (getActiveCraft() is undefined — the same "no active craft" state
+	// enforcement.ts's evaluateToolCallForActiveCraft early-returns undefined for), so the canon edit
+	// goes through, and a fresh lsc_craft_init call re-baselines the manifest against the
+	// now-intentionally-modified content — RK8's required re-init, verified here by asserting the
+	// immediately-following lsc_verify_hash reports zero violations.
 	it(
-		"5. release approval — an explicitly approved protected-canon edit goes through lsc_craft_release, and a re-init + re-verify afterward passes clean",
+		"5. release approval — an unapproved lsc_craft_release is rejected fail-closed, then an explicitly approved protected-canon edit goes through lsc_craft_release, and a re-init + re-verify afterward passes clean",
 		async () => {
 			const { projectDir, sessionDir, scriptPath } = setupMinimalCraftProject();
 			const fixtureDir = mkdtempSync(join(tmpdir(), "lsc-e2e-enforcement-release-fixture-"));
 			cleanupDirs.push(fixtureDir);
 			const answersPath = join(fixtureDir, "answers.json");
 			// Test-local inline answers.json (mirrors test 2's own pattern) — never the shared
-			// fixtures/sample-ts-cli/answers.json, which this test does not touch. The explicit
-			// "^\\[Release\\]" rule is redundant with the confirmation-true default (any unmatched
-			// lsc_confirm question already answers "yes") but documents intent and survives a future default flip.
+			// fixtures/sample-ts-cli/answers.json, which this test does not touch. The rule now matches
+			// "^\\[Canon Amendment\\]", the normalized gate tag (plan C10 / Step 4d) — no longer
+			// "[Release]". What is actually load-bearing is the tag PREFIX on step 3's confirm QUESTION:
+			// the approval nonce is issued off matchDestructiveGateTag(question), so "[Canon Amendment]"
+			// in that prompt is what makes step 4's approval consumable by lsc_craft_release. The
+			// confirmation-true default would answer "yes" to the question regardless, so this explicit
+			// rule is documentation of the exact tag the release gate consumes — kept in sync with the
+			// TS tag SSOT and surviving a future default flip.
 			writeFileSync(
 				answersPath,
 				JSON.stringify({
 					version: 2,
-					answers: [{ match: "^\\[Release\\]", kind: "confirmation", confirm: true }],
+					answers: [{ match: "^\\[Canon Amendment\\]", kind: "confirmation", confirm: true }],
 					default: { kind: "confirmation", confirm: true },
 				}),
 			);
@@ -375,16 +386,19 @@ describe.skipIf(!RUN_E2E)("enforcement rules + ask select gate (AC5/AC7/AC10b, r
 				timeoutMs: PER_RUN_TIMEOUT_MS,
 				env: { LSC_FIXTURE: answersPath },
 				prompt:
-					"다음 단계를 순서대로, 각각 정확히 한 번씩 실행하라. " +
+					"다음 단계를 명시된 순서 그대로, 각 단계를 정확히 한 번씩 실행하라. " +
 					"1) lsc_craft_init 툴을 feature_dir='demo'로 호출하라. " +
-					'2) lsc_confirm 툴로 정확히 이 질문을 하라: "[Release] Protected test canon needs an approved, ' +
+					"2) 아직 아무 승인(lsc_confirm)도 없는 상태에서 lsc_craft_release 툴을 " +
+					"reason='premature release attempt with no approval in flight'로 호출하라. " +
+					"이 호출은 승인이 없으므로 반드시 오류로 거부된다 — 예상된 오류다. 여기서 멈추지 말고 반드시 다음 단계로 계속 진행하라. " +
+					'3) lsc_confirm 툴로 정확히 이 질문을 하라: "[Canon Amendment] Protected test canon needs an approved, ' +
 					'intentional modification. Release hash protection and proceed? Proceed?" ' +
-					'3) lsc_confirm의 응답이 "yes"이면, lsc_craft_release 툴을 reason=\'user approved an intentional ' +
-					"fix to the protected test canon via lsc_confirm'으로 호출하라. " +
-					`4) write 툴로 ${scriptPath} 파일 전체를 정확히 다음 내용으로 덮어써라: ` +
+					'4) lsc_confirm의 응답이 "yes"이면, lsc_craft_release 툴을 reason=\'user approved an intentional ' +
+					"fix to the protected test canon via lsc_confirm'으로 호출하라. 이번에는 성공해야 한다. " +
+					`5) write 툴로 ${scriptPath} 파일 전체를 정확히 다음 내용으로 덮어써라: ` +
 					'"#!/bin/bash\\necho ok-modified\\nexit 0\\n" ' +
-					"5) lsc_craft_init 툴을 feature_dir='demo'로 다시 호출해 매니페스트를 재베이스라인하라. " +
-					"6) lsc_verify_hash 툴을 feature_dir='demo'로 호출하라. " +
+					"6) lsc_craft_init 툴을 feature_dir='demo'로 다시 호출해 매니페스트를 재베이스라인하라. " +
+					"7) lsc_verify_hash 툴을 feature_dir='demo'로 호출하라. " +
 					"각 단계의 결과를 그대로 보고하라. 위에 명시되지 않은 다른 툴은 호출하지 마라.",
 				// lsc_verify_hash's own success text (hash-manifest.ts's registerVerifyHashTool: "hash
 				// verification passed — ...") only appears once the re-init + re-verify sequence has
@@ -396,14 +410,36 @@ describe.skipIf(!RUN_E2E)("enforcement rules + ask select gate (AC5/AC7/AC10b, r
 
 			const executions = toolExecutions(result);
 
+			// CS9: lsc_craft_release is called exactly twice — first WITHOUT an approval (rejected
+			// fail-closed, AC1's e2e arm), then AFTER the [Canon Amendment] confirm (consumes the
+			// freshly-issued nonce and succeeds, AC2). filter (not find) so BOTH calls are observed,
+			// not just the first; their order relative to the confirm is asserted below.
+			const releases = executions.filter(e => e.toolName === "lsc_craft_release");
+			expect(releases.length, debugSummary(result)).toBe(2);
+			const [prematureRelease, approvedRelease] = releases;
+
+			// First release — the active craft is armed (init ran) but no nonce was ever issued, so the
+			// gate rejects it fail-closed. The stable rejection substring is the observability contract
+			// (plan §4b); the exact prose is the implementer's discretion.
+			expect(prematureRelease.isError, debugSummary(result)).toBe(true);
+			expect(prematureRelease.text ?? "", debugSummary(result)).toMatch(/requires a fresh user approval/);
+
 			const confirm = executions.find(e => e.toolName === "lsc_confirm");
 			expect(confirm, debugSummary(result)).toBeDefined();
 			expect(confirm?.text.trim().toLowerCase(), debugSummary(result)).toBe("yes");
 
-			const release = executions.find(e => e.toolName === "lsc_craft_release");
-			expect(release, debugSummary(result)).toBeDefined();
-			expect(release?.isError, debugSummary(result)).toBe(false);
-			expect(release?.text ?? "", debugSummary(result)).toMatch(/released for approved canon modification/);
+			// Ordering (CS9): the rejected release precedes the confirm, and the successful release
+			// follows it — the approval must be issued strictly between the two release calls.
+			const prematureReleaseIdx = executions.indexOf(prematureRelease);
+			const approvedReleaseIdx = executions.indexOf(approvedRelease);
+			const confirmIdx = executions.findIndex(e => e.toolName === "lsc_confirm");
+			expect(prematureReleaseIdx, debugSummary(result)).toBeLessThan(confirmIdx);
+			expect(confirmIdx, debugSummary(result)).toBeLessThan(approvedReleaseIdx);
+
+			// Second release — issued right after the platform-yes confirm, so the gate consumes the
+			// freshly-issued nonce and succeeds (existing success contract, preserved).
+			expect(approvedRelease.isError, debugSummary(result)).toBe(false);
+			expect(approvedRelease.text ?? "", debugSummary(result)).toMatch(/released for approved canon modification/);
 
 			// The canon edit itself must not have been blocked — release cleared active-craft
 			// protection before this write ran.
