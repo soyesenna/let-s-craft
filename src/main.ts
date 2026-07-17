@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { registerAskTools } from "./ask.js";
 import { registerCraftAbortTool } from "./craft/abort.js";
+import { registerCompactionDirective } from "./craft/compact-directive.js";
 import { registerCraftEnforcement } from "./craft/enforcement.js";
 import { registerHashManifestTools } from "./craft/hash-manifest.js";
 import { registerCraftReleaseTool } from "./craft/release.js";
@@ -25,6 +26,7 @@ export default function (pi: ExtensionAPI): void {
 	registerHashManifestTools(pi);
 	registerRunTestsTool(pi);
 	registerCraftEnforcement(pi);
+	registerCompactionDirective(pi);
 	registerAskTools(pi);
 	registerCraftAbortTool(pi);
 	registerCraftReleaseTool(pi);
