@@ -10,23 +10,71 @@
 // the manifest and re-register active-craft protection (RK8 — skipping the re-init
 // leaves the loop running with no hash-violation protection at all).
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { clearActiveCraft, getActiveCraft } from "./state.js";
+import { craftHashManifestPath } from "../artifacts/paths.js";
+import { type ConsumeApprovalResult, type DestructiveGateTag, consumePendingApproval } from "./destructive-approval.js";
+import { fingerprintManifestFile } from "./hash-manifest.js";
+import { clearActiveCraft, getActiveCraft, recordOpenRelease } from "./state.js";
 
 export interface CraftReleaseDetails {
 	feature: string;
 	reason: string;
 }
 
+/** The destructive gate tags lsc_craft_release consumes — owned by the consumer, not the issuance infra (CS1). */
+export const RELEASE_CONSUMABLE_TAGS: readonly DestructiveGateTag[] = ["[Canon Amendment]"];
+
+/** Fail-closed rejection text for a failed approval consume — always names the fresh-approval requirement and the consumable tag(s). */
+function releaseRejectionText(failure: Extract<ConsumeApprovalResult, { ok: false }>): string {
+	const consumable = RELEASE_CONSUMABLE_TAGS.join(", ");
+	if (failure.reason === "tag-mismatch") {
+		return (
+			`lets-craft: lsc_craft_release requires a fresh user approval on a ${consumable} gate — the pending destructive ` +
+			`approval carries the ${failure.pendingTag} tag, which release does not consume. Obtain a fresh ${consumable} ` +
+			"confirm (a platform yes) for this canon modification before releasing."
+		);
+	}
+	if (failure.reason === "identity-mismatch") {
+		return (
+			`lets-craft: lsc_craft_release requires a fresh user approval on a ${consumable} gate — the pending ${failure.pendingTag} ` +
+			`approval belongs to a different craft identity. Obtain a fresh ${consumable} confirm for THIS craft before releasing.`
+		);
+	}
+	return (
+		`lets-craft: lsc_craft_release requires a fresh user approval for this canon modification: run lsc_confirm with a ` +
+		`${consumable} prompt, get a platform "yes", then call lsc_craft_release. No pending approval is in flight.`
+	);
+}
+
 /**
- * Pure core: clear the active craft's hash-protection and report the outcome. Split out from the
- * registerTool wrapper (like abort.ts's performCraftAbort) so it's unit-testable without
- * pi.zod/pi.registerTool — vitest on Node cannot import omp SDK values (Phase 1.5 finding).
+ * Pure-ish core: consume the tag-bound single-use approval nonce, pre-record the open-release
+ * evidence, then clear the active craft's hash-protection and report the outcome. Fail-closed — a
+ * missing/consumed/mismatched approval is rejected (isError) without clearing protection (CS1).
+ * Split out from the registerTool wrapper (like abort.ts) so it's unit-testable without pi.zod.
  */
 export function performCraftRelease(reason: string): AgentToolResult<CraftReleaseDetails> {
 	const craft = getActiveCraft();
 	if (!craft) {
 		return { isError: true, content: [{ type: "text", text: "lets-craft: no active craft to release." }] };
 	}
+	// Fail-closed approval gate: consume the tag-bound single-use nonce before clearing protection.
+	const consumed = consumePendingApproval({
+		acceptedTags: RELEASE_CONSUMABLE_TAGS,
+		identity: { feature: craft.feature, projectRoot: craft.projectRoot, worktreeRoot: craft.worktreeRoot },
+	});
+	if (!consumed.ok) {
+		return { isError: true, content: [{ type: "text", text: releaseRejectionText(consumed) }] };
+	}
+	// Pre-record the open-release evidence (persist-before-publish) BEFORE clearing the craft — a
+	// persist throw propagates with the craft still active and the consumed nonce NOT restored (CS5).
+	recordOpenRelease({
+		nonce: consumed.approval.nonce,
+		tag: consumed.approval.tag,
+		question: consumed.approval.question,
+		response: consumed.approval.response,
+		reason,
+		openedAt: new Date().toISOString(),
+		manifestFingerprint: fingerprintManifestFile(craftHashManifestPath(craft.worktreeRoot ?? craft.projectRoot, craft.feature)),
+	});
 	clearActiveCraft();
 	return {
 		content: [
