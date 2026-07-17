@@ -21,6 +21,8 @@
 // directly — only the wrapper does, and it is exercised by the real omp runtime instead.
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { canonicalizeFreeText, detectFixturePath, type FixtureAnswerBody, type FixtureAnswerSet, getFixtureAnswerSet } from "./fixtures.js";
+import { createPendingApproval, installPendingApproval, invalidatePendingApproval, matchDestructiveGateTag, sameCraftIdentity } from "./craft/destructive-approval.js";
+import { getActiveCraft, recordReleaseApproval } from "./craft/state.js";
 
 const HEADLESS_ERROR =
 	"lets-craft: interactive UI is not available (headless print/RPC mode) and no fixture is configured — set " +
@@ -625,7 +627,35 @@ export function registerAskTools(pi: ExtensionAPI): void {
 		approval: "read",
 		parameters: confirmParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<ConfirmResultDetails>> {
-			return performConfirm(channelFor(pi, ctx), ctx.ui, params);
+			// (a) Classify the prompt and capture the craft it is bound to BEFORE the confirm await.
+			const tag = matchDestructiveGateTag(params.question);
+			const craftAtPrompt = tag ? getActiveCraft() : undefined;
+			// (b) A tagged prompt revokes any prior pending approval on entry, whatever the outcome —
+			//     the freshest same-tag no/free/cancel must retract a stale yes (P8 stale-yes barrier).
+			if (tag) invalidatePendingApproval();
+			// (c) The confirm itself is unchanged (craft-agnostic — C9).
+			const result = await performConfirm(channelFor(pi, ctx), ctx.ui, params);
+			// (d) Issue only on a tagged platform-yes whose craft identity is unchanged across the
+			//     await boundary (field equality, not reference — F-12; a free answer is confirmed===null).
+			if (
+				tag &&
+				craftAtPrompt &&
+				!result.isError &&
+				result.details?.confirmed === true &&
+				sameCraftIdentity(craftAtPrompt, getActiveCraft())
+			) {
+				const record = createPendingApproval({
+					tag,
+					question: params.question,
+					identity: { feature: craftAtPrompt.feature, projectRoot: craftAtPrompt.projectRoot, worktreeRoot: craftAtPrompt.worktreeRoot },
+				});
+				// (e) Commit durable evidence FIRST — a throw here propagates and leaves the slot empty
+				//     (persist-before-install: no live capability without persisted evidence, P7).
+				recordReleaseApproval({ nonce: record.nonce, tag: record.tag, question: record.question, response: record.response, issuedAt: record.issuedAt });
+				installPendingApproval(record);
+			}
+			// (f) Return the original confirm result unchanged in every case.
+			return result;
 		},
 	});
 }
