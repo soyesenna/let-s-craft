@@ -67,6 +67,22 @@ export interface CraftState {
 	 * Single slot, succeeded across re-inits until the next release opens a new one (CS4/F-14).
 	 */
 	openRelease?: OpenReleaseEvidence;
+	/**
+	 * The post-craft audit cycle number (`audit-N.md`'s N) that `lsc_audit_begin` most recently
+	 * recorded (B-1, cycle-freshness) — informational cross-check alongside `runLogAtCycleStart`
+	 * below. Optional so older persisted state files (written before this field existed) still
+	 * parse: `validateAuditFreshness` (verdict.ts) treats an absent value as "cycle tracking
+	 * unavailable," never a violation, same backward-compat rationale as `failureSignature` above.
+	 */
+	auditCycle?: number;
+	/**
+	 * The highest `test/logs/run-N.log` index that existed at THIS audit cycle's start (set
+	 * alongside `auditCycle` by `lsc_audit_begin`) — the actual freshness threshold `verdict.ts`'s
+	 * `validateAuditFreshness` compares against: an APPROVE-family verdict for this cycle must be
+	 * backed by a passing run-N.log whose N is STRICTLY GREATER than this value, never a log
+	 * carried over from before the cycle began.
+	 */
+	runLogAtCycleStart?: number;
 }
 
 /** A-1 issuance evidence + A-3 durable 판별 토큰 — recorded at confirm, consumed (stamped) at release. Not the consume authority. */
@@ -236,6 +252,31 @@ export function recordOpenRelease(evidence: OpenReleaseEvidence): void {
 	};
 	persist(next);
 	activeCraft = next;
+}
+
+/**
+ * Record the post-craft audit cycle-start marker (B-1, cycle-freshness) directly against a
+ * feature's persisted CraftState at an EXACT root (CS4-style, no candidate guessing) — NOT the
+ * active-craft singleton. Post-craft deliberately never calls lsc_craft_init
+ * (skills/post-craft/SKILL.md §1.5, to avoid re-arming the tool_call block against its own
+ * bash-based test re-run, §3.4), so by the time an audit cycle begins there is typically no
+ * active craft in this session at all — gating this on `activeCraft` the way
+ * recordReleaseApproval/recordOpenRelease do would make it a silent no-op for post-craft's actual
+ * call pattern. Fails closed (throws) when no persisted state exists yet at `root` for `feature`
+ * — there is no craft to begin an audit cycle against. Keeps the in-memory singleton in sync when
+ * it happens to already be this exact craft (harmless either way, never required for correctness).
+ */
+export function recordAuditCycleBegin(root: string, feature: string, auditCycle: number, runLogAtCycleStart: number): CraftState {
+	const existing = readPersistedCraftState(root, feature);
+	if (!existing) {
+		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — run craft before starting a post-craft audit cycle.`);
+	}
+	const next: CraftState = { ...existing, auditCycle, runLogAtCycleStart };
+	persist(next);
+	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
+		activeCraft = next;
+	}
+	return next;
 }
 
 /**

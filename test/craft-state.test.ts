@@ -13,6 +13,7 @@ import {
 	markCraftAborted,
 	type OpenReleaseEvidence,
 	readPersistedCraftState,
+	recordAuditCycleBegin,
 	recordOpenRelease,
 	recordReleaseApproval,
 	recordTestResult,
@@ -150,6 +151,49 @@ describe("recordTestResult — no-progress detection (C-1)", () => {
 		expect(restored?.consecutiveFailures).toBeUndefined();
 
 		expect(recordTestResult(false, "new failure", "sig-x")).toEqual({ consecutiveFailures: 1, noProgress: false });
+	});
+});
+
+describe("recordAuditCycleBegin (B-1, cycle-freshness marker)", () => {
+	it("throws when no persisted craft state exists at the given root/feature — nothing to begin a cycle against", () => {
+		const projectRoot = tmpProject();
+		expect(() => recordAuditCycleBegin(projectRoot, "never-crafted", 0, 0)).toThrow();
+	});
+
+	it("persists auditCycle/runLogAtCycleStart onto the existing persisted state without touching other fields", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft({ ...freshState(projectRoot), testsPassed: true });
+
+		const next = recordAuditCycleBegin(projectRoot, "my-feature", 1, 3);
+
+		expect(next.auditCycle).toBe(1);
+		expect(next.runLogAtCycleStart).toBe(3);
+		expect(next.testsPassed).toBe(true); // untouched
+		const persisted = JSON.parse(readFileSync(craftStatePath(projectRoot, "my-feature"), "utf8"));
+		expect(persisted.auditCycle).toBe(1);
+		expect(persisted.runLogAtCycleStart).toBe(3);
+	});
+
+	it("works even when there is no active craft in this session (post-craft never calls lsc_craft_init)", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+		clearActiveCraft(); // simulate post-craft's own session: craft ran earlier, but nothing is active now
+		expect(getActiveCraft()).toBeUndefined();
+
+		const next = recordAuditCycleBegin(projectRoot, "my-feature", 0, 2);
+
+		expect(next.auditCycle).toBe(0);
+		expect(getActiveCraft()).toBeUndefined(); // still not promoted — this function never activates a craft
+	});
+
+	it("keeps the in-memory singleton in sync when it happens to already be this exact craft", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+
+		recordAuditCycleBegin(projectRoot, "my-feature", 2, 5);
+
+		expect(getActiveCraft()?.auditCycle).toBe(2);
+		expect(getActiveCraft()?.runLogAtCycleStart).toBe(5);
 	});
 });
 

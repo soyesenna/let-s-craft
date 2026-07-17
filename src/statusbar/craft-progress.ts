@@ -2,7 +2,14 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { craftAuditDir, craftTestLogsDir } from "../artifacts/paths.js";
 import { getActiveCraft } from "../craft/state.js";
+import { type AuditVerdict, latestAuditNumber, latestRunNumber, parseAuditVerdict } from "../craft/verdict.js";
 import type { RenderRow, RowSegment } from "./render.js";
+
+// Re-exported for backward compatibility: these three were originally implemented here (QW7) and
+// have since been promoted to craft/verdict.ts as the canonical location (B-1) — verdict.ts is
+// shared with lsc_audit_validate's cycle-freshness check, so a duplicate implementation here would
+// drift. Existing imports of these names from this module (incl. test/statusbar-craft-progress.test.ts) keep working unchanged.
+export { type AuditVerdict, latestAuditNumber, latestRunNumber, parseAuditVerdict };
 
 // ---------------------------------------------------------------------------
 // QW7: a second statusbar source layered above the provider-usage table,
@@ -20,40 +27,6 @@ import type { RenderRow, RowSegment } from "./render.js";
 // wants. Extending to idle-session artifact inference is a separate,
 // larger change.
 // ---------------------------------------------------------------------------
-
-export type AuditVerdict = "APPROVE" | "APPROVE-WITH-COMMENT" | "APPROVE-WITH-CHANGE" | "REJECT";
-
-const KNOWN_VERDICTS: readonly AuditVerdict[] = ["APPROVE", "APPROVE-WITH-COMMENT", "APPROVE-WITH-CHANGE", "REJECT"];
-
-/**
- * Parse the `**AUDIT VERDICT: ...**` line post-craft's audit doc contract defines
- * (skills/post-craft/SKILL.md). Returns undefined on no match OR an unrecognized
- * value — a doc-format change, a mid-write file, or any other surprise must never
- * throw here, only omit the audit segment (fallback, per QW7 scope).
- */
-export function parseAuditVerdict(markdown: string): AuditVerdict | undefined {
-	const match = /^\*\*AUDIT VERDICT:\s*([A-Z-]+)\*\*/m.exec(markdown);
-	const raw = match?.[1];
-	return KNOWN_VERDICTS.find(v => v === raw);
-}
-
-/** Highest `run-N.log` index among the given filenames; 0 when none match (no test run yet). */
-export function latestRunNumber(fileNames: readonly string[]): number {
-	const numbers = fileNames
-		.map(name => /^run-(\d+)\.log$/.exec(name)?.[1])
-		.filter((n): n is string => n !== undefined)
-		.map(Number);
-	return numbers.length === 0 ? 0 : Math.max(...numbers);
-}
-
-/** Highest `audit-N.md` index among the given filenames, or undefined when none match. */
-export function latestAuditNumber(fileNames: readonly string[]): number | undefined {
-	const numbers = fileNames
-		.map(name => /^audit-(\d+)\.md$/.exec(name)?.[1])
-		.filter((n): n is string => n !== undefined)
-		.map(Number);
-	return numbers.length === 0 ? undefined : Math.max(...numbers);
-}
 
 export interface CraftProgressInput {
 	feature: string;
