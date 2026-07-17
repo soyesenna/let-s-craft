@@ -17,6 +17,7 @@ import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftDir, craftHashManifestPath, craftSnapshotDir, craftTestDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
 import { ensureSnapshotsGitignored } from "../artifacts/gitignore.js";
 import { getActiveCraft, setActiveCraft } from "./state.js";
+import type { OpenReleaseDiffSummary, OpenReleaseEvidence } from "./state.js";
 import { writeFileAtomicSync } from "../utils/atomic-write.js";
 
 // `pi.registerTool<TParams, TDetails>({ parameters: z.object({...}), async execute(...) {...} })`
@@ -119,6 +120,34 @@ export function loadManifest(manifestPath: string): HashManifest | undefined {
 export function saveManifest(manifestPath: string, manifest: HashManifest): void {
 	mkdirSync(dirname(manifestPath), { recursive: true });
 	writeFileAtomicSync(manifestPath, JSON.stringify(manifest, null, 2));
+}
+
+/** sha256 hex over the manifest file's raw bytes (audit fingerprint); undefined when the file is absent. */
+export function fingerprintManifestFile(manifestPath: string): string | undefined {
+	if (!existsSync(manifestPath)) return undefined;
+	return createHash("sha256").update(readFileSync(manifestPath)).digest("hex");
+}
+
+/**
+ * Close an open-release record at re-baseline time (pure). Truth table:
+ *   - no open-release → undefined;
+ *   - already closed → the same closed evidence, unchanged (re-inits keep the audit record alive
+ *     until the next release replaces it — CS4/F-14);
+ *   - open → { ...open, closedAt, rebaselineDiff } where the diff is diffManifests(old→new) grouped
+ *     by kind (rebaselineDiff omitted when no old manifest existed).
+ */
+export function closeOpenRelease(
+	open: OpenReleaseEvidence | undefined,
+	oldManifest: HashManifest | undefined,
+	newManifest: HashManifest,
+	closedAt: string,
+): OpenReleaseEvidence | undefined {
+	if (!open) return undefined;
+	if (open.closedAt !== undefined) return open;
+	if (!oldManifest) return { ...open, closedAt };
+	const rebaselineDiff: OpenReleaseDiffSummary = { added: [], removed: [], modified: [] };
+	for (const violation of diffManifests(oldManifest, newManifest)) rebaselineDiff[violation.kind].push(violation.path);
+	return { ...open, closedAt, rebaselineDiff };
 }
 
 /**
