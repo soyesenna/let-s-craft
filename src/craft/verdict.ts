@@ -11,7 +11,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftAuditDir, craftAuditPath, craftTestLogsDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
-import { readPersistedCraftState, recordAuditCycleBegin } from "./state.js";
+import { readPersistedCraftState, recordAuditCycleBegin, recordAuditValidated } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Verdict vocabularies + generic literal-only parser
@@ -165,22 +165,66 @@ function resolveAuditRoot(cwd: string, feature: string): string {
 	return existsSync(wt) ? wt : cwd;
 }
 
+/**
+ * List every run-N.log's pass/fail summary under `logsDir`. Each individual read is wrapped in
+ * try/catch (review LOW-1, TOCTOU): a file `readdirSync` just listed can still vanish (or become
+ * unreadable) before this loop gets to it — that log is simply dropped from the result (unusable
+ * evidence) rather than crashing the whole `lsc_audit_validate` call with an uncaught exception.
+ */
 function readRunLogSummaries(logsDir: string): RunLogSummary[] {
 	if (!existsSync(logsDir)) return [];
-	return readdirSync(logsDir)
-		.map(name => /^run-(\d+)\.log$/.exec(name)?.[1])
-		.filter((n): n is string => n !== undefined)
-		.map(numberStr => {
-			const number = Number(numberStr);
-			const content = readFileSync(join(logsDir, `run-${number}.log`), "utf8");
-			return { number, passed: isPassingRunLog(content) };
-		});
+	const summaries: RunLogSummary[] = [];
+	for (const name of readdirSync(logsDir)) {
+		const numberStr = /^run-(\d+)\.log$/.exec(name)?.[1];
+		if (numberStr === undefined) continue;
+		try {
+			const content = readFileSync(join(logsDir, name), "utf8");
+			summaries.push({ number: Number(numberStr), passed: isPassingRunLog(content) });
+		} catch {
+			// TOCTOU: dropped, not fatal — see doc comment above.
+		}
+	}
+	return summaries;
 }
 
 export interface AuditBeginDetails {
 	feature: string;
 	auditCycle: number;
 	runLogAtCycleStart: number;
+}
+
+/**
+ * Core `lsc_audit_begin` logic, extracted from the registerTool wrapper so it's directly
+ * unit-testable with real temp directories (no ExtensionAPI/pi.zod mocking — mirrors abort.ts/
+ * release.ts's performX pattern, review MEDIUM tool-level test request).
+ */
+export function performAuditBegin(feature: string, cwd: string): AgentToolResult<AuditBeginDetails> {
+	const root = resolveAuditRoot(cwd, feature);
+
+	const logsDir = craftTestLogsDir(root, feature);
+	const runLogAtCycleStart = latestRunNumber(existsSync(logsDir) ? readdirSync(logsDir) : []);
+
+	const auditDir = craftAuditDir(root, feature);
+	const auditCycle = (latestAuditNumber(existsSync(auditDir) ? readdirSync(auditDir) : []) ?? -1) + 1;
+
+	try {
+		recordAuditCycleBegin(root, feature, auditCycle, runLogAtCycleStart);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { isError: true, content: [{ type: "text", text: message }] };
+	}
+
+	return {
+		content: [
+			{
+				type: "text",
+				text:
+					`lets-craft: audit cycle ${auditCycle} begun for "${feature}" — freshness threshold set at run-${runLogAtCycleStart}.log ` +
+					`(a passing run-${runLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict).`,
+			},
+		],
+		details: { feature, auditCycle, runLogAtCycleStart },
+	};
 }
 
 function registerAuditBeginTool(pi: ExtensionAPI): void {
@@ -202,32 +246,7 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<AuditBeginDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
-			const root = resolveAuditRoot(ctx.cwd, feature);
-
-			const logsDir = craftTestLogsDir(root, feature);
-			const runLogAtCycleStart = latestRunNumber(existsSync(logsDir) ? readdirSync(logsDir) : []);
-
-			const auditDir = craftAuditDir(root, feature);
-			const auditCycle = (latestAuditNumber(existsSync(auditDir) ? readdirSync(auditDir) : []) ?? -1) + 1;
-
-			try {
-				recordAuditCycleBegin(root, feature, auditCycle, runLogAtCycleStart);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				return { isError: true, content: [{ type: "text", text: message }] };
-			}
-
-			return {
-				content: [
-					{
-						type: "text",
-						text:
-							`lets-craft: audit cycle ${auditCycle} begun for "${feature}" — freshness threshold set at run-${runLogAtCycleStart}.log ` +
-							`(a passing run-${runLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict).`,
-					},
-				],
-				details: { feature, auditCycle, runLogAtCycleStart },
-			};
+			return performAuditBegin(feature, ctx.cwd);
 		},
 	});
 }
@@ -237,6 +256,121 @@ export interface AuditValidateDetails {
 	auditNumber: number;
 	verdict: AuditVerdict | undefined;
 	freshness: AuditFreshnessCheck | undefined;
+}
+
+/**
+ * Core `lsc_audit_validate` logic, extracted from the registerTool wrapper so it's directly
+ * unit-testable with real temp directories (no ExtensionAPI/pi.zod mocking — review MEDIUM
+ * tool-level test request, mirrors abort.ts/release.ts's performX pattern).
+ */
+export function performAuditValidate(feature: string, cwd: string): AgentToolResult<AuditValidateDetails> {
+	const root = resolveAuditRoot(cwd, feature);
+
+	const auditDir = craftAuditDir(root, feature);
+	const auditNumber = latestAuditNumber(existsSync(auditDir) ? readdirSync(auditDir) : []);
+	if (auditNumber === undefined) {
+		return {
+			isError: true,
+			content: [{ type: "text", text: `lets-craft: no audit-N.md found under ${auditDir}. Run post-craft's audit stage first.` }],
+		};
+	}
+
+	// TOCTOU (review LOW-1): the file existsSync/latestAuditNumber just confirmed can still vanish
+	// (or become unreadable) before this read — normalize to a clean isError rather than an
+	// uncaught exception.
+	const auditPath = craftAuditPath(root, feature, auditNumber);
+	let auditMarkdown: string;
+	try {
+		auditMarkdown = readFileSync(auditPath, "utf8");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { isError: true, content: [{ type: "text", text: `lets-craft: could not read ${auditPath} — ${message}.` }] };
+	}
+
+	const verdict = parseAuditVerdict(auditMarkdown);
+	if (verdict === undefined) {
+		return {
+			isError: true,
+			content: [
+				{
+					type: "text",
+					text:
+						`lets-craft: could not parse a line-start "**AUDIT VERDICT: ...**" line from ${auditPath}. Merge is not ` +
+						"authorized without a validated verdict — re-check the audit doc's format.",
+				},
+			],
+		};
+	}
+
+	const state = readPersistedCraftState(root, feature);
+	const isApproveFamily = APPROVE_FAMILY_VERDICTS.includes(verdict);
+
+	// auditCycle mismatch (review LOW-3, functionalizing the field): a recorded auditCycle that
+	// doesn't match the audit-N.md actually being validated means the persisted
+	// runLogAtCycleStart threshold was captured for a DIFFERENT cycle (most likely: a newer
+	// audit-N.md was written without calling lsc_audit_begin again — a skipped §2.2 step).
+	// Trusting that threshold here would validate freshness against the wrong baseline, so this
+	// refuses (fail-closed) rather than silently degrading to "no threshold" — degrading would be
+	// fail-OPEN and reopen exactly the stale-evidence gap B-1 exists to close. Irrelevant for
+	// non-APPROVE-family verdicts, since freshness never gates them anyway (see
+	// validateAuditFreshness).
+	if (isApproveFamily && state?.auditCycle !== undefined && state.auditCycle !== auditNumber) {
+		return {
+			isError: true,
+			content: [
+				{
+					type: "text",
+					text:
+						`lets-craft: audit cycle marker mismatch for "${feature}" — the persisted auditCycle (${state.auditCycle}) does not ` +
+						`match audit-${auditNumber}.md, so its recorded freshness threshold cannot be trusted for this ${verdict} verdict. ` +
+						"Call lsc_audit_begin again for this cycle, then re-validate.",
+				},
+			],
+		};
+	}
+
+	const logs = readRunLogSummaries(craftTestLogsDir(root, feature));
+	const freshness = validateAuditFreshness(verdict, state?.runLogAtCycleStart, logs);
+	if (!freshness.ok) {
+		const reasonText =
+			freshness.reason === "stale-log"
+				? `no test/logs/run-N.log exists after this audit cycle's freshness threshold (run-${state?.runLogAtCycleStart}.log) — ` +
+					`the ${verdict} verdict cannot be backed by a fresh run. Call lsc_run_tests (or re-run run_test.sh) before re-validating.`
+				: `test/logs/ has run-N.log(s) after this audit cycle's threshold, but none record a passing run (exit 0) — the ` +
+					`${verdict} verdict is not backed by fresh passing evidence.`;
+		return {
+			isError: true,
+			content: [
+				{ type: "text", text: `lets-craft: audit freshness violation for "${feature}" (audit-${auditNumber}.md, verdict ${verdict}) — ${reasonText}` },
+			],
+		};
+	}
+
+	// Durable machine trace (review MEDIUM): backs the prose merge-block contract
+	// (skills/post-craft/SKILL.md §7.1) with a persisted marker — also the seam a future
+	// code-level enforcement addition could key off (state.ts's AuditValidatedEvidence doc
+	// comment). Best-effort: a failure to record this marker must not hide an otherwise-successful
+	// validation from the caller.
+	let markerNote = "";
+	try {
+		recordAuditValidated(root, feature, auditNumber, verdict, new Date().toISOString());
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		markerNote = ` (warning: could not record the durable auditValidated marker — ${message})`;
+	}
+
+	// Review LOW-2: a non-APPROVE-family verdict (REJECT / APPROVE-WITH-CHANGE) reaches this point
+	// unconditionally (freshness never gates it), so the success text must never say
+	// "cycle-freshness confirmed" for it — that phrase would misleadingly imply land-readiness.
+	const text = isApproveFamily
+		? `lets-craft: audit-${auditNumber}.md verdict validated — ${verdict} (cycle-freshness confirmed).${markerNote}`
+		: `lets-craft: audit-${auditNumber}.md verdict parsed — ${verdict}. Not land-eligible — verdict is ${verdict} ` +
+			`(skills/post-craft/SKILL.md §7.1); cycle-freshness does not apply.${markerNote}`;
+
+	return {
+		content: [{ type: "text", text }],
+		details: { feature, auditNumber, verdict, freshness },
+	};
 }
 
 function registerAuditValidateTool(pi: ExtensionAPI): void {
@@ -253,65 +387,13 @@ function registerAuditValidateTool(pi: ExtensionAPI): void {
 			"...** line by exact literal match (B-1) and — for an APPROVE-family verdict (APPROVE / APPROVE-WITH-COMMENT) " +
 			"— confirm a passing test/logs/run-N.log exists from AFTER this audit cycle's lsc_audit_begin threshold " +
 			"(cycle-freshness), so a stale green log can never back a fresh approval. Fails closed (isError) when the " +
-			"verdict line doesn't parse or the freshness check fails; skills/post-craft/SKILL.md's land gate must not " +
-			"proceed to git merge on an isError result.",
+			"verdict line doesn't parse, the audit cycle marker doesn't match this audit doc, or the freshness check " +
+			"fails; skills/post-craft/SKILL.md's land gate must not proceed to git merge on an isError result. On success, " +
+			"records a durable auditValidated marker on the feature's persisted craft state.",
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<AuditValidateDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
-			const root = resolveAuditRoot(ctx.cwd, feature);
-
-			const auditDir = craftAuditDir(root, feature);
-			const auditNumber = latestAuditNumber(existsSync(auditDir) ? readdirSync(auditDir) : []);
-			if (auditNumber === undefined) {
-				return {
-					isError: true,
-					content: [{ type: "text", text: `lets-craft: no audit-N.md found under ${auditDir}. Run post-craft's audit stage first.` }],
-				};
-			}
-
-			const auditPath = craftAuditPath(root, feature, auditNumber);
-			const verdict = parseAuditVerdict(readFileSync(auditPath, "utf8"));
-			if (verdict === undefined) {
-				return {
-					isError: true,
-					content: [
-						{
-							type: "text",
-							text:
-								`lets-craft: could not parse a line-start "**AUDIT VERDICT: ...**" line from ${auditPath}. Merge is not ` +
-								"authorized without a validated verdict — re-check the audit doc's format.",
-						},
-					],
-				};
-			}
-
-			const state = readPersistedCraftState(root, feature);
-			const logs = readRunLogSummaries(craftTestLogsDir(root, feature));
-			const freshness = validateAuditFreshness(verdict, state?.runLogAtCycleStart, logs);
-			if (!freshness.ok) {
-				const reasonText =
-					freshness.reason === "stale-log"
-						? `no test/logs/run-N.log exists after this audit cycle's freshness threshold (run-${state?.runLogAtCycleStart}.log) — ` +
-							`the ${verdict} verdict cannot be backed by a fresh run. Call lsc_run_tests (or re-run run_test.sh) before re-validating.`
-						: `test/logs/ has run-N.log(s) after this audit cycle's threshold, but none record a passing run (exit 0) — the ` +
-							`${verdict} verdict is not backed by fresh passing evidence.`;
-				return {
-					isError: true,
-					content: [
-						{ type: "text", text: `lets-craft: audit freshness violation for "${feature}" (audit-${auditNumber}.md, verdict ${verdict}) — ${reasonText}` },
-					],
-				};
-			}
-
-			return {
-				content: [
-					{
-						type: "text",
-						text: `lets-craft: audit-${auditNumber}.md verdict validated — ${verdict} (cycle-freshness confirmed).`,
-					},
-				],
-				details: { feature, auditNumber, verdict, freshness },
-			};
+			return performAuditValidate(feature, ctx.cwd);
 		},
 	});
 }

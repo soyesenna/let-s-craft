@@ -1,7 +1,8 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { craftRunTestScriptPath, craftTestDir } from "../src/artifacts/paths";
 import {
 	composeRunTestsResultText,
 	computeFailureSignature,
@@ -9,9 +10,11 @@ import {
 	failureSummaryFor,
 	nextLogNumber,
 	noProgressEscalationText,
+	performRunTests,
+	resolveRunTestsTarget,
 	runFeatureTests,
 } from "../src/craft/run-tests";
-import { clearActiveCraft, recordTestResult, setActiveCraft } from "../src/craft/state";
+import { type CraftState, clearActiveCraft, getActiveCraft, recordTestResult, setActiveCraft } from "../src/craft/state";
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -227,5 +230,119 @@ describe("no-progress integration: recordTestResult -> composeRunTestsResultText
 		expect(record).toEqual({ consecutiveFailures: 1, noProgress: false });
 		const text = composeRunTestsResultText("lets-craft: run_test.sh FAILED (exit 1).", record);
 		expect(text).not.toContain("[No Progress]");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// B-1 review NEEDS-FIX HIGH: lsc_run_tests must not be gated on an exact active-craft match in the
+// common post-craft path (post-craft never calls lsc_craft_init, skills/post-craft/SKILL.md §1.5) —
+// otherwise a fresh test/logs/run-N.log can never exist after an audit cycle begins, and
+// validateAuditFreshness (verdict.ts) always rejects an APPROVE-family verdict as stale.
+// ---------------------------------------------------------------------------
+
+function freshCraftState(projectRoot: string, feature = "my-feature"): CraftState {
+	return { feature, projectRoot, testsPassed: false, aborted: false };
+}
+
+describe("resolveRunTestsTarget (B-1)", () => {
+	it("prefers an exact active-craft match — 'active' mode, regardless of any persisted state", () => {
+		const active = freshCraftState("/active-root", "my-feature");
+		const persisted = freshCraftState("/persisted-root", "my-feature");
+		expect(resolveRunTestsTarget("my-feature", active, persisted)).toEqual({ mode: "active", root: "/active-root" });
+	});
+
+	it("uses the active craft's worktreeRoot over projectRoot when both are set", () => {
+		const active: CraftState = { ...freshCraftState("/project-root"), worktreeRoot: "/worktree-root" };
+		expect(resolveRunTestsTarget("my-feature", active, undefined)).toEqual({ mode: "active", root: "/worktree-root" });
+	});
+
+	it("falls back to 'audit-evidence' mode when no active craft matches but persisted state exists (no open-release)", () => {
+		const persisted = freshCraftState("/persisted-root", "my-feature");
+		expect(resolveRunTestsTarget("my-feature", undefined, persisted)).toEqual({ mode: "audit-evidence", root: "/persisted-root" });
+	});
+
+	it("falls back to 'audit-evidence' mode when an active craft exists for a DIFFERENT feature (never contaminates it)", () => {
+		const active = freshCraftState("/active-root", "other-feature");
+		const persisted = freshCraftState("/persisted-root", "my-feature");
+		expect(resolveRunTestsTarget("my-feature", active, persisted)).toEqual({ mode: "audit-evidence", root: "/persisted-root" });
+	});
+
+	it("refuses with the open-release re-baseline guidance when persisted state carries an unclosed open-release", () => {
+		const persisted: CraftState = {
+			...freshCraftState("/persisted-root", "my-feature"),
+			openRelease: { nonce: "n", tag: "[Canon Amendment]", question: "q", response: "yes", reason: "r", openedAt: "2026-01-01T00:00:00.000Z" },
+		};
+		const result = resolveRunTestsTarget("my-feature", undefined, persisted);
+		expect(result.mode).toBe("refuse");
+		expect(result.mode === "refuse" && result.text).toContain("OPEN release window");
+	});
+
+	it("refuses with the legacy no-active-craft message when there is no persisted state at all", () => {
+		expect(resolveRunTestsTarget("my-feature", undefined, undefined)).toEqual({
+			mode: "refuse",
+			text: 'lets-craft: no active craft for "my-feature". Call lsc_craft_init first.',
+		});
+	});
+});
+
+describe("performRunTests (B-1, tool-execute-level)", () => {
+	function seedScript(root: string, feature: string, script = "#!/bin/sh\necho ok\n"): void {
+		mkdirSync(craftTestDir(root, feature), { recursive: true });
+		writeFileSync(craftRunTestScriptPath(root, feature), script);
+	}
+
+	const passExec = async () => ({ stdout: "3 passed", stderr: "", code: 0, killed: false });
+
+	afterEach(() => clearActiveCraft());
+
+	it("'active' mode: runs the script, records the result via recordTestResult, and never mentions audit-evidence mode", async () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		seedScript(root, feature);
+		setActiveCraft(freshCraftState(root, feature));
+
+		const result = await performRunTests({ feature, activeCraft: getActiveCraft(), persisted: undefined, exec: passExec });
+
+		expect(result.isError).toBeFalsy();
+		expect((result.content[0] as { text: string }).text).not.toContain("[Audit Evidence Mode]");
+		expect(getActiveCraft()?.testsPassed).toBe(true); // recordTestResult DID mutate the active craft
+	});
+
+	it("'audit-evidence' mode: runs the script and writes run-N.log, but does not mutate active-craft state", async () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		seedScript(root, feature);
+		const persisted = freshCraftState(root, feature);
+
+		const result = await performRunTests({ feature, activeCraft: undefined, persisted, exec: passExec });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		expect((result.content[0] as { text: string }).text).toContain("[Audit Evidence Mode]");
+		expect(getActiveCraft()).toBeUndefined(); // no active craft to mutate, and none was created
+		const logNames = readdirSync(join(craftTestDir(root, feature), "logs"));
+		expect(logNames).toContain("run-1.log"); // the log run-tests.ts's own numbering owns was still written
+	});
+
+	it("'audit-evidence' mode never contaminates a DIFFERENT feature's active-craft bookkeeping", async () => {
+		const root = tmpProject();
+		seedScript(root, "my-feature");
+		const otherActive = freshCraftState(root, "other-feature");
+		setActiveCraft(otherActive);
+		const persisted = freshCraftState(root, "my-feature");
+
+		const result = await performRunTests({ feature: "my-feature", activeCraft: getActiveCraft(), persisted, exec: passExec });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		expect(getActiveCraft()?.feature).toBe("other-feature");
+		expect(getActiveCraft()?.testsPassed).toBe(false); // untouched by my-feature's audit-evidence run
+	});
+
+	it("'refuse' mode never calls exec at all (e.g. no persisted state)", async () => {
+		const exec = async (): Promise<never> => {
+			throw new Error("exec must not be called when refusing");
+		};
+		const result = await performRunTests({ feature: "my-feature", activeCraft: undefined, persisted: undefined, exec });
+		expect(result.isError).toBe(true);
+		expect((result.content[0] as { text: string }).text).toContain("no active craft");
 	});
 });

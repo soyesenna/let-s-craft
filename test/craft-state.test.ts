@@ -14,6 +14,7 @@ import {
 	type OpenReleaseEvidence,
 	readPersistedCraftState,
 	recordAuditCycleBegin,
+	recordAuditValidated,
 	recordOpenRelease,
 	recordReleaseApproval,
 	recordTestResult,
@@ -194,6 +195,45 @@ describe("recordAuditCycleBegin (B-1, cycle-freshness marker)", () => {
 
 		expect(getActiveCraft()?.auditCycle).toBe(2);
 		expect(getActiveCraft()?.runLogAtCycleStart).toBe(5);
+	});
+});
+
+describe("recordAuditValidated (B-1 follow-up, review NEEDS-FIX MEDIUM — durable machine trace)", () => {
+	it("throws when no persisted craft state exists at the given root/feature", () => {
+		const projectRoot = tmpProject();
+		expect(() => recordAuditValidated(projectRoot, "never-crafted", 0, "APPROVE", "2026-07-17T00:00:00.000Z")).toThrow();
+	});
+
+	it("persists the {cycle, verdict, at} marker onto the existing persisted state without touching other fields", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft({ ...freshState(projectRoot), testsPassed: true });
+
+		const next = recordAuditValidated(projectRoot, "my-feature", 2, "APPROVE-WITH-COMMENT", "2026-07-17T10:00:00.000Z");
+
+		expect(next.auditValidated).toEqual({ cycle: 2, verdict: "APPROVE-WITH-COMMENT", at: "2026-07-17T10:00:00.000Z" });
+		expect(next.testsPassed).toBe(true); // untouched
+		const persisted = JSON.parse(readFileSync(craftStatePath(projectRoot, "my-feature"), "utf8"));
+		expect(persisted.auditValidated).toEqual({ cycle: 2, verdict: "APPROVE-WITH-COMMENT", at: "2026-07-17T10:00:00.000Z" });
+	});
+
+	it("works even when there is no active craft in this session (post-craft never calls lsc_craft_init)", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+		clearActiveCraft();
+
+		const next = recordAuditValidated(projectRoot, "my-feature", 0, "APPROVE", "2026-07-17T10:00:00.000Z");
+
+		expect(next.auditValidated?.verdict).toBe("APPROVE");
+		expect(getActiveCraft()).toBeUndefined(); // still not promoted
+	});
+
+	it("keeps the in-memory singleton in sync when it happens to already be this exact craft", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+
+		recordAuditValidated(projectRoot, "my-feature", 1, "REJECT", "2026-07-17T10:00:00.000Z");
+
+		expect(getActiveCraft()?.auditValidated).toEqual({ cycle: 1, verdict: "REJECT", at: "2026-07-17T10:00:00.000Z" });
 	});
 });
 

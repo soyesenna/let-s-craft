@@ -145,8 +145,15 @@ function buildTools(): Map<string, RegisteredTool> {
 		},
 		// run-tests reads pi.exec only after its active-craft guard passes — never in the
 		// open-release / no-active-craft cases below, so a throw here doubles as a guard.
-		exec(): never {
-			throw new Error("pi.exec must not run in an open-release / no-active-craft integration case");
+		// B-1 (review NEEDS-FIX HIGH) changed this contract: lsc_run_tests now legitimately calls
+		// pi.exec even without an active craft, as long as a persisted (non-open-release) state
+		// exists for the feature ("audit-evidence" mode - run-tests.ts's resolveRunTestsTarget).
+		// It must still NEVER be called while an open-release is unclosed - resolveRunTestsTarget
+		// refuses before ever calling runFeatureTests/exec in that case, which AC4 below verifies
+		// structurally (no need for this mock to guard it via a throw anymore). So this now returns
+		// a benign synthetic pass instead of throwing unconditionally.
+		exec(): Promise<{ stdout: string; stderr: string; code: number; killed: boolean }> {
+			return Promise.resolve({ stdout: "ok", stderr: "", code: 0, killed: false });
 		},
 	};
 	// Registration-time ExtensionAPI test double (zod + registerTool + getFlag + exec). Same
@@ -387,17 +394,37 @@ describe("release-gate production wiring (actual registered tool execution)", ()
 		expect(inactiveVerify.isError, textOf(inactiveVerify)).toBeFalsy();
 		expect(textOf(inactiveVerify)).toContain("hash verification passed");
 
+		// B-1 (review NEEDS-FIX HIGH): once the open-release is closed and no active craft matches,
+		// lsc_run_tests now succeeds via "audit-evidence" mode (persisted state exists, no unclosed
+		// open-release) instead of refusing -- this is exactly the path that makes cycle-freshness
+		// (verdict.ts) reachable for post-craft, which never calls lsc_craft_init itself. Active-craft
+		// bookkeeping must stay untouched (no craft to mutate here in the first place).
 		const inactiveRun = await callTool(tools, "lsc_run_tests", { feature_dir: feature }, ctx);
-		expect(inactiveRun.isError).toBe(true);
-		expect(textOf(inactiveRun)).toBe(
-			`lets-craft: no active craft for "${feature}". Call lsc_craft_init first.`,
-		);
+		expect(inactiveRun.isError, textOf(inactiveRun)).toBeFalsy();
+		expect(textOf(inactiveRun)).toContain("[Audit Evidence Mode]");
+		expect(getActiveCraft()).toBeUndefined();
 	});
 
-	// CS7 — legacy actual guard: a legacy .craft-state.json (no open-release) with no active craft
-	// must make the ACTUAL registered lsc_run_tests execute return the pre-existing no-active-craft
-	// string verbatim — the legacy branch verified through the real tool, not a re-typed ternary.
-	it("run_tests returns the exact legacy no-active-craft guard for a legacy state with no open-release (AC6, CS7)", async () => {
+	// CS7 -- genuine guard: a feature that never ran lsc_craft_init at all (no persisted state
+	// whatsoever) must still make the ACTUAL registered lsc_run_tests execute return the pre-existing
+	// no-active-craft string verbatim -- the only scenario resolveRunTestsTarget still refuses this way.
+	it("run_tests returns the exact no-active-craft guard when there is no persisted state at all (AC6, CS7)", async () => {
+		const feature = "release-flow-never-crafted";
+		const { root } = setupProject(feature);
+		const tools = buildTools();
+		const ctx = makeCtx(root);
+		// No .craft-state.json written at all -- this feature never actually ran lsc_craft_init.
+
+		const run = await callTool(tools, "lsc_run_tests", { feature_dir: feature }, ctx);
+		expect(run.isError).toBe(true);
+		expect(textOf(run)).toBe(`lets-craft: no active craft for "${feature}". Call lsc_craft_init first.`);
+	});
+
+	// B-1 (review NEEDS-FIX HIGH): a legacy .craft-state.json (no open-release, no active craft) must
+	// now SUCCEED via lsc_run_tests' "audit-evidence" mode rather than refuse -- post-craft's own common
+	// path (skills/post-craft/SKILL.md §1.5, it never calls lsc_craft_init) depends on exactly this so
+	// a fresh test/logs/run-N.log can back an APPROVE-family verdict's cycle-freshness check.
+	it("run_tests succeeds in audit-evidence mode for a legacy persisted state with no open-release and no active craft (AC6, CS7, B-1)", async () => {
 		const feature = "release-flow-legacy";
 		const { root } = setupProject(feature);
 		const tools = buildTools();
@@ -410,8 +437,9 @@ describe("release-gate production wiring (actual registered tool execution)", ()
 		);
 
 		const run = await callTool(tools, "lsc_run_tests", { feature_dir: feature }, ctx);
-		expect(run.isError).toBe(true);
-		expect(textOf(run)).toBe(`lets-craft: no active craft for "${feature}". Call lsc_craft_init first.`);
+		expect(run.isError, textOf(run)).toBeFalsy();
+		expect(textOf(run)).toContain("[Audit Evidence Mode]");
+		expect(getActiveCraft()).toBeUndefined(); // must not resurrect or mutate any active-craft state
 	});
 
 	// CS4 — 증거 보존: a second re-init must not erase the audit trail; the consumed approval and

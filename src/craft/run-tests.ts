@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExecOptions, ExecResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftRunTestScriptPath, craftTestLogsDir, resolveFeatureName } from "../artifacts/paths.js";
-import { findPersistedCraftState, getActiveCraft, hasOpenRelease, openReleaseGuidance, recordTestResult } from "./state.js";
+import { type CraftState, findPersistedCraftState, getActiveCraft, hasOpenRelease, openReleaseGuidance, recordTestResult } from "./state.js";
 
 // See hash-manifest.ts for why registerTool's execute() needs an explicit
 // Promise<AgentToolResult<T>> return type: without it, TSchema/TParams inference
@@ -182,6 +182,119 @@ export function composeRunTestsResultText(baseText: string, record: { noProgress
 	return record.noProgress ? `${baseText}${noProgressEscalationText(record.consecutiveFailures)}` : baseText;
 }
 
+export type RunTestsTarget =
+	| { mode: "active"; root: string }
+	| { mode: "audit-evidence"; root: string }
+	| { mode: "refuse"; text: string };
+
+/**
+ * Decide how (or whether) `lsc_run_tests` should proceed for `feature` (B-1 follow-up, review
+ * NEEDS-FIX HIGH). An exact active-craft match keeps the original full craft-loop behavior
+ * (`"active"` — `recordTestResult` mutates loop bookkeeping downstream, unchanged). Otherwise,
+ * when a persisted craft state exists for this exact feature with no unclosed open-release, this
+ * is `"audit-evidence"` mode: `run_test.sh` still executes and `test/logs/run-N.log` is still
+ * written — the ONLY producer of that log, and post-craft's sole source of `lsc_audit_validate`'s
+ * cycle-freshness evidence (verdict.ts). Before this mode existed, post-craft's own common
+ * path (it never calls `lsc_craft_init`, skills/post-craft/SKILL.md §1.5) meant `lsc_run_tests`
+ * ALWAYS refused here, so no fresh run-N.log could ever exist after an audit cycle began and
+ * `validateAuditFreshness` would always reject an APPROVE-family verdict as `"stale-log"` — this
+ * mode is what actually makes cycle-freshness reachable in the common case, not just the rare one
+ * where post-craft happens to run inside the same session that just finished `craft`.
+ *
+ * The caller must NOT call `recordTestResult` in `"audit-evidence"` mode — there is either no
+ * active craft to mutate, or (the genuinely dangerous case) a DIFFERENT feature's craft happens to
+ * be active this session, and this feature's test run must never contaminate that unrelated
+ * craft's loop bookkeeping. An unclosed open-release, or no persisted state at all, still refuses
+ * exactly as before (verbatim messages — C8 compatibility).
+ *
+ * Safety of relaxing the former "must be the active craft" gate: the only things that gate
+ * protected are (a) knowing SOME root to execute against — persisted state supplies the exact
+ * same root an active craft would have; (b) the open-release block — preserved unconditionally
+ * below; and (c) not silently mutating an unrelated feature's craft-loop bookkeeping — preserved
+ * by `"audit-evidence"` mode never calling `recordTestResult`. It does NOT gate hash-protection
+ * (that is `lsc_verify_hash`'s job, entirely unaffected here) or the trusted-exec channel (both
+ * modes still run through the same `pi.exec`, never the LLM's own bash tool, and only ever touch
+ * `test/logs/`, which is itself excluded from hash protection — hash-manifest.ts's
+ * `EXCLUDED_TOP_LEVEL_DIRS`) — so `"audit-evidence"` mode introduces no new bypass of either.
+ */
+export function resolveRunTestsTarget(feature: string, activeCraft: CraftState | undefined, persisted: CraftState | undefined): RunTestsTarget {
+	if (activeCraft && activeCraft.feature === feature) {
+		return { mode: "active", root: activeCraft.worktreeRoot ?? activeCraft.projectRoot };
+	}
+	if (hasOpenRelease(persisted)) {
+		return { mode: "refuse", text: openReleaseGuidance(feature, persisted.openRelease) };
+	}
+	if (persisted) {
+		return { mode: "audit-evidence", root: persisted.worktreeRoot ?? persisted.projectRoot };
+	}
+	return { mode: "refuse", text: `lets-craft: no active craft for "${feature}". Call lsc_craft_init first.` };
+}
+
+export interface PerformRunTestsArgs {
+	feature: string;
+	activeCraft: CraftState | undefined;
+	persisted: CraftState | undefined;
+	timeoutMs?: number;
+	exec: ExecFn;
+}
+
+/**
+ * Core `lsc_run_tests` logic, extracted from the registerTool wrapper so it is directly
+ * unit-testable with a fake `ExecFn` and real temp directories — no ExtensionAPI/pi.zod mocking
+ * required (mirrors runFeatureTests' own split, and abort.ts/release.ts's performX pattern).
+ * Branches on `resolveRunTestsTarget`'s decision; `"audit-evidence"` mode runs the exact same
+ * trusted-exec + log-write path as `"active"` mode but skips `recordTestResult` and labels the
+ * result text accordingly (see `resolveRunTestsTarget`'s own safety-argument doc comment).
+ */
+export async function performRunTests(args: PerformRunTestsArgs): Promise<AgentToolResult<RunTestsDetails>> {
+	const target = resolveRunTestsTarget(args.feature, args.activeCraft, args.persisted);
+	if (target.mode === "refuse") {
+		return { isError: true, content: [{ type: "text", text: target.text }] };
+	}
+
+	const root = target.root;
+	const scriptPath = craftRunTestScriptPath(root, args.feature);
+	if (!existsSync(scriptPath)) {
+		return {
+			isError: true,
+			content: [
+				{ type: "text", text: `lets-craft: run_test.sh not found at ${scriptPath}. Escalate to the user — craft cannot proceed (C23c).` },
+			],
+		};
+	}
+
+	let outcome: RunFeatureTestsResult;
+	try {
+		outcome = await runFeatureTests({
+			feature: args.feature,
+			scriptPath,
+			execCwd: root,
+			logsDir: craftTestLogsDir(root, args.feature),
+			timeoutMs: args.timeoutMs,
+			exec: args.exec,
+		});
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			isError: true,
+			content: [{ type: "text", text: `lets-craft: run_test.sh failed to execute — ${message}. Escalate to the user (C23c).` }],
+		};
+	}
+
+	if (target.mode === "audit-evidence") {
+		const text =
+			`${outcome.text}\n\n[Audit Evidence Mode] No active craft matched "${args.feature}" this session — test/logs/run-N.log ` +
+			"was still written (post-craft's lsc_audit_validate cycle-freshness evidence), but active-craft loop bookkeeping " +
+			"(testsPassed/failureSignature/consecutiveFailures) was NOT mutated.";
+		return { content: [{ type: "text", text }], details: outcome.details };
+	}
+
+	const failureSummary = failureSummaryFor(outcome.details);
+	const failureSignature = failureSummary !== undefined ? computeFailureSignature(failureSummary) : undefined;
+	const record = recordTestResult(outcome.details.passed, failureSummary, failureSignature);
+	return { content: [{ type: "text", text: composeRunTestsResultText(outcome.text, record) }], details: outcome.details };
+}
+
 /** Register `lsc_run_tests`. */
 export function registerRunTestsTool(pi: ExtensionAPI): void {
 	const z = pi.zod;
@@ -198,55 +311,16 @@ export function registerRunTestsTool(pi: ExtensionAPI): void {
 		description:
 			"Run the feature's run_test.sh in the correct source root (the worktree, if --worktree was used, else " +
 			"the project root) via a trusted exec — never the LLM's own bash tool. Saves the full transcript to " +
-			"test/logs/run-N.log and returns a pass/fail verdict plus a best-effort structured failure summary (C21).",
+			"test/logs/run-N.log and returns a pass/fail verdict plus a best-effort structured failure summary (C21). " +
+			"Works even without an active craft matching this session (\"audit-evidence mode\") as long as a persisted " +
+			"craft state exists with no unclosed open-release — this is post-craft's primary source of cycle-freshness " +
+			"evidence for lsc_audit_validate (B-1); active-craft loop bookkeeping is left untouched in that mode.",
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<RunTestsDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
-			const craft = getActiveCraft();
-			if (!craft || craft.feature !== feature) {
-				// Message-only upgrade (guard condition + isError shape unchanged, C8): a persisted
-				// unclosed open-release refuses with the shared re-baseline guidance; otherwise the
-				// pre-existing legacy no-active-craft string, verbatim.
-				const persisted = findPersistedCraftState(ctx.cwd, feature);
-				const text = hasOpenRelease(persisted)
-					? openReleaseGuidance(feature, persisted.openRelease)
-					: `lets-craft: no active craft for "${feature}". Call lsc_craft_init first.`;
-				return { isError: true, content: [{ type: "text", text }] };
-			}
-
-			const root = craft.worktreeRoot ?? craft.projectRoot;
-			const scriptPath = craftRunTestScriptPath(root, feature);
-			if (!existsSync(scriptPath)) {
-				return {
-					isError: true,
-					content: [
-						{ type: "text", text: `lets-craft: run_test.sh not found at ${scriptPath}. Escalate to the user — craft cannot proceed (C23c).` },
-					],
-				};
-			}
-
-			let outcome: RunFeatureTestsResult;
-			try {
-				outcome = await runFeatureTests({
-					feature,
-					scriptPath,
-					execCwd: root,
-					logsDir: craftTestLogsDir(root, feature),
-					timeoutMs: params.timeout_ms,
-					exec: pi.exec,
-				});
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				return {
-					isError: true,
-					content: [{ type: "text", text: `lets-craft: run_test.sh failed to execute — ${message}. Escalate to the user (C23c).` }],
-				};
-			}
-
-			const failureSummary = failureSummaryFor(outcome.details);
-			const failureSignature = failureSummary !== undefined ? computeFailureSignature(failureSummary) : undefined;
-			const record = recordTestResult(outcome.details.passed, failureSummary, failureSignature);
-			return { content: [{ type: "text", text: composeRunTestsResultText(outcome.text, record) }], details: outcome.details };
+			const activeCraft = getActiveCraft();
+			const persisted = findPersistedCraftState(ctx.cwd, feature);
+			return performRunTests({ feature, activeCraft, persisted, timeoutMs: params.timeout_ms, exec: pi.exec });
 		},
 	});
 }

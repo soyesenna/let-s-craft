@@ -83,6 +83,32 @@ export interface CraftState {
 	 * carried over from before the cycle began.
 	 */
 	runLogAtCycleStart?: number;
+	/**
+	 * Durable machine-trace evidence that `lsc_audit_validate` (verdict.ts, B-1) succeeded for a
+	 * specific audit cycle — recorded so (a) a validated verdict leaves a durable trace independent
+	 * of the audit-N.md prose itself (post-hoc audit), and (b) a future code-level enforcement seam
+	 * has something persisted to key off. Per the review that requested this field: the merge-block
+	 * is currently a skill-contract-only backstop (skills/post-craft/SKILL.md §7.1's scope note) not
+	 * because a persisted-state-keyed seam is structurally impossible — this marker proves one is
+	 * possible — but because introducing that new enforcement seam is deferred to a follow-up
+	 * feature. Optional/read-tolerant, same backward-compat rationale as every other optional field.
+	 */
+	auditValidated?: AuditValidatedEvidence;
+}
+
+/**
+ * Recorded by `recordAuditValidated` below. `verdict` holds one of verdict.ts's `AuditVerdict`
+ * literals but is typed as `string` here (not imported from verdict.ts) so this module's
+ * dependency direction stays one-way — verdict.ts already imports several functions from this
+ * module; state.ts importing a type back from verdict.ts would be a needless cycle for a field
+ * that is otherwise pure data.
+ */
+export interface AuditValidatedEvidence {
+	/** The audit-N.md cycle number this validation covered. */
+	cycle: number;
+	verdict: string;
+	/** ISO timestamp of the validation. */
+	at: string;
 }
 
 /** A-1 issuance evidence + A-3 durable 판별 토큰 — recorded at confirm, consumed (stamped) at release. Not the consume authority. */
@@ -272,6 +298,26 @@ export function recordAuditCycleBegin(root: string, feature: string, auditCycle:
 		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — run craft before starting a post-craft audit cycle.`);
 	}
 	const next: CraftState = { ...existing, auditCycle, runLogAtCycleStart };
+	persist(next);
+	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
+		activeCraft = next;
+	}
+	return next;
+}
+
+/**
+ * Record durable evidence that `lsc_audit_validate` succeeded for `cycle` with `verdict` (B-1
+ * follow-up, review NEEDS-FIX MEDIUM) — same "exact root, no active-craft singleton required"
+ * discipline as `recordAuditCycleBegin` above (post-craft typically has no active craft in
+ * session at all by the time it validates). Fails closed (throws) when no persisted state exists
+ * — mirrors `recordAuditCycleBegin`'s own precondition.
+ */
+export function recordAuditValidated(root: string, feature: string, cycle: number, verdict: string, at: string): CraftState {
+	const existing = readPersistedCraftState(root, feature);
+	if (!existing) {
+		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — cannot record audit validation.`);
+	}
+	const next: CraftState = { ...existing, auditValidated: { cycle, verdict, at } };
 	persist(next);
 	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
 		activeCraft = next;
