@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExecOptions, ExecResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftRunTestScriptPath, craftTestLogsDir, resolveFeatureName } from "../artifacts/paths.js";
-import { getActiveCraft, recordTestResult } from "./state.js";
+import { findPersistedCraftState, getActiveCraft, hasOpenRelease, openReleaseGuidance, recordTestResult } from "./state.js";
 
 // See hash-manifest.ts for why registerTool's execute() needs an explicit
 // Promise<AgentToolResult<T>> return type: without it, TSchema/TParams inference
@@ -200,14 +200,18 @@ export function registerRunTestsTool(pi: ExtensionAPI): void {
 			"the project root) via a trusted exec — never the LLM's own bash tool. Saves the full transcript to " +
 			"test/logs/run-N.log and returns a pass/fail verdict plus a best-effort structured failure summary (C21).",
 		parameters,
-		async execute(_toolCallId, params, _signal, _onUpdate, _ctx): Promise<AgentToolResult<RunTestsDetails>> {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<RunTestsDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
 			const craft = getActiveCraft();
 			if (!craft || craft.feature !== feature) {
-				return {
-					isError: true,
-					content: [{ type: "text", text: `lets-craft: no active craft for "${feature}". Call lsc_craft_init first.` }],
-				};
+				// Message-only upgrade (guard condition + isError shape unchanged, C8): a persisted
+				// unclosed open-release refuses with the shared re-baseline guidance; otherwise the
+				// pre-existing legacy no-active-craft string, verbatim.
+				const persisted = findPersistedCraftState(ctx.cwd, feature);
+				const text = hasOpenRelease(persisted)
+					? openReleaseGuidance(feature, persisted.openRelease)
+					: `lets-craft: no active craft for "${feature}". Call lsc_craft_init first.`;
+				return { isError: true, content: [{ type: "text", text }] };
 			}
 
 			const root = craft.worktreeRoot ?? craft.projectRoot;

@@ -16,7 +16,7 @@ import { dirname, join, relative, sep } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftDir, craftHashManifestPath, craftSnapshotDir, craftTestDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
 import { ensureSnapshotsGitignored } from "../artifacts/gitignore.js";
-import { getActiveCraft, setActiveCraft } from "./state.js";
+import { findPersistedCraftState, getActiveCraft, hasOpenRelease, openReleaseGuidance, readPersistedCraftState, setActiveCraft } from "./state.js";
 import type { OpenReleaseDiffSummary, OpenReleaseEvidence } from "./state.js";
 import { writeFileAtomicSync } from "../utils/atomic-write.js";
 
@@ -290,6 +290,11 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 				};
 			}
 
+			// A-2 re-baseline transaction (CS5, fixed order, no await in the critical section): read the
+			// previous state and the OLD manifest BEFORE saveManifest overwrites it, so closeOpenRelease
+			// below sees the real old→new diff (a save-then-read would always diff to empty — P3).
+			const previousState = readPersistedCraftState(root, feature);
+			const previousManifest = loadManifest(craftHashManifestPath(root, feature));
 			const manifest = computeManifest(feature, testDir);
 			saveManifest(craftHashManifestPath(root, feature), manifest);
 			writeSnapshots(testDir, craftSnapshotDir(root, feature), manifest);
@@ -298,6 +303,11 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 			// (R10's committed .gitignore already covers the worktree, since the feature branch
 			// forks from a HEAD that already has it).
 			ensureSnapshotsGitignored(ctx.cwd);
+			// Publish the fresh craft with evidence succeeded (CS4) and any open-release CLOSED: the
+			// closeOpenRelease call records the old→new diff and stamps closedAt, so re-init is the sole
+			// legal path that re-activates a craft that had an open-release (active-open invariant). The
+			// setActiveCraft CS3 order (persist→publish) means a state-write failure here leaves the
+			// craft unpublished and the open-release still gating verify/run_tests (CS5 fail-closed).
 			setActiveCraft({
 				feature,
 				projectRoot: ctx.cwd,
@@ -305,6 +315,8 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 				testsPassed: false,
 				lastFailureSummary: undefined,
 				aborted: false,
+				releaseApproval: previousState?.releaseApproval,
+				openRelease: closeOpenRelease(previousState?.openRelease, previousManifest, manifest, new Date().toISOString()),
 			});
 
 			const fileCount = Object.keys(manifest.files).length;
@@ -336,6 +348,15 @@ function registerVerifyHashTool(pi: ExtensionAPI): void {
 			// craft's worktreeRoot when it's actually this feature's craft, not some other
 			// feature's leftover active-craft state.
 			const craft = getActiveCraft();
+			// Open-release gate (A-2): when this feature is not the active craft, a persisted UNCLOSED
+			// open-release must refuse verify with the shared re-baseline guidance — this closes the
+			// verify blind window (the ctx.cwd fallback below) until lsc_craft_init re-baselines (F-11).
+			if (!craft || craft.feature !== feature) {
+				const persisted = findPersistedCraftState(ctx.cwd, feature);
+				if (hasOpenRelease(persisted)) {
+					return { isError: true, content: [{ type: "text", text: openReleaseGuidance(feature, persisted.openRelease) }] };
+				}
+			}
 			const root = craft && craft.feature === feature ? (craft.worktreeRoot ?? craft.projectRoot) : ctx.cwd;
 			const testDir = craftTestDir(root, feature);
 			const manifestPath = craftHashManifestPath(root, feature);
