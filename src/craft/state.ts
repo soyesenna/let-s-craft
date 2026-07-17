@@ -14,6 +14,7 @@ import { dirname } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftStatePath } from "../artifacts/paths.js";
 import { writeFileAtomicSync } from "../utils/atomic-write.js";
+import { invalidatePendingApproval } from "./destructive-approval.js";
 
 export interface CraftState {
 	feature: string;
@@ -69,10 +70,17 @@ export function getActiveCraft(): CraftState | undefined {
 	return activeCraft;
 }
 
-/** Register a new active craft (called by lsc_craft_init) and persist it immediately. */
+/**
+ * Register (or re-register) the active craft and publish it AFTER a successful persist (CS3
+ * commit-point order: invalidate → persist → publish). A persist throw leaves the previous
+ * in-memory value intact — a failed activation must never expose active state. Activating a new
+ * (or re-initialized) craft also revokes any pending destructive approval carried from the prior
+ * context, so a stale "just approved" nonce cannot survive a re-init the user skipped.
+ */
 export function setActiveCraft(state: CraftState): void {
-	activeCraft = state;
+	invalidatePendingApproval();
 	persist(state);
+	activeCraft = state;
 }
 
 /**
@@ -86,8 +94,10 @@ export function setActiveCraft(state: CraftState): void {
 export function loadActiveCraft(projectRoot: string, feature: string): CraftState | undefined {
 	const path = craftStatePath(projectRoot, feature);
 	if (!existsSync(path)) return undefined;
-	activeCraft = JSON.parse(readFileSync(path, "utf8")) as CraftState;
-	return activeCraft;
+	const restored = JSON.parse(readFileSync(path, "utf8")) as CraftState;
+	invalidatePendingApproval();
+	activeCraft = restored;
+	return restored;
 }
 
 /** Consecutive same-signature test failures at which the loop is considered stuck, not merely retrying (C-1). */
@@ -131,12 +141,15 @@ export function recordTestResult(passed: boolean, failureSummary?: string, failu
 /** Mark the active craft as user-aborted. Stops the session_stop backstop (see CraftState.aborted). */
 export function markCraftAborted(): void {
 	if (!activeCraft) return;
-	activeCraft = { ...activeCraft, aborted: true };
-	persist(activeCraft);
+	const next = { ...activeCraft, aborted: true };
+	invalidatePendingApproval();
+	persist(next);
+	activeCraft = next;
 }
 
-/** Clear the in-memory active craft. The persisted file is left in place — a later `lsc_craft_init` call (craft/SKILL.md's own resume flow) re-attaches it; nothing does so automatically. */
+/** Clear the in-memory active craft and revoke any pending destructive approval. The persisted file is left in place — a later `lsc_craft_init` call (craft/SKILL.md's own resume flow) re-attaches it; nothing does so automatically. */
 export function clearActiveCraft(): void {
+	invalidatePendingApproval();
 	activeCraft = undefined;
 }
 
