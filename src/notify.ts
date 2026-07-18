@@ -43,20 +43,23 @@ export function notifyMainStalled(retryAfterMs: number | undefined, exec: ExecFn
 	return notify("lets-craft: 세션 정지", message, exec, platform);
 }
 
-/** Event ② — the watchdog auto-resumed the session (fires alongside the sendUserMessage resume nudge, never on its own). */
-export function notifyAutoResumed(attempt: number, exec: ExecFn, platform?: NodeJS.Platform): Promise<void> {
-	return notify("lets-craft: 자동 재개", `lets-craft: 세션을 자동 재개했습니다 (${attempt}/${3}회).`, exec, platform);
+/** Event ② — the watchdog auto-resumed the session (fires alongside the sendUserMessage resume nudge, never on its own). `max` is the caller's resume cap (watchdog.ts's MAX_AUTO_RESUMES) — not hardcoded here so this module never has its own copy of that number to drift out of sync (m3 review). */
+export function notifyAutoResumed(attempt: number, max: number, exec: ExecFn, platform?: NodeJS.Platform): Promise<void> {
+	return notify("lets-craft: 자동 재개", `lets-craft: 세션을 자동 재개했습니다 (${attempt}/${max}회).`, exec, platform);
 }
 
-/** Event ③ — the per-session auto-resume cap (3) was already reached; no further unattended resume will happen. */
-export function notifyResumeLimitExceeded(exec: ExecFn, platform?: NodeJS.Platform): Promise<void> {
-	return notify("lets-craft: 재개 한도 초과", "lets-craft: 자동 재개 한도(3회)를 초과했습니다 — 수동 확인이 필요합니다.", exec, platform);
+/** Event ③ — the per-session auto-resume cap was already reached; no further unattended resume will happen. `max` is the caller's resume cap (same rationale as notifyAutoResumed above). */
+export function notifyResumeLimitExceeded(max: number, exec: ExecFn, platform?: NodeJS.Platform): Promise<void> {
+	return notify("lets-craft: 재개 한도 초과", `lets-craft: 자동 재개 한도(${max}회)를 초과했습니다 — 수동 확인이 필요합니다.`, exec, platform);
 }
 
 /** Event ④ — pre-craft finished. Exported for whichever pre-craft completion hook wants it (out of the watchdog's own scope, plan U5.1). */
 export function notifyPreCraftComplete(feature: string, exec: ExecFn, platform?: NodeJS.Platform): Promise<void> {
 	return notify("lets-craft: pre-craft 완료", `lets-craft: "${feature}" pre-craft가 완료되었습니다.`, exec, platform);
 }
+
+/** Beyond this, notifyAutoResumeSkippedCutoff shows a safe fallback phrase instead of a literal hour count (L3 review) — guards non-finite (Infinity/NaN) input and any absurdly large value from ever being interpolated verbatim into a user-facing message. 7 days is comfortably above the largest real observed value (48.6h, `_docs/429-pattern-analysis.md` §4-2). */
+const NOTIFY_HOURS_SANITY_CAP_MS = 7 * 24 * 3_600_000;
 
 /**
  * CS-8 cutoff notification (P1 follow-up, `_docs/429-pattern-analysis.md`) — fires alongside
@@ -66,6 +69,7 @@ export function notifyPreCraftComplete(feature: string, exec: ExecFn, platform?:
  * and needs a manual nudge instead.
  */
 export function notifyAutoResumeSkippedCutoff(retryAfterMs: number, exec: ExecFn, platform?: NodeJS.Platform): Promise<void> {
-	const hours = (retryAfterMs / 3_600_000).toFixed(1);
-	return notify("lets-craft: 자동 재개 보류", `lets-craft: retry-after가 ${hours}시간이라 자동 재개를 보류합니다 — 수동 재개 필요.`, exec, platform);
+	const isSane = Number.isFinite(retryAfterMs) && retryAfterMs > 0 && retryAfterMs <= NOTIFY_HOURS_SANITY_CAP_MS;
+	const description = isSane ? `${(retryAfterMs / 3_600_000).toFixed(1)}시간` : "48시간 이상";
+	return notify("lets-craft: 자동 재개 보류", `lets-craft: retry-after가 ${description}이라 자동 재개를 보류합니다 — 수동 재개 필요.`, exec, platform);
 }

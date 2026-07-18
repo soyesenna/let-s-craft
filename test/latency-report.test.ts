@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	MAX_SUB_SESSION_FILE_BYTES,
 	type RawEntry,
 	aggregateAssistantTurns,
 	aggregateToolWait,
@@ -81,13 +82,36 @@ describe("discoverSubSessionFiles", () => {
 		writeFileSync(join(dir, "nested", "Sub2.jsonl"), JSON.stringify({ type: "message" }));
 
 		const found = discoverSubSessionFiles(dir, join(dir, "main.jsonl"));
-		const labels = found.map(f => f.label).sort();
+		const labels = found.files.map(f => f.label).sort();
 		expect(labels).toEqual(["Sub1", "nested/Sub2"]);
+		expect(found.warnings).toEqual([]);
 	});
 
 	it("returns an empty list for a nonexistent session dir instead of throwing", () => {
-		expect(discoverSubSessionFiles(join(tmpdir(), "lsc-does-not-exist-xyz"), undefined)).toEqual([]);
+		const found = discoverSubSessionFiles(join(tmpdir(), "lsc-does-not-exist-xyz"), undefined);
+		expect(found.files).toEqual([]);
+		expect(found.warnings).toEqual([]);
 	});
+
+	it("(L2) skips a sub-session file over the 50MB size cap, with a warning, while keeping one exactly at the cap", () => {
+		const dir = tmpDir("lsc-latency-bigfile-");
+		writeFileSync(join(dir, "AtLimit.jsonl"), Buffer.alloc(MAX_SUB_SESSION_FILE_BYTES));
+		writeFileSync(join(dir, "OverLimit.jsonl"), Buffer.alloc(MAX_SUB_SESSION_FILE_BYTES + 1));
+
+		const found = discoverSubSessionFiles(dir, undefined);
+		expect(found.files.map(f => f.label).sort()).toEqual(["AtLimit"]);
+		expect(found.warnings.some(w => w.includes("OverLimit") && w.includes("50MB"))).toBe(true);
+	}, 20_000);
+
+	it("(L2) applies the same size cap to nested (one-level-deep) subdirectory files", () => {
+		const dir = tmpDir("lsc-latency-bigfile-nested-");
+		mkdirSync(join(dir, "nested"));
+		writeFileSync(join(dir, "nested", "TooBig.jsonl"), Buffer.alloc(MAX_SUB_SESSION_FILE_BYTES + 1));
+
+		const found = discoverSubSessionFiles(dir, undefined);
+		expect(found.files).toEqual([]);
+		expect(found.warnings.some(w => w.includes("TooBig") && w.includes("50MB"))).toBe(true);
+	}, 20_000);
 });
 
 describe("parseSubSessionFiles", () => {
@@ -299,6 +323,12 @@ describe("buildLatencyReportFromEntries", () => {
 		expect(report.markdown).toContain("상위 메인 스톨 갭");
 	});
 
+	it("(m6) notes that section sums can exceed 100% due to overlap (e.g. parallel subagent work)", () => {
+		const { mainEntries, subs } = scenario();
+		const report = buildLatencyReportFromEntries(mainEntries, subs);
+		expect(report.markdown).toContain("100%를 넘을 수 있음");
+	});
+
 	it("surfaces the top stall gaps in minutes", () => {
 		const { mainEntries, subs } = scenario();
 		const report = buildLatencyReportFromEntries(mainEntries, subs);
@@ -381,6 +411,7 @@ describe("performLatencyReport", () => {
 				getSessionDir: () => {
 					throw new Error("no session dir in this host");
 				},
+				getSessionFile: () => join(dir, "main.jsonl"), // resolved — isolates this test from the m2 guard below
 			},
 			dir,
 		);
@@ -388,6 +419,27 @@ describe("performLatencyReport", () => {
 		expect(result.isError).toBeUndefined();
 		expect(result.details?.actualWorkMs).toBe(7_000);
 		expect(result.details?.warnings.some(w => w.includes("session_dir"))).toBe(true);
+	});
+
+	it("(m2) skips sub-discovery entirely when getSessionFile() is unresolved, to avoid double-counting the main session's own flushed jsonl as a sub", () => {
+		const dir = tmpDir("lsc-latency-m2-");
+		// The main session's own file, sitting right there in the session dir alongside a real sub —
+		// without a resolved mainSessionFile to exclude it by name, this must NOT be picked up as a
+		// "sub" session (that would double-count the main session's entries).
+		writeFileSync(join(dir, "main.jsonl"), JSON.stringify({ type: "message", message: { role: "assistant", duration: 999_000, stopReason: "stop" } }));
+		writeFileSync(join(dir, "SubAgent1.jsonl"), JSON.stringify({ type: "message", message: { role: "assistant", duration: 4_000, stopReason: "stop" } }));
+
+		const mainEntries: RawEntry[] = [{ type: "message", timestamp: iso(0), message: { role: "assistant", duration: 1_000, stopReason: "stop" } }];
+		const result = performLatencyReport({
+			getEntries: () => mainEntries,
+			getSessionDir: () => dir,
+			getSessionFile: () => undefined, // unresolved — e.g. an in-memory/not-yet-flushed session
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(result.details?.subSessionsAnalyzed).toBe(0);
+		expect(result.details?.actualWorkMs).toBe(0);
+		expect(result.details?.warnings.some(w => w.includes("메인 세션 파일 미확인"))).toBe(true);
 	});
 
 	it("degrades to a main-only report (never isError) when getSessionDir() fails with no override", () => {

@@ -99,23 +99,38 @@ export interface DiscoveredSubSession {
 	path: string;
 }
 
+export interface DiscoverSubSessionsResult {
+	files: DiscoveredSubSession[];
+	warnings: string[];
+}
+
+/** (L2) Sub-session files larger than this are skipped rather than handed to a later `readFileSync` — a runaway/pathological jsonl file must not turn a latency report into a multi-hundred-MB memory spike. */
+export const MAX_SUB_SESSION_FILE_BYTES = 50 * 1024 * 1024; // 50MB
+
+function oversizeWarning(label: string, sizeBytes: number): string {
+	return `${label}: 파일 크기 ${(sizeBytes / (1024 * 1024)).toFixed(1)}MB가 50MB 상한을 초과해 건너뜁니다(메모리 보호).`;
+}
+
 /**
  * Discover subagent jsonl files under a session directory (CS-6: real shape confirmed against
  * this repo's own dogfooding sessions) — every `*.jsonl` directly in `sessionDir` except the main
  * session's own file, plus one level of subdirectories' own `*.jsonl` files (nested re-spawns).
  * Never throws: an unreadable `sessionDir` or subdirectory yields an empty/partial list, not an
- * exception (mirrors verdict.ts's TOCTOU tolerance for readdirSync/statSync races).
+ * exception (mirrors verdict.ts's TOCTOU tolerance for readdirSync/statSync races). A file over
+ * `MAX_SUB_SESSION_FILE_BYTES` (L2) is skipped with a warning rather than queued for a later
+ * `readFileSync`.
  */
-export function discoverSubSessionFiles(sessionDir: string, mainSessionFile: string | undefined): DiscoveredSubSession[] {
-	const results: DiscoveredSubSession[] = [];
-	if (!existsSync(sessionDir)) return results;
+export function discoverSubSessionFiles(sessionDir: string, mainSessionFile: string | undefined): DiscoverSubSessionsResult {
+	const files: DiscoveredSubSession[] = [];
+	const warnings: string[] = [];
+	if (!existsSync(sessionDir)) return { files, warnings };
 	const mainBase = mainSessionFile ? basename(mainSessionFile) : undefined;
 
 	let names: string[];
 	try {
 		names = readdirSync(sessionDir);
 	} catch {
-		return results;
+		return { files, warnings };
 	}
 
 	for (const name of names) {
@@ -127,7 +142,13 @@ export function discoverSubSessionFiles(sessionDir: string, mainSessionFile: str
 			continue; // TOCTOU: vanished between readdir and stat — drop, not fatal.
 		}
 		if (stat.isFile()) {
-			if (name.endsWith(".jsonl") && name !== mainBase) results.push({ label: name.replace(/\.jsonl$/, ""), path: full });
+			if (name.endsWith(".jsonl") && name !== mainBase) {
+				if (stat.size > MAX_SUB_SESSION_FILE_BYTES) {
+					warnings.push(oversizeWarning(name, stat.size));
+					continue;
+				}
+				files.push({ label: name.replace(/\.jsonl$/, ""), path: full });
+			}
 		} else if (stat.isDirectory()) {
 			let nestedNames: string[];
 			try {
@@ -136,11 +157,24 @@ export function discoverSubSessionFiles(sessionDir: string, mainSessionFile: str
 				continue;
 			}
 			for (const nested of nestedNames) {
-				if (nested.endsWith(".jsonl")) results.push({ label: `${name}/${nested.replace(/\.jsonl$/, "")}`, path: join(full, nested) });
+				if (!nested.endsWith(".jsonl")) continue;
+				const nestedFull = join(full, nested);
+				let nestedStat: ReturnType<typeof statSync>;
+				try {
+					nestedStat = statSync(nestedFull);
+				} catch {
+					continue; // TOCTOU: vanished between readdir and stat — drop, not fatal.
+				}
+				const label = `${name}/${nested.replace(/\.jsonl$/, "")}`;
+				if (nestedStat.size > MAX_SUB_SESSION_FILE_BYTES) {
+					warnings.push(oversizeWarning(label, nestedStat.size));
+					continue;
+				}
+				files.push({ label, path: nestedFull });
 			}
 		}
 	}
-	return results;
+	return { files, warnings };
 }
 
 export interface ParsedSubSessions {
@@ -404,6 +438,7 @@ function buildMarkdown(report: Omit<LatencyReport, "markdown">): string {
 		...rows,
 		`| **벽시계 합계** | ${formatMs(report.wallClockMs)} | 100.0% |`,
 	];
+	const partitionNote = ["", "> 구간 합은 중첩(서브 병렬 작업 등)으로 100%를 넘을 수 있음."];
 	const supplement = [
 		"",
 		`- 도구 대기(비-게이트, 참고용 — 위 파티션에는 포함되지 않음): ${formatMs(report.toolWaitMs)}`,
@@ -425,7 +460,7 @@ function buildMarkdown(report: Omit<LatencyReport, "markdown">): string {
 				]
 			: [];
 	const warningLines = report.warnings.length > 0 ? ["", `경고 ${report.warnings.length}건:`, ...report.warnings.map(w => `- ${w}`)] : [];
-	return [...lines, ...supplement, ...stallLines, ...warningLines].join("\n");
+	return [...lines, ...partitionNote, ...supplement, ...stallLines, ...warningLines].join("\n");
 }
 
 /**
@@ -577,12 +612,28 @@ export function performLatencyReport(session: LatencyReportSessionAccess, overri
 		try {
 			mainSessionFile = session.getSessionFile();
 		} catch {
-			mainSessionFile = undefined; // non-fatal — sub-discovery just can't exclude the main file by name.
+			mainSessionFile = undefined; // non-fatal — the m2 guard below treats this the same as "unresolved".
 		}
 	}
 
-	const subFiles = dir ? discoverSubSessionFiles(dir, mainSessionFile) : [];
-	const report = buildLatencyReportFromFiles(mainEntries as RawEntry[], subFiles, dirWarning ? [dirWarning] : []);
+	const extraWarnings: string[] = dirWarning ? [dirWarning] : [];
+	let subFiles: DiscoveredSubSession[] = [];
+	if (dir) {
+		// (m2) Without a resolved main-session file path, discoverSubSessionFiles cannot exclude the
+		// main session's OWN jsonl by name — if it has already been flushed to disk, it would be
+		// mistaken for a sub-session and its entries double-counted (once via the live getEntries()
+		// above, once again via this file scan). Skip sub-discovery entirely rather than risk that;
+		// a degraded (sub-less) report is safer than a silently inflated one.
+		if (mainSessionFile) {
+			const discovered = discoverSubSessionFiles(dir, mainSessionFile);
+			subFiles = discovered.files;
+			extraWarnings.push(...discovered.warnings);
+		} else {
+			extraWarnings.push("메인 세션 파일 미확인 — 서브 집계 생략(이중 집계 방지).");
+		}
+	}
+
+	const report = buildLatencyReportFromFiles(mainEntries as RawEntry[], subFiles, extraWarnings);
 
 	return { content: [{ type: "text", text: report.markdown }], details: report };
 }
