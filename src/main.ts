@@ -5,9 +5,11 @@ import { registerCraftAbortTool } from "./craft/abort.js";
 import { registerCompactionDirective } from "./craft/compact-directive.js";
 import { registerCraftEnforcement } from "./craft/enforcement.js";
 import { registerHashManifestTools } from "./craft/hash-manifest.js";
+import { registerLatencyReportTool } from "./craft/latency-report.js";
 import { registerCraftReleaseTool } from "./craft/release.js";
 import { registerRunTestsTool } from "./craft/run-tests.js";
 import { registerAuditValidateTools } from "./craft/verdict.js";
+import { registerWatchdog } from "./craft/watchdog.js";
 import { LSC_FIXTURE_FLAG } from "./fixtures.js";
 import { BUILD_INFO } from "./generated/version.js";
 import { registerPresetCommand } from "./preset/command.js";
@@ -32,6 +34,8 @@ export default function (pi: ExtensionAPI): void {
 	registerCraftReleaseTool(pi);
 	registerAuditValidateTools(pi);
 	registerUsageStatusBar(pi);
+	registerWatchdog(pi);
+	registerLatencyReportTool(pi);
 
 	// Guards the dist↔src drift banner below to a single warning per process — session_start
 	// only fires once per real session in practice, but this is cheap insurance against a
