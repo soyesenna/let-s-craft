@@ -64,18 +64,32 @@ describe("notifyMainStalled (event ① — main stall)", () => {
 });
 
 describe("notifyAutoResumed (event ② — auto resume)", () => {
-	it("includes the attempt count out of the 3-cap", async () => {
+	it("includes the attempt count out of the caller-supplied cap (m3 — no hardcoded 3)", async () => {
 		const { exec, calls } = fakeExec();
-		await notifyAutoResumed(2, exec, "darwin");
+		await notifyAutoResumed(2, 3, exec, "darwin");
 		expect(calls[0].args[1]).toContain("2/3");
+	});
+
+	it("reflects a different cap verbatim, proving the number isn't hardcoded", async () => {
+		const { exec, calls } = fakeExec();
+		await notifyAutoResumed(4, 5, exec, "darwin");
+		expect(calls[0].args[1]).toContain("4/5");
+		expect(calls[0].args[1]).not.toContain("/3");
 	});
 });
 
 describe("notifyResumeLimitExceeded (event ③ — cap exceeded)", () => {
-	it("mentions the 3-resume cap", async () => {
+	it("mentions the caller-supplied resume cap (m3 — no hardcoded 3)", async () => {
 		const { exec, calls } = fakeExec();
-		await notifyResumeLimitExceeded(exec, "darwin");
+		await notifyResumeLimitExceeded(3, exec, "darwin");
 		expect(calls[0].args[1]).toContain("3회");
+	});
+
+	it("reflects a different cap verbatim, proving the number isn't hardcoded", async () => {
+		const { exec, calls } = fakeExec();
+		await notifyResumeLimitExceeded(7, exec, "darwin");
+		expect(calls[0].args[1]).toContain("7회");
+		expect(calls[0].args[1]).not.toContain("3회");
 	});
 });
 
@@ -100,5 +114,29 @@ describe("notifyAutoResumeSkippedCutoff (CS-8 cutoff — P1 follow-up)", () => {
 		const { exec, calls } = fakeExec();
 		await notifyAutoResumeSkippedCutoff(10_000_000, exec, "linux");
 		expect(calls).toHaveLength(0);
+	});
+
+	it("falls back to a safe '48시간 이상' phrase instead of a literal figure for non-finite input (L3)", async () => {
+		const { exec, calls } = fakeExec();
+		await notifyAutoResumeSkippedCutoff(Number.POSITIVE_INFINITY, exec, "darwin");
+		expect(calls[0].args[1]).toContain("48시간 이상");
+		expect(calls[0].args[1]).not.toContain("Infinity");
+
+		const { exec: exec2, calls: calls2 } = fakeExec();
+		await notifyAutoResumeSkippedCutoff(Number.NaN, exec2, "darwin");
+		expect(calls2[0].args[1]).toContain("48시간 이상");
+		expect(calls2[0].args[1]).not.toContain("NaN");
+	});
+
+	it("falls back to the safe phrase for an absurdly large (but finite) value, not just non-finite ones (L3)", async () => {
+		const { exec, calls } = fakeExec();
+		await notifyAutoResumeSkippedCutoff(30 * 24 * 3_600_000, exec, "darwin"); // 30 days
+		expect(calls[0].args[1]).toContain("48시간 이상");
+	});
+
+	it("still uses the literal figure for a sane value near the observed maximum (48.6h)", async () => {
+		const { exec, calls } = fakeExec();
+		await notifyAutoResumeSkippedCutoff(174_960_000, exec, "darwin"); // 48.6h
+		expect(calls[0].args[1]).toContain("48.6시간");
 	});
 });

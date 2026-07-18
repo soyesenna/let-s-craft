@@ -381,3 +381,4 @@ This loop runs **twice** in pre-craft: once over `plan.md` (this stage) and once
    - **"yes", but this session's context is already large**: do not chain either — tell the user explicitly that you're recommending a fresh session for `craft` instead of continuing in this one, and why (accumulated context), then end the turn.
    - **"no"**: end the turn. Tell the user plainly: "Next step is manual — invoke the `craft` skill yourself against `.lsc/crafts/{feature}/` (worktree: `{worktreeAbs}`)."
 4. **완료 후**, 가능하면 `lsc_latency_report`를 1회 실행해 이번 세션의 지연 분해(실작업/에러·재시도/스톨/인간 게이트/메인 생성/기타)를 확인·기록한다.
+5. **완료 알림**: 완료 보고와 함께, 가능한 환경(macOS·TUI)에서는 `bash`로 `osascript -e 'display notification "pre-craft 완료 — {feature}" with title "lets-craft"'`를 1회 실행해 자리에 없는 유저에게 완료를 알린다 — 실패해도 무시하고 진행(비차단).

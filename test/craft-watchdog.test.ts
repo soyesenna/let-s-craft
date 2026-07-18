@@ -357,6 +357,46 @@ describe("runResumeTimerCallback", () => {
 		expect(sent).toHaveLength(0);
 		expect(getPendingLive()).toBeUndefined();
 	});
+
+	it("swallows a throw from ctx.isIdle() (stale ctx) instead of propagating, and clears pending (M1)", () => {
+		const { ctx, sent, getPendingLive } = baseCtx({
+			isIdle: () => {
+				throw new Error("stale ctx — session gone");
+			},
+		});
+		expect(() => runResumeTimerCallback(ctx)).not.toThrow();
+		expect(sent).toHaveLength(0);
+		expect(getPendingLive()).toBeUndefined();
+	});
+
+	it("swallows a throw from ctx.sendUserMessage() instead of propagating, and clears pending (M1)", () => {
+		const { ctx, getPendingLive } = baseCtx({
+			sendUserMessage: () => {
+				throw new Error("stale ctx — session gone");
+			},
+		});
+		expect(() => runResumeTimerCallback(ctx)).not.toThrow();
+		expect(getPendingLive()).toBeUndefined();
+	});
+
+	it("does not throw even if the catch-path clearPending itself throws (best-effort cleanup, M1)", () => {
+		const ctx: Parameters<typeof runResumeTimerCallback>[0] = {
+			expectedAt: 1000,
+			retryAfterMs: 4447000,
+			getPending: () => ({ retryAfterMs: 4447000, at: 1000 }),
+			getActiveCraftState: () => undefined,
+			isIdle: () => {
+				throw new Error("boom");
+			},
+			sendUserMessage: () => {},
+			notifyAutoResumed: () => {},
+			incrementResumeCount: () => 1,
+			clearPending: () => {
+				throw new Error("clearPending also throws");
+			},
+		};
+		expect(() => runResumeTimerCallback(ctx)).not.toThrow();
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -581,5 +621,73 @@ describe("registerWatchdog (end-to-end wiring)", () => {
 		await fire(handlers, "session_switch", { reason: "new", previousSessionFile: undefined }, makeCtx());
 		expect(isWatchdogActive()).toBe(false);
 		expect(getWatchdogResumeCount()).toBe(0);
+	});
+
+	it("unref()s the scheduled timer handle so it never keeps the event loop alive on its own (m1)", async () => {
+		const unrefSpy = vi.fn();
+		vi.spyOn(global, "setTimeout").mockImplementation((() => ({ unref: unrefSpy })) as unknown as typeof setTimeout);
+
+		const { fakePi, handlers } = makeFakePi();
+		registerWatchdog(fakePi as unknown as Parameters<typeof registerWatchdog>[0]);
+		markWatchdogActive();
+
+		await fire(handlers, "auto_retry_end", { success: false, attempt: 1, finalError: FIXTURE_OVERLOADED }, makeCtx());
+		expect(unrefSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("cancels the scheduled timer via clearTimeout when a later debounce (turn_start) clears pending (m1)", async () => {
+		const fakeTimerHandle = { unref: vi.fn() };
+		vi.spyOn(global, "setTimeout").mockImplementation((() => fakeTimerHandle) as unknown as typeof setTimeout);
+		const clearTimeoutSpy = vi.spyOn(global, "clearTimeout").mockImplementation(() => {});
+
+		const { fakePi, handlers } = makeFakePi();
+		registerWatchdog(fakePi as unknown as Parameters<typeof registerWatchdog>[0]);
+		markWatchdogActive();
+
+		await fire(handlers, "auto_retry_end", { success: false, attempt: 1, finalError: FIXTURE_OVERLOADED }, makeCtx());
+		expect(getWatchdogPending()).toBeDefined();
+
+		await fire(handlers, "turn_start", { turnIndex: 1, timestamp: Date.now() }, makeCtx());
+		expect(clearTimeoutSpy).toHaveBeenCalledWith(fakeTimerHandle);
+		expect(getWatchdogPending()).toBeUndefined();
+	});
+
+	it("also cancels the scheduled timer via resetWatchdogState (session_switch) (m1)", async () => {
+		const fakeTimerHandle = { unref: vi.fn() };
+		vi.spyOn(global, "setTimeout").mockImplementation((() => fakeTimerHandle) as unknown as typeof setTimeout);
+		const clearTimeoutSpy = vi.spyOn(global, "clearTimeout").mockImplementation(() => {});
+
+		const { fakePi, handlers } = makeFakePi();
+		registerWatchdog(fakePi as unknown as Parameters<typeof registerWatchdog>[0]);
+		markWatchdogActive();
+
+		await fire(handlers, "auto_retry_end", { success: false, attempt: 1, finalError: FIXTURE_OVERLOADED }, makeCtx());
+		await fire(handlers, "session_switch", { reason: "new", previousSessionFile: undefined }, makeCtx());
+		expect(clearTimeoutSpy).toHaveBeenCalledWith(fakeTimerHandle);
+	});
+
+	it("clears any pending resume when auto_retry_start fires while active — unconditional debounce (m4)", async () => {
+		vi.spyOn(global, "setTimeout").mockImplementation((() => ({ unref: vi.fn() })) as unknown as typeof setTimeout);
+
+		const { fakePi, handlers } = makeFakePi();
+		registerWatchdog(fakePi as unknown as Parameters<typeof registerWatchdog>[0]);
+		markWatchdogActive();
+
+		await fire(handlers, "auto_retry_end", { success: false, attempt: 1, finalError: FIXTURE_OVERLOADED }, makeCtx());
+		expect(getWatchdogPending()).toBeDefined();
+
+		await fire(handlers, "auto_retry_start", { attempt: 2, maxAttempts: 3, delayMs: 500, errorMessage: "retrying" }, makeCtx());
+		expect(getWatchdogPending()).toBeUndefined();
+	});
+
+	it("is a safe no-op when auto_retry_start fires while the watchdog is inactive — no isWatchdogActive guard needed (m4)", async () => {
+		const { fakePi, handlers } = makeFakePi();
+		registerWatchdog(fakePi as unknown as Parameters<typeof registerWatchdog>[0]);
+		expect(isWatchdogActive()).toBe(false);
+
+		await expect(
+			fire(handlers, "auto_retry_start", { attempt: 1, maxAttempts: 3, delayMs: 100, errorMessage: "x" }, makeCtx()),
+		).resolves.toBeUndefined();
+		expect(getWatchdogPending()).toBeUndefined();
 	});
 });

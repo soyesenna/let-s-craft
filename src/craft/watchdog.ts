@@ -184,6 +184,8 @@ export const AUTO_RESUME_MAX_RETRY_AFTER_MS_ENV = "LSC_WATCHDOG_AUTO_RESUME_MAX_
 
 let watchdogPending: PendingResume | undefined;
 let resumeCount = 0;
+/** The live setTimeout handle backing `watchdogPending`, if any (m1 review) — tracked so clearWatchdogPending/resetWatchdogState can actually cancel it (clearTimeout) instead of leaving it ticking in the background relying solely on the `at`-freshness check to no-op it away. */
+let pendingTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function getWatchdogPending(): PendingResume | undefined {
 	return watchdogPending;
@@ -193,9 +195,18 @@ export function getWatchdogResumeCount(): number {
 	return resumeCount;
 }
 
-/** Debounce entry point (CS-2): clears any pending resume. Wired to turn_start, auto_retry_end(success:true), and auto_retry_start (a retry attempt in flight means the host is already recovering on its own). Safe to call when there is no pending — a no-op. */
+/** Cancel the live timer handle, if any (m1). Safe to call when there is none. */
+function clearPendingTimer(): void {
+	if (pendingTimer !== undefined) {
+		clearTimeout(pendingTimer);
+		pendingTimer = undefined;
+	}
+}
+
+/** Debounce entry point (CS-2): clears any pending resume AND cancels its backing timer (m1). Wired to turn_start, auto_retry_end(success:true), and auto_retry_start (a retry attempt in flight means the host is already recovering on its own). Safe to call when there is no pending — a no-op. */
 export function clearWatchdogPending(): void {
 	watchdogPending = undefined;
+	clearPendingTimer();
 }
 
 function setWatchdogPending(pending: PendingResume): void {
@@ -207,11 +218,12 @@ function incrementWatchdogResumeCount(): number {
 	return resumeCount;
 }
 
-/** Reset all in-memory watchdog state — wired to session_switch/session_branch/session_shutdown (mirrors state.ts's registerCraftStateResets), so a new/forked session never inherits a stale sticky flag, pending resume, or resume count from whatever came before it. */
+/** Reset all in-memory watchdog state — wired to session_switch/session_branch/session_shutdown (mirrors state.ts's registerCraftStateResets), so a new/forked session never inherits a stale sticky flag, pending resume, resume count, or live timer (m1) from whatever came before it. */
 export function resetWatchdogState(): void {
 	stickyActive = false;
 	watchdogPending = undefined;
 	resumeCount = 0;
+	clearPendingTimer();
 }
 
 /**
@@ -302,27 +314,46 @@ export interface ResumeTimerContext {
  * own backstop already forces continuation (single entry point, see module doc) both stand down;
  * (3) idle — only ever nudge a session that is actually idle (a live/streaming session already
  * recovered on its own, so the stale pending is cleared and dropped, never queued as a steer).
+ *
+ * The whole body is wrapped in try/catch (M1 review): this fires minutes-to-hours after it was
+ * scheduled, so `ctx.isIdle()`/`ctx.sendUserMessage()` are bound to a session that may no longer
+ * be in a state those calls expect (a stale ctx) — a throw there must never crash the timer
+ * callback, matching notify.ts's own "swallow, never propagate" contract. `clearPending` itself is
+ * called from inside the catch too (best-effort, its own throw is separately guarded) so a failed
+ * attempt never leaves a stale pending sitting around forever.
  */
 export function runResumeTimerCallback(ctx: ResumeTimerContext): void {
-	const pending = ctx.getPending();
-	if (!pending || pending.at !== ctx.expectedAt) return;
+	try {
+		const pending = ctx.getPending();
+		if (!pending || pending.at !== ctx.expectedAt) return;
 
-	const craft = ctx.getActiveCraftState();
-	if (craft?.aborted || shouldSuppressResumeForCraftBackstop(craft)) {
+		const craft = ctx.getActiveCraftState();
+		if (craft?.aborted || shouldSuppressResumeForCraftBackstop(craft)) {
+			ctx.clearPending();
+			return;
+		}
+
+		if (!ctx.isIdle()) {
+			ctx.clearPending();
+			return;
+		}
+
+		const attempt = ctx.incrementResumeCount();
 		ctx.clearPending();
-		return;
+		const seconds = Math.round(ctx.retryAfterMs / 1000);
+		ctx.sendUserMessage(buildResumeMessage(seconds, attempt));
+		ctx.notifyAutoResumed(attempt);
+	} catch (error) {
+		try {
+			ctx.clearPending();
+		} catch {
+			// best-effort cleanup only — see the doc comment above.
+		}
+		if (process.env.LSC_DEBUG) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.error(`lets-craft: watchdog resume timer callback failed — ${message}`);
+		}
 	}
-
-	if (!ctx.isIdle()) {
-		ctx.clearPending();
-		return;
-	}
-
-	const attempt = ctx.incrementResumeCount();
-	ctx.clearPending();
-	const seconds = Math.round(ctx.retryAfterMs / 1000);
-	ctx.sendUserMessage(buildResumeMessage(seconds, attempt));
-	ctx.notifyAutoResumed(attempt);
 }
 
 /** A few seconds of jitter added to the scheduled delay (CS-2: "retryAfterMs(+지터 수초)") so multiple sessions stalled on the same provider outage don't all retry in perfect lockstep. Not exported/tested directly (non-deterministic by design) — only the pure runResumeTimerCallback above is asserted on in tests. */
@@ -331,8 +362,10 @@ function jitterMs(): number {
 }
 
 function scheduleResume(pi: ExtensionAPI, isIdle: () => boolean, retryAfterMs: number, at: number): void {
+	clearPendingTimer(); // at most one live timer at a time (m1) — a superseding stall cancels the old one outright
 	const delay = retryAfterMs + jitterMs();
-	setTimeout(() => {
+	const timer = setTimeout(() => {
+		pendingTimer = undefined;
 		runResumeTimerCallback({
 			expectedAt: at,
 			retryAfterMs,
@@ -341,12 +374,18 @@ function scheduleResume(pi: ExtensionAPI, isIdle: () => boolean, retryAfterMs: n
 			isIdle,
 			sendUserMessage: text => pi.sendUserMessage(text),
 			notifyAutoResumed: attempt => {
-				void notifyAutoResumed(attempt, pi.exec);
+				void notifyAutoResumed(attempt, MAX_AUTO_RESUMES, pi.exec);
 			},
 			incrementResumeCount: incrementWatchdogResumeCount,
 			clearPending: clearWatchdogPending,
 		});
 	}, delay);
+	// unref() (m1) so a multi-hour cutoff-adjacent wait never keeps the process/event loop alive
+	// on its own — Node/Bun-only (absent from some non-Node globals, e.g. under certain test
+	// environments), so guard the call rather than assume it exists.
+	const unrefable = timer as unknown as { unref?: () => void };
+	if (typeof unrefable.unref === "function") unrefable.unref();
+	pendingTimer = timer;
 }
 
 /** Reset in-memory watchdog state on the same session-transition events state.ts's craft resets use — a new/forked/closed session must never inherit stale sticky/pending/count. */
@@ -375,7 +414,9 @@ export function registerWatchdog(pi: ExtensionAPI): void {
 
 	pi.on("auto_retry_start", (_event, ctx) => {
 		if (!ctx.hasUI) return;
-		if (!isWatchdogActive()) return;
+		// No isWatchdogActive() guard (m4 review): symmetric with the turn_start handler above —
+		// clearWatchdogPending is already a no-op when there is nothing pending (e.g. the watchdog
+		// is inactive this session), so the extra check only added an unnecessary asymmetry.
 		clearWatchdogPending();
 	});
 
@@ -414,7 +455,7 @@ export function registerWatchdog(pi: ExtensionAPI): void {
 			maxRetryAfterMs: getAutoResumeMaxRetryAfterMs(),
 		});
 		if (decision.action === "limit-exceeded") {
-			await notifyResumeLimitExceeded(pi.exec);
+			await notifyResumeLimitExceeded(MAX_AUTO_RESUMES, pi.exec);
 			return;
 		}
 		if (decision.action === "cutoff-exceeded") {
