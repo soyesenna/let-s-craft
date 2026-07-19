@@ -395,14 +395,44 @@ export function readPersistedCraftState(root: string, feature: string): CraftSta
 }
 
 /**
- * Inactive-lookup reader for the verify / run_tests open-release gates (CS4). persist() writes to
- * `worktreeRoot ?? projectRoot`, so both `cwd` and `worktreePath(cwd, feature)` are candidates. An
- * unclosed-open candidate WINS — a stale closed record cannot mask an open one — else the worktree
- * file is preferred when present. Never touches the active-craft singleton.
+ * A single root's craft-state descriptor — the shared candidate seam (E, AC10). It reports only
+ * EXISTENCE (fs stat), never the parsed content: `stateFileExists` is `existsSync` on the state
+ * file, `rootExists` is `existsSync` on the candidate root DIRECTORY. Deliberately JSON-free (lazy)
+ * so a consumer that keys off directory existence (resolveAuditRoot) can never be diverted by a
+ * malformed state file it never decodes — decode is each consumer's own, explicit call.
+ */
+export interface CraftStateCandidate {
+	root: string;
+	statePath: string;
+	rootExists: boolean;
+	stateFileExists: boolean;
+}
+
+/**
+ * The two roots a feature's craft state can live at, in [cwd, worktree] order (E, AC10). persist()
+ * writes to `worktreeRoot ?? projectRoot`, so both `cwd` and `worktreePath(cwd, feature)` are
+ * candidates. Descriptor-only — it NEVER reads/parses the state file (an unparseable candidate
+ * does not throw here); each consumer decodes only the candidates its own named policy needs.
+ */
+export function craftStateCandidates(cwd: string, feature: string): CraftStateCandidate[] {
+	return [cwd, worktreePath(cwd, feature)].map(root => {
+		const statePath = craftStatePath(root, feature);
+		return { root, statePath, rootExists: existsSync(root), stateFileExists: existsSync(statePath) };
+	});
+}
+
+/**
+ * Inactive-lookup reader for the verify / run_tests open-release gates (CS4). Named policy:
+ * OPEN-RELEASE ARBITRATION — an unclosed-open candidate WINS (a stale closed record cannot mask an
+ * open one), else the worktree file is the tie-break. This is a DIFFERENT authority than
+ * resolveAuditRoot's directory-existence policy (verdict.ts): findPersistedCraftState is the decode
+ * OWNER (it must read the open-release marker to arbitrate), so it collects candidates through the
+ * shared descriptor seam but calls decodeCraftState itself. Never touches the active-craft singleton.
  */
 export function findPersistedCraftState(cwd: string, feature: string): CraftState | undefined {
-	const cwdState = readPersistedCraftState(cwd, feature);
-	const worktreeState = readPersistedCraftState(worktreePath(cwd, feature), feature);
+	const [cwdCandidate, worktreeCandidate] = craftStateCandidates(cwd, feature);
+	const cwdState = cwdCandidate.stateFileExists ? decodeCraftState(cwdCandidate.statePath) : undefined;
+	const worktreeState = worktreeCandidate.stateFileExists ? decodeCraftState(worktreeCandidate.statePath) : undefined;
 	if (hasOpenRelease(cwdState)) return cwdState;
 	if (hasOpenRelease(worktreeState)) return worktreeState;
 	return worktreeState ?? cwdState;
