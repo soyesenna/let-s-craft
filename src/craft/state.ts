@@ -134,6 +134,8 @@ export interface ReleaseApprovalEvidence {
 	issuedAt: string;
 	/** Stamped by recordOpenRelease when this approval is consumed into an open release. */
 	consumedAt?: string;
+	/** The concrete operation scope this approval was bound to at issuance (A land — a LandOperation). Optional so release.ts's unscoped [Canon Amendment] path records none. */
+	operationScope?: unknown;
 }
 
 /** A HashViolation[] summary grouped by kind — post-craft audit input. */

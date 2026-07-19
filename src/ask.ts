@@ -21,8 +21,8 @@
 // directly — only the wrapper does, and it is exercised by the real omp runtime instead.
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { canonicalizeFreeText, detectFixturePath, type FixtureAnswerBody, type FixtureAnswerSet, getFixtureAnswerSet } from "./fixtures.js";
-import { createPendingApproval, installPendingApproval, invalidatePendingApproval, matchDestructiveGateTag, sameCraftIdentity } from "./craft/destructive-approval.js";
-import { getActiveCraft, recordReleaseApproval } from "./craft/state.js";
+import { createPendingApproval, installPendingApproval, invalidatePendingApproval, invalidatePreparedOperation, matchDestructiveGateTag, peekPreparedOperation, sameCraftIdentity } from "./craft/destructive-approval.js";
+import { getActiveCraft, recordReleaseApproval, recordReleaseApprovalAt } from "./craft/state.js";
 
 const HEADLESS_ERROR =
 	"lets-craft: interactive UI is not available (headless print/RPC mode) and no fixture is configured — set " +
@@ -627,30 +627,54 @@ export function registerAskTools(pi: ExtensionAPI): void {
 		approval: "read",
 		parameters: confirmParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<ConfirmResultDetails>> {
-			// (a) Classify the prompt and capture the craft it is bound to BEFORE the confirm await.
+			// (a) Classify the prompt and capture BOTH the craft it is bound to AND any prepared-operation
+			//     envelope for this tag BEFORE the confirm await (F-12: capture, never trust references).
 			const tag = matchDestructiveGateTag(params.question);
 			const craftAtPrompt = tag ? getActiveCraft() : undefined;
+			const preparedAtPrompt = tag ? peekPreparedOperation(tag) : undefined;
 			// (b) A tagged prompt revokes any prior pending approval on entry, whatever the outcome —
 			//     the freshest same-tag no/free/cancel must retract a stale yes (P8 stale-yes barrier).
 			if (tag) invalidatePendingApproval();
 			// (c) The confirm itself is unchanged (craft-agnostic — C9).
 			const result = await performConfirm(channelFor(pi, ctx), ctx.ui, params);
-			// (d) Issue only on a tagged platform-yes whose craft identity is unchanged across the
-			//     await boundary (field equality, not reference — F-12; a free answer is confirmed===null).
-			if (
-				tag &&
-				craftAtPrompt &&
-				!result.isError &&
-				result.details?.confirmed === true &&
-				sameCraftIdentity(craftAtPrompt, getActiveCraft())
-			) {
+			const confirmedYes = !result.isError && result.details?.confirmed === true;
+			// (d) Prepared-operation issuance branch (A land) — takes PRIORITY over the craft-bound path,
+			//     but only for a prepared envelope captured at prompt time whose approvalQuestion EXACTLY
+			//     matches this confirm (confused-deputy barrier). It carries the operationScope a scoped
+			//     [Land] pending needs. A [Canon Amendment] confirm has no prepared entry, so it falls
+			//     through to the unchanged craft-bound path below.
+			if (tag && preparedAtPrompt && params.question === preparedAtPrompt.approvalQuestion) {
+				// Still the same prepared entry the confirm was raised for? A slot replaced mid-await (a
+				// cross-feature prepare) must neither issue for nor clear the now-current envelope.
+				const stillCurrent = peekPreparedOperation(tag)?.prepareId === preparedAtPrompt.prepareId;
+				const activeNow = getActiveCraft();
+				const identityOk = !activeNow || sameCraftIdentity(preparedAtPrompt.identity, activeNow);
+				if (confirmedYes && stillCurrent && identityOk) {
+					const record = createPendingApproval({ tag, question: params.question, identity: preparedAtPrompt.identity });
+					// persist-before-install (P7): commit durable evidence at the envelope's EXACT root
+					//     first — a throw here propagates and leaves the slot empty (no live capability).
+					recordReleaseApprovalAt(preparedAtPrompt.evidenceRoot, preparedAtPrompt.identity, {
+						nonce: record.nonce,
+						tag: record.tag,
+						question: record.question,
+						response: record.response,
+						issuedAt: record.issuedAt,
+						operationScope: preparedAtPrompt.operationScope,
+					});
+					installPendingApproval({ ...record, operationScope: preparedAtPrompt.operationScope });
+					invalidatePreparedOperation(tag);
+				} else if (stillCurrent) {
+					// no / free / cancel / ineligible → clear the captured prepared entry (only if still current).
+					invalidatePreparedOperation(tag);
+				}
+			} else if (tag && craftAtPrompt && confirmedYes && sameCraftIdentity(craftAtPrompt, getActiveCraft())) {
+				// Craft-bound issuance path (release-gate [Canon Amendment]) — UNCHANGED.
 				const record = createPendingApproval({
 					tag,
 					question: params.question,
 					identity: { feature: craftAtPrompt.feature, projectRoot: craftAtPrompt.projectRoot, worktreeRoot: craftAtPrompt.worktreeRoot },
 				});
-				// (e) Commit durable evidence FIRST — a throw here propagates and leaves the slot empty
-				//     (persist-before-install: no live capability without persisted evidence, P7).
+				// Commit durable evidence FIRST (persist-before-install, P7).
 				recordReleaseApproval({ nonce: record.nonce, tag: record.tag, question: record.question, response: record.response, issuedAt: record.issuedAt });
 				installPendingApproval(record);
 			}
