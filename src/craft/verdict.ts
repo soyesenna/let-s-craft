@@ -10,8 +10,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { craftAuditDir, craftAuditPath, craftTestLogsDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
-import { readPersistedCraftState, recordAuditCycleBegin, recordAuditValidated } from "./state.js";
+import { craftAuditDir, craftAuditPath, craftTestLogsDir, resolveFeatureName } from "../artifacts/paths.js";
+import { craftStateCandidates, readPersistedCraftState, recordAuditCycleBegin, recordAuditValidated } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Verdict vocabularies + generic literal-only parser
@@ -153,16 +153,20 @@ export function validateAuditFreshness(verdict: AuditVerdict, runLogAtCycleStart
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the root to read/write a feature's audit artifacts against: the worktree when one
- * exists (C6/R5's "always worktree" convention — post-craft's own artifact root, SKILL.md §2.3),
- * else the project root as the pre-R5/escape-hatch fallback. Both tools below share this
- * resolution — post-craft never holds an active craft (SKILL.md §1.5, it deliberately never
+ * Resolve the root to read/write a feature's audit artifacts against: the worktree when its
+ * DIRECTORY exists (C6/R5's "always worktree" convention — post-craft's own artifact root,
+ * SKILL.md §2.3), else the project root as the pre-R5/escape-hatch fallback. Named policy:
+ * DIRECTORY-EXISTENCE only — it keys off the worktree candidate's `rootExists` and NEVER decodes a
+ * state file, so a malformed `.craft-state.json` can never divert audit resolution (a DIFFERENT
+ * authority than findPersistedCraftState's open-release arbitration, which is the decode owner).
+ * Both consumers share only the descriptor seam (craftStateCandidates); the selection policy is
+ * each consumer's own. post-craft never holds an active craft (SKILL.md §1.5, it deliberately never
  * calls lsc_craft_init), so unlike lsc_verify_hash/lsc_run_tests there is no active-craft
  * worktreeRoot available to consult here.
  */
 function resolveAuditRoot(cwd: string, feature: string): string {
-	const wt = worktreePath(cwd, feature);
-	return existsSync(wt) ? wt : cwd;
+	const [, worktreeCandidate] = craftStateCandidates(cwd, feature);
+	return worktreeCandidate.rootExists ? worktreeCandidate.root : cwd;
 }
 
 /**
