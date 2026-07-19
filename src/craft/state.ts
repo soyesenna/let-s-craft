@@ -14,9 +14,23 @@ import { dirname } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftStatePath, worktreePath } from "../artifacts/paths.js";
 import { writeFileAtomicSync } from "../utils/atomic-write.js";
-import { invalidatePendingApproval } from "./destructive-approval.js";
+import { type ApprovalCraftIdentity, invalidatePendingApproval } from "./destructive-approval.js";
+
+/**
+ * The current on-disk `.craft-state.json` schema generation (D, AC9). A hard pin: bumping it is a
+ * deliberate, reviewed act — it changes what `decodeCraftState` rejects as "too new" and what every
+ * durable write stamps. Cargo first-class-error precedent (N6).
+ */
+export const CRAFT_STATE_VERSION = 1;
 
 export interface CraftState {
+	/**
+	 * On-disk schema version (D). Stamped to CRAFT_STATE_VERSION by every durable write (persist).
+	 * Optional so an older, pre-version file still parses: `decodeCraftState` reads an absent value
+	 * tolerantly (a legacy file), but rejects an unknown NEWER value (> CRAFT_STATE_VERSION) with an
+	 * explicit throw rather than silently mis-reading it.
+	 */
+	stateVersion?: number;
 	feature: string;
 	/**
 	 * Absolute path of the main project root — this field itself is always the main checkout,
@@ -148,10 +162,36 @@ export interface OpenReleaseEvidence {
 
 let activeCraft: CraftState | undefined;
 
-function persist(state: CraftState): void {
+function persist(state: CraftState): CraftState {
+	// Stamp the current schema version IN PLACE on every durable write (D, AC9) — a legacy
+	// (unversioned) file a mutator rewrites picks up the stamp here so the version gate can protect
+	// it thereafter, and the caller's just-persisted object reflects exactly what landed on disk
+	// (getActiveCraft() and the persisted bytes stay one-to-one — the incumbent state contract).
+	state.stateVersion = CRAFT_STATE_VERSION;
 	const path = craftStatePath(state.worktreeRoot ?? state.projectRoot, state.feature);
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileAtomicSync(path, JSON.stringify(state, null, 2));
+	return state;
+}
+
+/**
+ * The single decoder BOTH readers (loadActiveCraft, readPersistedCraftState) route through, so
+ * on-disk schema-version handling can never be bypassed by one reader's own JSON.parse (D, AC9).
+ * Absent file → undefined. An unknown NEWER stateVersion (> CRAFT_STATE_VERSION) is an EXPLICIT
+ * throw naming the file, the found version, and the supported ceiling (Cargo first-class-error,
+ * N6) — never a silent mis-read/active-promotion. An ABSENT stateVersion (an older, pre-version
+ * file) is read tolerantly, same backward-compat rationale as every other optional field.
+ */
+export function decodeCraftState(path: string): CraftState | undefined {
+	if (!existsSync(path)) return undefined;
+	const decoded = JSON.parse(readFileSync(path, "utf8")) as CraftState;
+	if (typeof decoded.stateVersion === "number" && decoded.stateVersion > CRAFT_STATE_VERSION) {
+		throw new Error(
+			`lets-craft: craft state ${path} has stateVersion ${decoded.stateVersion}, which is newer than the supported ` +
+				`stateVersion ${CRAFT_STATE_VERSION} — upgrade lets-craft (this build cannot safely read a newer schema).`,
+		);
+	}
+	return decoded;
 }
 
 /** The in-flight craft, if any. */
@@ -174,8 +214,7 @@ export function setActiveCraft(state: CraftState): void {
 		);
 	}
 	invalidatePendingApproval();
-	persist(state);
-	activeCraft = state;
+	activeCraft = persist(state);
 }
 
 /**
@@ -187,9 +226,8 @@ export function setActiveCraft(state: CraftState): void {
  * singleton from scratch. Nothing in this extension calls this function automatically.
  */
 export function loadActiveCraft(projectRoot: string, feature: string): CraftState | undefined {
-	const path = craftStatePath(projectRoot, feature);
-	if (!existsSync(path)) return undefined;
-	const restored = JSON.parse(readFileSync(path, "utf8")) as CraftState;
+	const restored = decodeCraftState(craftStatePath(projectRoot, feature));
+	if (!restored) return undefined;
 	invalidatePendingApproval();
 	// An unclosed open-release is surfaced for inspection but NOT promoted to the active singleton:
 	// run_tests' `!craft` guard must stay fail-closed over an open-release window (active-open invariant).
@@ -222,8 +260,7 @@ export function recordTestResult(passed: boolean, failureSummary?: string, failu
 	if (!activeCraft) return { consecutiveFailures: 0, noProgress: false };
 
 	if (passed) {
-		activeCraft = { ...activeCraft, testsPassed: true, lastFailureSummary: undefined, failureSignature: undefined, consecutiveFailures: undefined };
-		persist(activeCraft);
+		activeCraft = persist({ ...activeCraft, testsPassed: true, lastFailureSummary: undefined, failureSignature: undefined, consecutiveFailures: undefined });
 		return { consecutiveFailures: 0, noProgress: false };
 	}
 
@@ -231,8 +268,7 @@ export function recordTestResult(passed: boolean, failureSummary?: string, failu
 	const consecutiveFailures = progressed ? 1 : (activeCraft.consecutiveFailures ?? 0) + 1;
 	const noProgress = consecutiveFailures >= NO_PROGRESS_THRESHOLD;
 
-	activeCraft = { ...activeCraft, testsPassed: false, lastFailureSummary: failureSummary, failureSignature, consecutiveFailures };
-	persist(activeCraft);
+	activeCraft = persist({ ...activeCraft, testsPassed: false, lastFailureSummary: failureSummary, failureSignature, consecutiveFailures });
 	return { consecutiveFailures, noProgress };
 }
 
@@ -241,8 +277,7 @@ export function markCraftAborted(): void {
 	if (!activeCraft) return;
 	const next = { ...activeCraft, aborted: true };
 	invalidatePendingApproval();
-	persist(next);
-	activeCraft = next;
+	activeCraft = persist(next);
 }
 
 /** Clear the in-memory active craft and revoke any pending destructive approval. The persisted file is left in place — a later `lsc_craft_init` call (craft/SKILL.md's own resume flow) re-attaches it; nothing does so automatically. */
@@ -259,8 +294,7 @@ export function clearActiveCraft(): void {
 export function recordReleaseApproval(evidence: ReleaseApprovalEvidence): void {
 	if (!activeCraft) return;
 	const next: CraftState = { ...activeCraft, releaseApproval: evidence };
-	persist(next);
-	activeCraft = next;
+	activeCraft = persist(next);
 }
 
 /**
@@ -276,8 +310,7 @@ export function recordOpenRelease(evidence: OpenReleaseEvidence): void {
 		openRelease: evidence,
 		releaseApproval: approval ? { ...approval, consumedAt: evidence.openedAt } : approval,
 	};
-	persist(next);
-	activeCraft = next;
+	activeCraft = persist(next);
 }
 
 /**
@@ -298,11 +331,11 @@ export function recordAuditCycleBegin(root: string, feature: string, auditCycle:
 		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — run craft before starting a post-craft audit cycle.`);
 	}
 	const next: CraftState = { ...existing, auditCycle, runLogAtCycleStart };
-	persist(next);
+	const stamped = persist(next);
 	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
-		activeCraft = next;
+		activeCraft = stamped;
 	}
-	return next;
+	return stamped;
 }
 
 /**
@@ -318,11 +351,38 @@ export function recordAuditValidated(root: string, feature: string, cycle: numbe
 		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — cannot record audit validation.`);
 	}
 	const next: CraftState = { ...existing, auditValidated: { cycle, verdict, at } };
-	persist(next);
+	const stamped = persist(next);
 	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
-		activeCraft = next;
+		activeCraft = stamped;
 	}
-	return next;
+	return stamped;
+}
+
+/**
+ * Exact-root release-approval writer (A land path, CS4). Reads the feature's persisted state at the
+ * EXACT `root` (never the active-craft singleton, never candidate guessing), verifies the persisted
+ * feature/projectRoot/worktreeRoot all match `identity` (anchor cross-check — a mismatch fails
+ * closed), then stamps the durable release-approval evidence via persist (writeFileAtomicSync +
+ * stateVersion, persist-before-install P7). Throws on absent/mismatched state or a write failure so
+ * the caller (ask.ts) installs no live capability. Keeps the in-memory singleton in sync only when
+ * it happens to already be this exact craft.
+ */
+export function recordReleaseApprovalAt(root: string, identity: ApprovalCraftIdentity, evidence: ReleaseApprovalEvidence): CraftState {
+	const existing = readPersistedCraftState(root, identity.feature);
+	if (!existing) {
+		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, identity.feature)} — cannot record a release approval.`);
+	}
+	if (existing.feature !== identity.feature || existing.projectRoot !== identity.projectRoot || existing.worktreeRoot !== identity.worktreeRoot) {
+		throw new Error(
+			`lets-craft: persisted craft state at ${craftStatePath(root, identity.feature)} does not match the approval identity ` +
+				"(feature/projectRoot/worktreeRoot) — refusing to record a release approval against mismatched evidence.",
+		);
+	}
+	const stamped = persist({ ...existing, releaseApproval: evidence });
+	if (activeCraft && activeCraft.feature === identity.feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
+		activeCraft = stamped;
+	}
+	return stamped;
 }
 
 /**
@@ -331,9 +391,7 @@ export function recordAuditValidated(root: string, feature: string, cycle: numbe
  * last-recorded state without resurrecting a cleared craft. Used by lsc_craft_init's re-baseline.
  */
 export function readPersistedCraftState(root: string, feature: string): CraftState | undefined {
-	const path = craftStatePath(root, feature);
-	if (!existsSync(path)) return undefined;
-	return JSON.parse(readFileSync(path, "utf8")) as CraftState;
+	return decodeCraftState(craftStatePath(root, feature));
 }
 
 /**
