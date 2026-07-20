@@ -552,6 +552,7 @@ export function registerAskTools(pi: ExtensionAPI): void {
 	});
 	pi.registerTool<typeof askParameters, AskResultDetails>({
 		name: "lsc_ask",
+		loadMode: "essential",
 		label: "lets-craft: ask (free text)",
 		description:
 			"Ask the user a free-text question in a multi-line editor (ctx.ui.editor); an optional prefill seeds the editor. " +
@@ -599,6 +600,7 @@ export function registerAskTools(pi: ExtensionAPI): void {
 	});
 	pi.registerTool<typeof selectParameters, SelectResultDetails>({
 		name: "lsc_select",
+		loadMode: "essential",
 		label: "lets-craft: ask (select)",
 		description:
 			"Ask the user to choose among 2-4 { label, description } options; a free-text 'Other' entry is always appended (do " +
@@ -618,6 +620,7 @@ export function registerAskTools(pi: ExtensionAPI): void {
 	});
 	pi.registerTool<typeof confirmParameters, ConfirmResultDetails>({
 		name: "lsc_confirm",
+		loadMode: "essential",
 		label: "lets-craft: ask (confirm)",
 		description:
 			"Ask the user a yes/no question via a Yes / No / Other selector. The result CONTENT is exactly `yes` or `no` for a " +
