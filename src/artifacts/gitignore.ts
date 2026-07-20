@@ -42,6 +42,16 @@ export function ensureWorktreesGitignored(cwd: string): GitignoreResult {
 	return ensureGitignored(cwd, WORKTREES_ENTRY, WORKTREES_ENTRY_RE);
 }
 
+/**
+ * PURE read-only membership check for the `.lsc/worktrees/` entry (doctor check ⑦ — spec 제약 4).
+ * The doctor must never call the ensure* writers during a diagnosis (they read-and-immediately-write);
+ * this is the extracted read-only half over already-read `.gitignore` content. The ensure* helpers
+ * keep their write-when-absent behavior unchanged.
+ */
+export function hasWorktreesGitignoreEntry(content: string): boolean {
+	return content.split(/\r?\n/).some(line => WORKTREES_ENTRY_RE.test(line.trim()));
+}
+
 const SNAPSHOTS_ENTRY = ".lsc/crafts/*/test/.snapshots/";
 const SNAPSHOTS_ENTRY_RE = /^\/?\.lsc\/crafts\/\*\/test\/\.snapshots\/?$/;
 

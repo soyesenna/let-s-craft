@@ -10,6 +10,7 @@ import { registerLatencyReportTool } from "./craft/latency-report.js";
 import { registerLandTool } from "./craft/land.js";
 import { registerCraftReleaseTool } from "./craft/release.js";
 import { registerRunTestsTool } from "./craft/run-tests.js";
+import { registerDoctorCommand, registerDoctorTool } from "./doctor.js";
 import { registerAuditValidateTools } from "./craft/verdict.js";
 import { registerWatchdog } from "./craft/watchdog.js";
 import { LSC_FIXTURE_FLAG } from "./fixtures.js";
@@ -39,6 +40,8 @@ export default function (pi: ExtensionAPI): void {
 	registerLandTool(pi);
 	registerScaffoldTool(pi);
 	registerClaimsTool(pi);
+	registerDoctorTool(pi);
+	registerDoctorCommand(pi);
 	registerUsageStatusBar(pi);
 	registerWatchdog(pi);
 	registerLatencyReportTool(pi);

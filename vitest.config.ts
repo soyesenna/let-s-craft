@@ -11,5 +11,11 @@ export default defineConfig({
 		// `include` change can't silently start scanning it.
 		include: ["test/**/*.test.ts"],
 		exclude: ["node_modules/**", "dist/**", "oh-my-pi/**", "oh-my-claudecode/**", "lazycodex/**", "pi/**", "fixtures/**"],
+		// deferred-pool: craft-land-flow drives real `git` fixtures (init + worktree add + merge +
+		// remove + prune per case). Standalone each case runs in ~1s, but under a full parallel
+		// `npm test` the workers contend for CPU and the FIRST case of a worker (cold git, process
+		// spawn storm) can exceed vitest's 5s default — a load-induced flake, not a hang signal.
+		// 20s keeps a genuinely hung test failing fast enough while absorbing scheduler contention.
+		testTimeout: 20_000,
 	},
 });
