@@ -308,16 +308,19 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 			// legal path that re-activates a craft that had an open-release (active-open invariant). The
 			// setActiveCraft CS3 order (persist→publish) means a state-write failure here leaves the
 			// craft unpublished and the open-release still gating verify/run_tests (CS5 fail-closed).
-			setActiveCraft({
-				feature,
-				projectRoot: ctx.cwd,
-				worktreeRoot,
-				testsPassed: false,
-				lastFailureSummary: undefined,
-				aborted: false,
-				releaseApproval: previousState?.releaseApproval,
-				openRelease: closeOpenRelease(previousState?.openRelease, previousManifest, manifest, new Date().toISOString()),
-			});
+			setActiveCraft(
+				{
+					feature,
+					projectRoot: ctx.cwd,
+					worktreeRoot,
+					testsPassed: false,
+					lastFailureSummary: undefined,
+					aborted: false,
+					releaseApproval: previousState?.releaseApproval,
+					openRelease: closeOpenRelease(previousState?.openRelease, previousManifest, manifest, new Date().toISOString()),
+				},
+				{ durability: "strict" },
+			);
 
 			const fileCount = Object.keys(manifest.files).length;
 			return {
