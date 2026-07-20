@@ -81,6 +81,11 @@ export function craftAuditPath(cwd: string, feature: string, n: number): string 
 	return join(craftAuditDir(cwd, feature), `audit-${n}.md`);
 }
 
+/** `.lsc/crafts/{feature}/research/claims.json` — the canonical research claim ledger (F/D-2; SYNTHESIS.md is its projection). `lsc_claims` (src/research/claims-tool.ts) is the sole writer of each claim's `decision`. */
+export function craftClaimsPath(cwd: string, feature: string): string {
+	return join(craftDir(cwd, feature), "research", "claims.json");
+}
+
 // ============================================================================
 // worktrees/{feature}/ — gitignored, REJECT-reused, pruned on land (C6, C7)
 // ============================================================================
