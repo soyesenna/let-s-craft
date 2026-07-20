@@ -10,8 +10,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { craftAuditDir, craftAuditPath, craftTestLogsDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
-import { readPersistedCraftState, recordAuditCycleBegin, recordAuditValidated } from "./state.js";
+import { craftAuditDir, craftAuditPath, craftTestLogsDir, resolveFeatureName } from "../artifacts/paths.js";
+import { type CraftState, craftStateCandidates, readPersistedCraftState, recordAuditCycleBegin, recordAuditValidated } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Verdict vocabularies + generic literal-only parser
@@ -153,16 +153,20 @@ export function validateAuditFreshness(verdict: AuditVerdict, runLogAtCycleStart
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the root to read/write a feature's audit artifacts against: the worktree when one
- * exists (C6/R5's "always worktree" convention — post-craft's own artifact root, SKILL.md §2.3),
- * else the project root as the pre-R5/escape-hatch fallback. Both tools below share this
- * resolution — post-craft never holds an active craft (SKILL.md §1.5, it deliberately never
+ * Resolve the root to read/write a feature's audit artifacts against: the worktree when its
+ * DIRECTORY exists (C6/R5's "always worktree" convention — post-craft's own artifact root,
+ * SKILL.md §2.3), else the project root as the pre-R5/escape-hatch fallback. Named policy:
+ * DIRECTORY-EXISTENCE only — it keys off the worktree candidate's `rootExists` and NEVER decodes a
+ * state file, so a malformed `.craft-state.json` can never divert audit resolution (a DIFFERENT
+ * authority than findPersistedCraftState's open-release arbitration, which is the decode owner).
+ * Both consumers share only the descriptor seam (craftStateCandidates); the selection policy is
+ * each consumer's own. post-craft never holds an active craft (SKILL.md §1.5, it deliberately never
  * calls lsc_craft_init), so unlike lsc_verify_hash/lsc_run_tests there is no active-craft
  * worktreeRoot available to consult here.
  */
 function resolveAuditRoot(cwd: string, feature: string): string {
-	const wt = worktreePath(cwd, feature);
-	return existsSync(wt) ? wt : cwd;
+	const [, worktreeCandidate] = craftStateCandidates(cwd, feature);
+	return worktreeCandidate.rootExists ? worktreeCandidate.root : cwd;
 }
 
 /**
@@ -185,6 +189,60 @@ function readRunLogSummaries(logsDir: string): RunLogSummary[] {
 		}
 	}
 	return summaries;
+}
+
+// ---------------------------------------------------------------------------
+// Land-time strict audit re-validation (A — read-only extraction, D4). Unlike validateAuditFreshness
+// (which is undefined-TOLERANT — a missing threshold degrades to a pass so pre-B-1 state still
+// audits), this is undefined-INTOLERANT by design: land is the highest-value gate, so a missing
+// cycle/threshold/fresh-pass is a HARD refusal (missing-threshold fail-open is exactly the hole land
+// closes). The persisted auditValidated marker is treated as best-effort EVIDENCE (cycle-aware), not
+// authority — land re-derives the verdict + freshness from disk on every call.
+// ---------------------------------------------------------------------------
+
+export type LandAuditReason = "no-audit-evidence" | "no-audit-cycle" | "cycle-mismatch" | "verdict-not-approve" | "stale-run-log" | "evidence-tamper";
+
+export type LandAuditResult = { ok: true; verdict: AuditVerdict; auditNumber: number } | { ok: false; reason: LandAuditReason };
+
+/** Verdicts land's strict evidence check accepts — every APPROVE-prefixed verdict; only REJECT is verdict-not-approve. */
+const LAND_ACCEPTED_VERDICTS: readonly AuditVerdict[] = ["APPROVE", "APPROVE-WITH-COMMENT", "APPROVE-WITH-CHANGE"];
+
+/**
+ * Strict, read-only land-time audit re-validation (spec AC1). Reads the latest audit-N.md verdict +
+ * the persisted cycle markers + the run-N.log freshness under `root`, and folds any failure to a
+ * distinct reason code (checked in order): no-audit-evidence → no-audit-cycle (missing/non-integer
+ * cycle OR threshold) → cycle-mismatch (auditCycle !== latest audit N) → verdict-not-approve (REJECT
+ * or unparseable) → stale-run-log (no passing run-N.log with N strictly > threshold) → evidence-tamper
+ * (auditValidated marker for the current cycle with a DIFFERENT verdict, or for a FUTURE cycle). An
+ * absent or previous-cycle marker is a WARN (pass) — never a block.
+ */
+export function validateLandAuditEvidence(root: string, feature: string, state: CraftState): LandAuditResult {
+	const auditDir = craftAuditDir(root, feature);
+	const auditNumber = latestAuditNumber(existsSync(auditDir) ? readdirSync(auditDir) : []);
+	if (auditNumber === undefined) return { ok: false, reason: "no-audit-evidence" };
+
+	if (!Number.isInteger(state.auditCycle) || !Number.isInteger(state.runLogAtCycleStart)) return { ok: false, reason: "no-audit-cycle" };
+	const auditCycle = state.auditCycle as number;
+	const threshold = state.runLogAtCycleStart as number;
+	if (auditCycle !== auditNumber) return { ok: false, reason: "cycle-mismatch" };
+
+	let verdict: AuditVerdict | undefined;
+	try {
+		verdict = parseAuditVerdict(readFileSync(craftAuditPath(root, feature, auditNumber), "utf8"));
+	} catch {
+		verdict = undefined;
+	}
+	if (verdict === undefined || !LAND_ACCEPTED_VERDICTS.includes(verdict)) return { ok: false, reason: "verdict-not-approve" };
+
+	const fresh = readRunLogSummaries(craftTestLogsDir(root, feature)).filter(log => log.number > threshold);
+	if (fresh.length === 0 || !fresh.some(log => log.passed)) return { ok: false, reason: "stale-run-log" };
+
+	const marker = state.auditValidated;
+	if (marker && (marker.cycle > auditCycle || (marker.cycle === auditCycle && marker.verdict !== verdict))) {
+		return { ok: false, reason: "evidence-tamper" };
+	}
+
+	return { ok: true, verdict, auditNumber };
 }
 
 export interface AuditBeginDetails {
@@ -347,10 +405,11 @@ export function performAuditValidate(feature: string, cwd: string): AgentToolRes
 	}
 
 	// Durable machine trace (review MEDIUM): backs the prose merge-block contract
-	// (skills/post-craft/SKILL.md §7.1) with a persisted marker — also the seam a future
-	// code-level enforcement addition could key off (state.ts's AuditValidatedEvidence doc
-	// comment). Best-effort: a failure to record this marker must not hide an otherwise-successful
-	// validation from the caller.
+	// (skills/post-craft/SKILL.md §7.1) with a persisted marker. NON-AUTHORITATIVE trace (A/D4):
+	// lsc_land never gates on this marker — it re-derives the verdict + cycle-freshness from disk
+	// independently (validateLandAuditEvidence) and treats the marker only as cycle-aware
+	// consistency evidence. Best-effort: a failure to record this marker must not hide an
+	// otherwise-successful validation from the caller.
 	let markerNote = "";
 	try {
 		recordAuditValidated(root, feature, auditNumber, verdict, new Date().toISOString());

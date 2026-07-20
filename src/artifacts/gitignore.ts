@@ -9,8 +9,9 @@
 //     history (the tree it's a copy of is already committed there once, by pre-craft).
 //     lsc_craft_init calls ensureSnapshotsGitignored() itself, once, right after writing the
 //     first snapshot.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeFileAtomicSync } from "../utils/atomic-write.js";
 
 export interface GitignoreResult {
 	/** Absolute path of the `.gitignore` that was checked/written. */
@@ -19,7 +20,7 @@ export interface GitignoreResult {
 	added: boolean;
 }
 
-/** Idempotent single-line `.gitignore` append: skip if an equivalent line (per `existingEntryRe`) is already present, otherwise append `entry` (creating the file if needed, adding a leading newline only if the file has trailing content without one). */
+/** Idempotent single-line `.gitignore` append: skip if an equivalent line (per `existingEntryRe`) is already present, otherwise append `entry` (creating the file if needed, adding a leading newline only if the file has trailing content without one). The write is atomic (temp+rename — B): a crash mid-write can never leave a truncated `.gitignore` behind; content is byte-identical to the previous direct write. */
 function ensureGitignored(cwd: string, entry: string, existingEntryRe: RegExp): GitignoreResult {
 	const path = join(cwd, ".gitignore");
 	const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
@@ -27,7 +28,7 @@ function ensureGitignored(cwd: string, entry: string, existingEntryRe: RegExp): 
 	if (alreadyPresent) return { path, added: false };
 
 	const needsLeadingNewline = existing.length > 0 && !existing.endsWith("\n");
-	writeFileSync(path, `${existing}${needsLeadingNewline ? "\n" : ""}${entry}\n`);
+	writeFileAtomicSync(path, `${existing}${needsLeadingNewline ? "\n" : ""}${entry}\n`);
 	return { path, added: true };
 }
 
@@ -39,6 +40,16 @@ const WORKTREES_ENTRY_RE = /^\/?\.lsc\/worktrees\/?$/;
 /** Ensure `<cwd>/.gitignore` ignores `.lsc/worktrees/` (C6). Safe to call on every pre-craft run. */
 export function ensureWorktreesGitignored(cwd: string): GitignoreResult {
 	return ensureGitignored(cwd, WORKTREES_ENTRY, WORKTREES_ENTRY_RE);
+}
+
+/**
+ * PURE read-only membership check for the `.lsc/worktrees/` entry (doctor check ⑦ — spec 제약 4).
+ * The doctor must never call the ensure* writers during a diagnosis (they read-and-immediately-write);
+ * this is the extracted read-only half over already-read `.gitignore` content. The ensure* helpers
+ * keep their write-when-absent behavior unchanged.
+ */
+export function hasWorktreesGitignoreEntry(content: string): boolean {
+	return content.split(/\r?\n/).some(line => WORKTREES_ENTRY_RE.test(line.trim()));
 }
 
 const SNAPSHOTS_ENTRY = ".lsc/crafts/*/test/.snapshots/";

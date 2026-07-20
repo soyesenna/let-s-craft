@@ -1,13 +1,16 @@
 import { existsSync } from "node:fs";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { registerScaffoldTool } from "./artifacts/scaffold.js";
 import { registerAskTools } from "./ask.js";
 import { registerCraftAbortTool } from "./craft/abort.js";
 import { registerCompactionDirective } from "./craft/compact-directive.js";
 import { registerCraftEnforcement } from "./craft/enforcement.js";
 import { registerHashManifestTools } from "./craft/hash-manifest.js";
 import { registerLatencyReportTool } from "./craft/latency-report.js";
+import { registerLandTool } from "./craft/land.js";
 import { registerCraftReleaseTool } from "./craft/release.js";
 import { registerRunTestsTool } from "./craft/run-tests.js";
+import { registerDoctorCommand, registerDoctorTool } from "./doctor.js";
 import { registerAuditValidateTools } from "./craft/verdict.js";
 import { registerWatchdog } from "./craft/watchdog.js";
 import { LSC_FIXTURE_FLAG } from "./fixtures.js";
@@ -15,6 +18,7 @@ import { BUILD_INFO } from "./generated/version.js";
 import { registerPresetCommand } from "./preset/command.js";
 import { applyActivePreset } from "./preset/inject.js";
 import { applySessionDefaultModel, entryTypeHistogram, isFreshMainSession } from "./preset/session-default.js";
+import { registerClaimsTool } from "./research/claims-tool.js";
 import { registerUsageStatusBar } from "./statusbar/index.js";
 import { driftWarning, hashSrcDir, resolvePluginSrcDir } from "./utils/src-hash.js";
 
@@ -33,6 +37,11 @@ export default function (pi: ExtensionAPI): void {
 	registerCraftAbortTool(pi);
 	registerCraftReleaseTool(pi);
 	registerAuditValidateTools(pi);
+	registerLandTool(pi);
+	registerScaffoldTool(pi);
+	registerClaimsTool(pi);
+	registerDoctorTool(pi);
+	registerDoctorCommand(pi);
 	registerUsageStatusBar(pi);
 	registerWatchdog(pi);
 	registerLatencyReportTool(pi);
