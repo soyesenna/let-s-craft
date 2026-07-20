@@ -17,6 +17,7 @@ import { BUILD_INFO } from "./generated/version.js";
 import { registerPresetCommand } from "./preset/command.js";
 import { applyActivePreset } from "./preset/inject.js";
 import { applySessionDefaultModel, entryTypeHistogram, isFreshMainSession } from "./preset/session-default.js";
+import { registerClaimsTool } from "./research/claims-tool.js";
 import { registerUsageStatusBar } from "./statusbar/index.js";
 import { driftWarning, hashSrcDir, resolvePluginSrcDir } from "./utils/src-hash.js";
 
@@ -37,6 +38,7 @@ export default function (pi: ExtensionAPI): void {
 	registerAuditValidateTools(pi);
 	registerLandTool(pi);
 	registerScaffoldTool(pi);
+	registerClaimsTool(pi);
 	registerUsageStatusBar(pi);
 	registerWatchdog(pi);
 	registerLatencyReportTool(pi);

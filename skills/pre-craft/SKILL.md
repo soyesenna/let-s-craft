@@ -120,6 +120,7 @@ Do **not** collapse into: a generic fix-it coding loop, a generic debugger summa
      {worktreeAbs}/.lsc/crafts/{feature}/research/
      ├── intent-diff.md          # what's actually being asked vs. what a lazy read would assume
      ├── claim-graph.md          # orchestrator-owned; claims + their sourcing/verification state (workers: read-only)
+     ├── claims.json             # canonical claim ledger (정본) — lsc_claims stamps each claim's decision
      ├── observation-manifest.md # raw findings as they come in, worker-attributed
      ├── verification-economics.md
      ├── cause-disappearance.md  # tracked alternative explanations that got ruled out, and why
@@ -149,6 +150,8 @@ Do **not** collapse into: a generic fix-it coding loop, a generic debugger summa
      Every worker's final report must end with an `## EXPAND` section in exactly this shape — the convergence check below parses it.
 
      **Iterate to convergence.** After each wave, read every worker's `## EXPAND` tail and log new leads into `.lsc/crafts/{feature}/research/waves/wave-N.md`. (Waiting for a wave's spawned workers to report follows the waiting discipline in §1.8 — results deliver automatically; never poll for them.) Convergence requires all of: at least 2 expansion waves have run (the first saturation wave does not count as an expansion wave on its own), AND (zero unconfirmed leads remain, OR 3 consecutive waves produced zero new leads). **Depth limit:** at 5 waves without convergence, stop and ask the user via `lsc_confirm` whether to extend further — do not silently keep spawning waves past this point. A free answer to this `lsc_confirm` is guidance, not a yes (§1.2 SSOT (c)): reflect it and re-ask, never read it as approval to extend.
+
+     **Claim ledger — canon/projection contract (D-2).** `research/claims.json` is the 정본 (canonical claim ledger): every claim carries a pre-registered `dropCondition` (its falsifier — a claim without one is `invalid`) plus its `evidence` entries, and 각 wave 종료 시 `lsc_claims`를 호출해 원장 전체를 재평가·재각인한다 — the tool is the sole owner of every claim's `decision:{status,reasons,evaluatedAt}` (tombstone monotonicity: a rejected/invalid claim never revives on fresh support; a contradiction with no surviving support rejects unconditionally). `SYNTHESIS.md` — and `claim-graph.md`'s narrative view — is a **projection** derived FROM the ledger, 역방향 편집 금지: never edit the projection and back-port it into `claims.json`; re-evaluate the ledger and regenerate the projection instead. Frame it honestly: this ladder is a deterministic lower bound for 비적대·부주의 (non-adversarial, careless) mistakes — a deliberately mislabeled source still evades it (오라벨 우회 한계 병기).
 
      **Code verification.** For any competing/undocumented/performance claim that can be settled by running code: pin the version, record the environment, and mark each as `CONFIRMED` / `REFUTED` / `PARTIAL`. Record these in `claim-graph.md`.
 
