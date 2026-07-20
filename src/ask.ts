@@ -102,7 +102,7 @@ function selectResult(
 ): AgentToolResult<SelectResultDetails> {
 	const base: SelectResultDetails =
 		freeText !== undefined ? { question, selections, freeText, source } : { question, selections, source };
-	return { content: [{ type: "text", text: serializeEnvelope(selections, freeText) }], details: attachSideChat(base, sideChat) };
+	return { isError: false, content: [{ type: "text", text: serializeEnvelope(selections, freeText) }], details: attachSideChat(base, sideChat) };
 }
 
 function confirmResult(
@@ -115,7 +115,7 @@ function confirmResult(
 	const base: ConfirmResultDetails =
 		freeText !== undefined ? { question, confirmed, freeText, source } : { question, confirmed, source };
 	const text = confirmed === null ? serializeEnvelope([], freeText) : confirmed ? "yes" : "no";
-	return { content: [{ type: "text", text }], details: attachSideChat(base, sideChat) };
+	return { isError: false, content: [{ type: "text", text }], details: attachSideChat(base, sideChat) };
 }
 
 /**
@@ -189,7 +189,7 @@ export async function performAsk(
 		if (body.kind !== "free-text") {
 			return { isError: true, content: [{ type: "text", text: `lets-craft fixture: this rule provides no free-text answer (kind: ${body.kind}).` }] };
 		}
-		return { content: [{ type: "text", text: body.freeText }], details: { question, response: body.freeText, source: "fixture" } };
+		return { isError: false, content: [{ type: "text", text: body.freeText }], details: { question, response: body.freeText, source: "fixture" } };
 	}
 
 	if (runtime) {
@@ -198,7 +198,7 @@ export async function performAsk(
 		if (mounted.kind === "answered") {
 			if (mounted.result.kind === "cancel") return { isError: true, content: [{ type: "text", text: "lets-craft: the user cancelled the lsc_ask prompt." }] };
 			const details: AskResultDetails = { question, response: mounted.result.response, source: "ui" };
-			return { content: [{ type: "text", text: mounted.result.response }], details: attachSideChat(details, mounted.result.sideChat) };
+			return { isError: false, content: [{ type: "text", text: mounted.result.response }], details: attachSideChat(details, mounted.result.sideChat) };
 		}
 	}
 
@@ -206,7 +206,7 @@ export async function performAsk(
 	if (response === undefined) {
 		return { isError: true, content: [{ type: "text", text: "lets-craft: the user cancelled the lsc_ask prompt." }] };
 	}
-	return { content: [{ type: "text", text: response }], details: { question, response, source: "ui" } };
+	return { isError: false, content: [{ type: "text", text: response }], details: { question, response, source: "ui" } };
 }
 
 // ============================================================================
