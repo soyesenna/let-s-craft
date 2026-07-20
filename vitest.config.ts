@@ -17,5 +17,10 @@ export default defineConfig({
 		// spawn storm) can exceed vitest's 5s default — a load-induced flake, not a hang signal.
 		// 20s keeps a genuinely hung test failing fast enough while absorbing scheduler contention.
 		testTimeout: 20_000,
+		// Cap the worker fan-out: with one worker per core, the git-fixture suites spawn hundreds of
+		// concurrent child processes and starve the vitest MAIN thread, which surfaces as spurious
+		// "[vitest-worker]: Timeout calling onTaskUpdate" unhandled errors (a non-zero exit with every
+		// test green). Six workers keeps wall time flat while leaving the main thread schedulable.
+		maxWorkers: 6,
 	},
 });
