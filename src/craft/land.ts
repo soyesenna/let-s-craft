@@ -28,9 +28,10 @@
 // deterministically under this SAME production orchestrator (C3/rec2). There is deliberately no
 // override flag: the escape hatch is a human running git by hand, recorded durably by the skill
 // (spec constraint 3).
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { promisify } from "node:util";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { worktreePath, worktreesRootDir } from "../artifacts/paths.js";
 import {
@@ -94,24 +95,25 @@ export interface LandOperation {
 }
 
 /**
- * The narrow effect port Phase X runs through (C3/rec2). Defaults are real git; tests inject only
- * the externally-nondeterministic failures. `inspectRemovalTarget` is ALSO the Phase R preflight
- * observer, so the pre-removal re-check is provably re-run at removal time (dead-code false-green
- * barrier — the injected counter sees BOTH calls).
+ * The narrow effect port Phase X runs through (C3/rec2). Defaults are real git (async — a tool
+ * execute must never block the host's event loop on a child-process spawn); tests inject only the
+ * externally-nondeterministic failures, sync or async (the orchestrator awaits either).
+ * `inspectRemovalTarget` is ALSO the Phase R preflight observer, so the pre-removal re-check is
+ * provably re-run at removal time (dead-code false-green barrier — the injected counter sees BOTH calls).
  */
 export interface LandEffects {
 	/** `git merge --no-ff --no-edit <sourceOID>` — throws on failure/conflict. */
-	merge(sourceOID: string): void;
+	merge(sourceOID: string): void | Promise<void>;
 	/** `git merge --abort` — best-effort; the post-state verification is the judge, not this call's exit. */
-	abortMerge(): void;
+	abortMerge(): void | Promise<void>;
 	/** Post-abort recovery verification: branch === targetBranch, HEAD === targetOID, clean status. */
-	verifyPostRecovery(expected: { targetBranch: string; targetOID: string }): boolean;
+	verifyPostRecovery(expected: { targetBranch: string; targetOID: string }): boolean | Promise<boolean>;
 	/** Observe the removal candidate (Phase R preflight AND the Phase X pre-removal re-check). */
-	inspectRemovalTarget(candidate: string): RemovalObservation;
+	inspectRemovalTarget(candidate: string): RemovalObservation | Promise<RemovalObservation>;
 	/** `git worktree remove [--force] <path>` — throws on failure. Single --force only; never --force --force. */
-	remove(path: string, force: boolean): void;
+	remove(path: string, force: boolean): void | Promise<void>;
 	/** `git worktree prune` — throws on failure. */
-	prune(): void;
+	prune(): void | Promise<void>;
 }
 
 export interface LandDetails {
@@ -124,24 +126,28 @@ export interface LandDetails {
 	mergeCommit?: string;
 }
 
-function gitIn(cwd: string, args: string[]): string {
-	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+const execFileAsync = promisify(execFile);
+
+/** Async git runner — never a sync spawn: a blocked event loop starves the host (and, under vitest load, the worker↔main RPC). */
+async function gitIn(cwd: string, args: string[]): Promise<string> {
+	const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8" });
+	return stdout.trim();
 }
 
 function defaultLandEffects(projectRoot: string): LandEffects {
 	return {
-		merge(sourceOID) {
-			gitIn(projectRoot, ["merge", "--no-ff", "--no-edit", sourceOID]);
+		async merge(sourceOID) {
+			await gitIn(projectRoot, ["merge", "--no-ff", "--no-edit", sourceOID]);
 		},
-		abortMerge() {
-			gitIn(projectRoot, ["merge", "--abort"]);
+		async abortMerge() {
+			await gitIn(projectRoot, ["merge", "--abort"]);
 		},
-		verifyPostRecovery(expected) {
+		async verifyPostRecovery(expected) {
 			try {
 				return (
-					gitIn(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]) === expected.targetBranch &&
-					gitIn(projectRoot, ["rev-parse", "HEAD"]) === expected.targetOID &&
-					gitIn(projectRoot, ["status", "--porcelain"]) === ""
+					(await gitIn(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"])) === expected.targetBranch &&
+					(await gitIn(projectRoot, ["rev-parse", "HEAD"])) === expected.targetOID &&
+					(await gitIn(projectRoot, ["status", "--porcelain"])) === ""
 				);
 			} catch {
 				return false;
@@ -150,11 +156,11 @@ function defaultLandEffects(projectRoot: string): LandEffects {
 		inspectRemovalTarget(candidate) {
 			return inspectRemovalTarget(candidate);
 		},
-		remove(path, force) {
-			gitIn(projectRoot, ["worktree", "remove", ...(force ? ["--force"] : []), path]);
+		async remove(path, force) {
+			await gitIn(projectRoot, ["worktree", "remove", ...(force ? ["--force"] : []), path]);
 		},
-		prune() {
-			gitIn(projectRoot, ["worktree", "prune"]);
+		async prune() {
+			await gitIn(projectRoot, ["worktree", "prune"]);
 		},
 	};
 }
@@ -217,12 +223,12 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 
 	// ── Phase R — read-only preflight (nothing consumed, nothing written) ──────────────────────────
 	// ① Observe the target (the main checkout at ctx.cwd — land never checks branches out itself).
-	const targetBranch = gitIn(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
-	const targetOID = gitIn(projectRoot, ["rev-parse", "HEAD"]);
+	const targetBranch = await gitIn(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+	const targetOID = await gitIn(projectRoot, ["rev-parse", "HEAD"]);
 
 	// ② Observe the source through the porcelain seam (never by cd-ing into the worktree — a
 	//    symlink-swapped worktree must not redirect the observation, T13).
-	const entries = parseWorktreePorcelain(gitIn(projectRoot, ["worktree", "list", "--porcelain"]));
+	const entries = parseWorktreePorcelain(await gitIn(projectRoot, ["worktree", "list", "--porcelain"]));
 	const entry = findWorktreeEntry(entries, worktreeRoot);
 	const sourceBranch = entry?.branch?.replace(/^refs\/heads\//, "") ?? `lets-craft/${feature}`;
 
@@ -239,7 +245,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 
 	// ⑤ Tracked target dirt refuses early (spec C2 보정: `??`-only untracked is delegated to git merge's
 	//    own native refusal semantics — it is NOT target-dirty).
-	const statusLines = gitIn(projectRoot, ["status", "--porcelain"])
+	const statusLines = (await gitIn(projectRoot, ["status", "--porcelain"]))
 		.split("\n")
 		.filter(line => line.trim() !== "");
 	if (statusLines.some(line => !line.startsWith("??"))) {
@@ -298,7 +304,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 		// The parent may not exist yet — the lexical root alone still bounds the check.
 	}
 	const expectedRoots = worktreesRootReal === worktreesRoot ? [worktreesRoot] : [worktreesRoot, worktreesRootReal];
-	const preflightEval = evaluateRemovalTarget(effects.inspectRemovalTarget(worktreeRoot), expectedRoots);
+	const preflightEval = evaluateRemovalTarget(await effects.inspectRemovalTarget(worktreeRoot), expectedRoots);
 	if (!preflightEval.ok) {
 		return landError("validation-reject", feature, mode, `removal-target validation rejected ${worktreeRoot} (${preflightEval.reason}); nothing was merged or removed.`);
 	}
@@ -350,8 +356,8 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 	// ── Phase X — effects (the single-use nonce is now consumed) ───────────────────────────────────
 	// Effect-boundary re-observation: target drift between consume and effect refuses with the nonce
 	// state made explicit (a consumed nonce means a fresh approval is required either way).
-	const targetBranchNow = gitIn(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
-	const targetOIDNow = gitIn(projectRoot, ["rev-parse", "HEAD"]);
+	const targetBranchNow = await gitIn(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+	const targetOIDNow = await gitIn(projectRoot, ["rev-parse", "HEAD"]);
 	if (targetBranchNow !== operation.targetBranch || targetOIDNow !== operation.targetOID) {
 		return landError(
 			"scope-mismatch",
@@ -365,15 +371,15 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 	let mergeCommit: string | undefined;
 	if (mode === "merge-and-clean") {
 		try {
-			effects.merge(operation.sourceOID);
+			await effects.merge(operation.sourceOID);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			try {
-				effects.abortMerge();
+				await effects.abortMerge();
 			} catch {
 				// abort's own exit is not the judge — the post-state verification below is (plan guardrail 8).
 			}
-			const recovered = effects.verifyPostRecovery({ targetBranch: operation.targetBranch, targetOID: operation.targetOID });
+			const recovered = await effects.verifyPostRecovery({ targetBranch: operation.targetBranch, targetOID: operation.targetOID });
 			if (recovered) {
 				return landError(
 					"merge-aborted",
@@ -392,14 +398,14 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 					`the repository may be mid-merge; inspect \`git status\` manually. The [Land] nonce was consumed.`,
 			);
 		}
-		mergeCommit = gitIn(projectRoot, ["rev-parse", "HEAD"]);
+		mergeCommit = await gitIn(projectRoot, ["rev-parse", "HEAD"]);
 	}
 
 	// Pre-removal re-check (TOCTOU mitigation): membership + a FRESH inspect/evaluate through the
 	// effects port. A rejection here must abort BEFORE any removal call.
-	const entriesNow = parseWorktreePorcelain(gitIn(projectRoot, ["worktree", "list", "--porcelain"]));
+	const entriesNow = parseWorktreePorcelain(await gitIn(projectRoot, ["worktree", "list", "--porcelain"]));
 	const entryNow = findWorktreeEntry(entriesNow, worktreeRoot);
-	const recheck = entryNow ? evaluateRemovalTarget(effects.inspectRemovalTarget(worktreeRoot), expectedRoots) : undefined;
+	const recheck = entryNow ? evaluateRemovalTarget(await effects.inspectRemovalTarget(worktreeRoot), expectedRoots) : undefined;
 	if (!entryNow || !recheck || !recheck.ok) {
 		const why = !entryNow ? "the worktree is no longer git-registered" : `re-inspection rejected the target (${recheck && !recheck.ok ? recheck.reason : "unknown"})`;
 		return landError(
@@ -412,7 +418,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 	}
 
 	try {
-		effects.remove(worktreeRoot, mode === "force-clean-only");
+		await effects.remove(worktreeRoot, mode === "force-clean-only");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		if (mode === "force-clean-only") {
@@ -436,7 +442,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 	}
 
 	try {
-		effects.prune();
+		await effects.prune();
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return landError(
