@@ -121,6 +121,7 @@ export function registerScaffoldTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, ScaffoldDetails>({
 		name: "lsc_scaffold",
+		loadMode: "discoverable",
 		label: "Craft: scaffold a feature worktree (pre-craft Stage 0)",
 		description:
 			"Deterministic pre-craft Stage 0 wiring through the existing TS seams: git worktree + branch via addWorktree " +

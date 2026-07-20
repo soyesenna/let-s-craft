@@ -651,6 +651,7 @@ export function registerLatencyReportTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, LatencyReport>({
 		name: "lsc_latency_report",
+		loadMode: "discoverable",
 		label: "Craft: post-hoc session latency breakdown",
 		description:
 			"Decompose this session's wall-clock time into 실작업(subagent work)/에러·재시도/스톨/인간 게이트/메인 생성/기타 " +

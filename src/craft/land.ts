@@ -477,6 +477,7 @@ export function registerLandTool(pi: ExtensionAPI, effects?: Partial<LandEffects
 
 	pi.registerTool<typeof parameters, LandDetails>({
 		name: "lsc_land",
+		loadMode: "discoverable",
 		label: "Craft: land an approved feature (merge + worktree cleanup)",
 		description:
 			"Fail-closed merge + worktree cleanup for a post-craft-approved feature (2-phase). Phase R re-validates the audit " +

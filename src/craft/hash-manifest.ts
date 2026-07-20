@@ -238,6 +238,7 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, CraftInitDetails>({
 		name: "lsc_craft_init",
+		loadMode: "discoverable",
 		label: "Craft: init hash manifest",
 		description:
 			"Start a craft loop for a pre-craft feature: record a SHA-256 manifest of .lsc/crafts/{feature}/test/ " +
@@ -339,6 +340,7 @@ function registerVerifyHashTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, VerifyHashDetails>({
 		name: "lsc_verify_hash",
+		loadMode: "discoverable",
 		label: "Craft: verify hash manifest",
 		description:
 			"Re-hash .lsc/crafts/{feature}/test/ and compare it against the manifest lsc_craft_init recorded. Call " +
@@ -393,6 +395,7 @@ function registerRestoreTestsTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, RestoreTestsDetails>({
 		name: "lsc_restore_tests",
+		loadMode: "discoverable",
 		label: "Craft: restore protected test assets from snapshot",
 		description:
 			"Restore .lsc/crafts/{feature}/test/ (run_test.sh + test assets) to the exact content lsc_craft_init " +
