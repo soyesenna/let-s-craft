@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { registerScaffoldTool } from "./artifacts/scaffold.js";
 import { registerAskTools } from "./ask.js";
 import { registerCraftAbortTool } from "./craft/abort.js";
 import { registerCompactionDirective } from "./craft/compact-directive.js";
@@ -35,6 +36,7 @@ export default function (pi: ExtensionAPI): void {
 	registerCraftReleaseTool(pi);
 	registerAuditValidateTools(pi);
 	registerLandTool(pi);
+	registerScaffoldTool(pi);
 	registerUsageStatusBar(pi);
 	registerWatchdog(pi);
 	registerLatencyReportTool(pi);

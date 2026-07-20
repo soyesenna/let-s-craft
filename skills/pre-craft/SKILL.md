@@ -77,25 +77,17 @@ The four sub-stages run in a **fixed order and none may be skipped**: `trace →
    `[Feature Name] What should this pre-craft build or fix? Describe it in a sentence or two — the feature name and the rest of this pipeline are derived from your answer.`
 
    via `lsc_ask`. Slugify the answer (C14, "작업 내용 기반 kebab-case"): take the first ~5 meaningful words, lowercase, strip punctuation/special characters, join with hyphens. If the result collides with an existing `.lsc/crafts/{feature}/` from a *different* piece of work, disambiguate (append `-2`, etc.) rather than silently overwriting.
-2. **Branch + worktree — always, no question asked.** Every craft now runs in an isolated git worktree (C6/R5: all-in-worktree is a fixed pipeline decision, not a per-run choice — the yes/no worktree question this stage used to ask is gone). Detect the repo's branch naming convention before defaulting:
+2. **Branch + worktree + crafts dir + gitignore — one `lsc_scaffold` call.** Every craft runs in an isolated git worktree (C6/R5: all-in-worktree is a fixed pipeline decision, not a per-run choice — the yes/no worktree question this stage used to ask is gone). Branch-prefix detection deliberately stays here in prose (the tool never guesses conventions) — detect the repo's naming convention first:
    ```bash
    git branch -a --format='%(refname:short)' | grep -E '^(feat|feature|fix|chore|task)/' | head -5
    ```
-   If a convention is visible, use its prefix (`{prefix}/{feature}`); otherwise default to `lets-craft/{feature}` (matching `src/artifacts/worktree.ts`'s default). Reuse semantics mirror C7 (a re-run after a REJECT reuses, never errors on "already exists") — replicate `addWorktree()` (`src/artifacts/worktree.ts:61-76`) by hand:
-   - if `.lsc/worktrees/{feature}/` already exists → reuse it, report it.
-   - else if the branch already exists locally (`git show-ref --verify --quiet refs/heads/{branch}`) → `git worktree add .lsc/worktrees/{feature} {branch}`.
-   - else → `git worktree add -b {branch} .lsc/worktrees/{feature} HEAD`.
-   Resolve and record `{worktreeAbs}` (the absolute path to `.lsc/worktrees/{feature}/`) now — every remaining step in this skill, across every stage, writes and reads through it (item 9 above).
-3. **Create `.lsc/crafts/{feature}/` inside the worktree**: `mkdir -p {worktreeAbs}/.lsc/crafts/{feature}`.
-4. **Gitignore — always, every run.** Replicate `ensureWorktreesGitignored()` (`src/artifacts/gitignore.ts`) idempotently, against the **project root's** `.gitignore` (not the worktree's — this deliberately mirrors `ensureSnapshotsGitignored`'s own main-checkout anchor in `src/craft/hash-manifest.ts`: an uncommitted worktree-local `.gitignore` change would itself pollute the eventual merge, same rationale as R10):
-   ```bash
-   grep -qE '^/?\.lsc/worktrees/?$' .gitignore 2>/dev/null || {
-     [ -s .gitignore ] && [ "$(tail -c1 .gitignore)" != "" ] && echo >> .gitignore
-     echo '.lsc/worktrees/' >> .gitignore
-   }
-   ```
-   Call this on every pre-craft run, even if `.gitignore` was already updated by a previous run — it is a no-op then.
-5. Proceed to Stage 1. Do not ask any further setup questions.
+   If a convention is visible, use its prefix (`{prefix}/{feature}`); otherwise omit the argument and the tool defaults to `lets-craft/{feature}` (matching `src/artifacts/worktree.ts`'s own default). Then call **`lsc_scaffold` with `{feature, branch}`** — the detected name is passed through as the `branch` argument (prose detects, the tool executes: the co-evolution contract). The tool performs the whole Stage 0 wiring deterministically through the existing TS seams, never a bash replication:
+   - worktree + branch via `addWorktree()` — reuse semantics mirror C7 (a re-run after a REJECT reuses the existing worktree or branch, never errors on "already exists"),
+   - `.lsc/crafts/{feature}/` created **inside the worktree** (all-in-worktree),
+   - the **project root's** `.gitignore` registered via `ensureWorktreesGitignored()` (not the worktree's — an uncommitted worktree-local `.gitignore` change would itself pollute the eventual merge, same rationale as R10), idempotently on every run.
+   Its write capability is exactly two paths (the worktree subtree + exactly `projectRoot/.gitignore`); traversal feature names and symlink escapes are refused before any write, and re-running it is a genuine no-op (resume-safe).
+3. Resolve and record `{worktreeAbs}` (the absolute path to `.lsc/worktrees/{feature}/` — `lsc_scaffold`'s result names it) now — every remaining step in this skill, across every stage, writes and reads through it (item 9 above).
+4. Proceed to Stage 1. Do not ask any further setup questions.
 
 ## 3. Stage 1 — Trace (C15)
 
