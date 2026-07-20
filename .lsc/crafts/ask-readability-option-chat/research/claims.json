@@ -26,7 +26,7 @@
         "reasons": [
           "surviving support: wave-1/TracerHostCapability — types.ts:362-393, 999-1203 전수 스캔, 16.5.2 model-api.ts 교차확인, wave-1/RExploreSdk — types.d.ts:102-178, 237-267 전체 시그니처 인벤토리, wave-1/TracerCodePath — SelectUI/AskUI 포트에 generation 부재, ctx.models read-only (types.ts:342-360,380), wave-1/TracerBtwPriorArt — extension types에서 oneshot|sideRequest|ephemeral|runTurn grep 부재"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -51,7 +51,7 @@
         "reasons": [
           "surviving support: wave-1/RExploreSdk — examples/hooks/qna.ts:43-90, handoff.ts:76-115, custom-compaction.ts:33-87 (complete 직접 호출 흐름), wave-1/RExplorePi — pi examples qna.ts:79-103, summarize.ts:151-203 (동일 패턴, compat.ts:256-283 export), wave-1/TracerHostCapability — P2b: completeSimple export(stream.ts:1215-1225), getApiKey(model-registry.ts:2000), 타입 검증 완료·라이브 실행 미검증"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -76,7 +76,7 @@
         "reasons": [
           "surviving support: wave-1/TracerHostCapability — P2c: HookSelectorComponent가 모든 키 소유(hook-selector.ts:265,611-616); custom<T>만 full focus(types.ts:223-231), wave-2/W2AskDialogArch — onLeft/onRight는 () => void(하이라이트 미전달), 호스트 wrapper가 콜백 후 settle(undefined)로 select 종료 (b5a471d8 도입 diff, controller :611-622)"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -97,7 +97,7 @@
         "reasons": [
           "surviving support: wave-1/TracerHostCapability — P1a REFUTED: hook-selector.ts:330-382; P1b: 429-433,495-521, maxVisible 산식, wave-1/RExploreTui — 렌더 경로 walkthrough (extension-ui-controller.ts:80-120, hook-selector 레이아웃)"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -114,7 +114,7 @@
         "reasons": [
           "surviving support: wave-1/RLibTuiPriorArt — 9패턴 카탈로그, 유일 LLM-on-demand는 host-global /btw"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -131,7 +131,7 @@
         "reasons": [
           "surviving support: wave-1/RLibSampling — spec draft banner, SEP-2577/2596, 채택 현황(4개 클라이언트 미출시)"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -148,7 +148,7 @@
         "reasons": [
           "surviving support: wave-1/TracerFixtureContracts — fixtures.ts:30-34,102-119; ask.ts:152-154,344-345; 테스트 고정 fixtures.test.ts:846-851,814-819"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -173,7 +173,7 @@
         "reasons": [
           "surviving support: wave-1/RExploreSdk — 16.4.0 types.d.ts:102-178에 askDialog 부재, 16.5.2 types.ts:109-170,239-244에 존재, wave-1/RExploreTui — ASK_CHAT_OPTION은 guest 경로만(extension-ui-controller.ts:714-818), 로컬 AskDialog는 submit/cancel만(ask-dialog.ts 26-27), wave-1/RLibOmpDocs — bcee73e58 제거 커밋, docs 언급 zero"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -198,7 +198,7 @@
         "reasons": [
           "surviving support: wave-1/TracerBtwPriorArt — 포터빌리티 테이블, agent-session.ts:15486-15573,15581-15625, wave-1/RLibSampling — runEphemeralTurn 계약 전문 + CHANGELOG 교차확인, wave-1/RExploreSdk — 16.5.2에도 extension-facing runEphemeralTurn 부재"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -215,7 +215,7 @@
         "reasons": [
           "surviving support: wave-1/TracerCodePath — ask.ts:117,304,75-85(합성 3사이트), 404-422/433-458/513-527(루프), 테스트 고정 ask.test.ts:705-708,718"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -232,7 +232,7 @@
         "reasons": [
           "surviving support: wave-2/W2NpmVersions — 16.4.0~17.0.5 published tarball .d.ts 직접 검증(askDialog 16.4.5 line146-147 최초), 전 버전 package.json exact-pin 확인, 17.0.0 changelog loadMode flip"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -249,7 +249,7 @@
         "reasons": [
           "surviving support: wave-2/W2PiAiDeep — node -e import 프로브 3종 실패 재현, pi-ai/package.json:52-61 exports(import→src TS, types→d.ts), test/statusbar-regression.test.ts:31-41 기존 경계 고정"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -266,7 +266,7 @@
         "reasons": [
           "surviving support: wave-2/W2PiAiDeep — completion-bridge.ts:122-178, stream.ts:756-1228, agent-session.ts:14619-14658(델타 루프), 에러 이원성(event-stream.ts:156-181 vs stream.ts:1081-1097)"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -283,7 +283,7 @@
         "reasons": [
           "surviving support: wave-2/W2AskDialogArch — git log --all -S 'onChat'/'Chat about this' 결과(38a5c8a89 도입, 48b2a742c typed, bcee73e58 제거), pre-removal 소스 :33,:75,:486,:528-529,:866-870, a741e0b38 인라인 전환"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -300,7 +300,7 @@
         "reasons": [
           "surviving support: wave-2/W2AskDialogArch — session-manager.ts:320-343 Pick 열거(16.4), v16.5.2 :321-344 동일, 인스턴스 메서드는 런타임 주입이나 비지원(runner.ts:529-531)"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     },
     {
@@ -317,7 +317,70 @@
         "reasons": [
           "surviving support: wave-3/W3PiTuiSurface — 16.4.0 pinned + 16.4.5/16.5.2 published tarball 심볼별 대조표, extensions/types.ts:166-168,223-231, controller.ts:763-815, Bun/Node 프로브, legacy-pi-compat.ts:153-164,334-338"
         ],
-        "evaluatedAt": "2026-07-20T02:46:59.371Z"
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
+      }
+    },
+    {
+      "claim": "16.4.0에서 커스텀 컴포넌트의 텍스트 스타일 제어는 host Theme 시맨틱 API(fg/bg/bold/italic/underline/strikethrough/inverse + ThemeColor ~40종)와 임의 24-bit ANSI(렌더 파이프라인이 보존, wrap/truncate ANSI-aware) 양쪽 모두 가능하며, 현행 select description도 인라인 markdown 강조를 이미 렌더한다. 텍스트 크기는 pi-tui의 Kitty OSC 66 구현(encodeTextSized, textSizing capability — Kitty 전용·기본 off)이 존재하나 생태계 지원은 kitty뿐이므로 capability-gated 점진 강화로만 타당하다.",
+      "dropCondition": "렌더 파이프라인이 ANSI를 스트립하거나, OSC 66 지원이 kitty 외 주요 터미널에 확산되었거나, encodeTextSized가 16.4.0에 없음이 확인되면 수정.",
+      "evidence": [
+        {
+          "source": "wave-4/W4TextStyle — theme.ts:1121-1694, hook-selector.ts:271-387, markdown.ts:2199-2270, utils.ts:86-103, terminal-capabilities.ts:445-450, Bun FORCE_COLOR=3 프로브 3종",
+          "verdict": "support"
+        },
+        {
+          "source": "wave-4/W4TextSizing — kitty 스펙(0.40.0), 터미널 지원 매트릭스(kitty full/foot width-only/Ghostty 파서만/나머지 부재), TUI 프레임워크 관행(figlet/bold/여백 위계)",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: wave-4/W4TextStyle — theme.ts:1121-1694, hook-selector.ts:271-387, markdown.ts:2199-2270, utils.ts:86-103, terminal-capabilities.ts:445-450, Bun FORCE_COLOR=3 프로브 3종, wave-4/W4TextSizing — kitty 스펙(0.40.0), 터미널 지원 매트릭스(kitty full/foot width-only/Ghostty 파서만/나머지 부재), TUI 프레임워크 관행(figlet/bold/여백 위계)"
+        ],
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
+      }
+    },
+    {
+      "claim": "BYO 사이드 호출의 프롬프트 캐시는 3단으로 판정된다: ① 메인 턴 프리픽스 히트는 사실상 불가(provider-wire 프리픽스 바이트 동일성 + 호스트 비공개 변환·난독화 재현 필요 — 키만으로 부족), ② 사이드챗 자체 멀티턴 캐시는 가능(안정 promptCacheKey + 안정 side sessionId + 프리픽스 유지, Anthropic은 cacheRetention 마커 자동), ③ OpenAI/Codex 메인 세션 오염 방지를 위해 unique side sessionId가 필수(/btw 선례: cacheSessionId:side:snowflake + promptCacheKey=cacheSessionId).",
+      "dropCondition": "extension에서 메인 프리픽스 캐시 히트가 실측(usage 관찰)으로 재현되거나, provider 캐시 키 시맨틱이 다르게 판명되면 수정.",
+      "evidence": [
+        {
+          "source": "wave-4/W4PromptCache — pi-ai StreamOptions :372,:413-424, anthropic applyPromptCaching :2919-3064, openai-responses :389-400,:820-841, codex :1200-1295, runEphemeralTurn 16.4 :14591-14633(providerSessionState 미전달), ctx 재료(getSessionId/getSystemPrompt/getBranch/convertToLlm export)",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: wave-4/W4PromptCache — pi-ai StreamOptions :372,:413-424, anthropic applyPromptCaching :2919-3064, openai-responses :389-400,:820-841, codex :1200-1295, runEphemeralTurn 16.4 :14591-14633(providerSessionState 미전달), ctx 재료(getSessionId/getSystemPrompt/getBranch/convertToLlm export)"
+        ],
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
+      }
+    },
+    {
+      "claim": "2026-07-20 기준 @oh-my-pi 최신 published는 17.0.5이며 askDialog API 표면은 16.4.5와 동일하다(런타임 폴리시만 개선: 전 옵션 인라인 markdown preview·스크롤 페이징·Space 버그 수정). pi 계열 extension select는 여전히 string[] 전용이라 기여가 없다. askDialog는 key-opaque + 로컬 chat 훅 제거 상태라 in-question 채팅 키바인딩(R10)·멀티선택 상태 보존(AC1.3)을 그 위에서 충족할 수 없다. 자체 컴포넌트 경로에 최신 범프가 주는 것은 편의 재료(FuzzyText, Editor.setScrollbarVisible, Loader 애니메이션) 수준이다.",
+      "dropCondition": "17.0.5 이후 릴리스가 askDialog에 커스텀 키 훅/chat 콜백/initial-checked를 추가하거나, pi가 rich extension select를 도입하면 재평가.",
+      "evidence": [
+        {
+          "source": "wave-5/W5NpmLatest — npm registry 조회(전 패키지 latest 17.0.5, 이후 없음), 16.4.5↔17.0.5 d.ts diff(askDialog 변경 0건), 17.0.x changelog",
+          "verdict": "support"
+        },
+        {
+          "source": "wave-5/W5OmpLatest — vendored HEAD 39c95e5e=v17.0.5 동가, bcee..HEAD ask-dialog 커밋 4개 전수(e80bc9a0f/a741e0b38/59b9f6568/2300c9ff4), TUI 신규 재료 목록",
+          "verdict": "support"
+        },
+        {
+          "source": "wave-5/W5PiLatest — pi HEAD 0.80.10 extension-selector string[] 전용(blame), custom overlay 강화만, published 0.73.1 낙후",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: wave-5/W5NpmLatest — npm registry 조회(전 패키지 latest 17.0.5, 이후 없음), 16.4.5↔17.0.5 d.ts diff(askDialog 변경 0건), 17.0.x changelog, wave-5/W5OmpLatest — vendored HEAD 39c95e5e=v17.0.5 동가, bcee..HEAD ask-dialog 커밋 4개 전수(e80bc9a0f/a741e0b38/59b9f6568/2300c9ff4), TUI 신규 재료 목록, wave-5/W5PiLatest — pi HEAD 0.80.10 extension-selector string[] 전용(blame), custom overlay 강화만, published 0.73.1 낙후"
+        ],
+        "evaluatedAt": "2026-07-20T12:15:12.079Z"
       }
     }
   ]

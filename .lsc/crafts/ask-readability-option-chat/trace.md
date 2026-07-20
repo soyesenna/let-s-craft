@@ -135,10 +135,13 @@
 
 # External Research Summary
 
-전체 인용 트레일: `research/SYNTHESIS.md` (정본 원장: `research/claims.json`, 16클레임 전원 accepted; 웨이브 로그: `research/waves/wave-{1,2,3}.md`).
+전체 인용 트레일: `research/SYNTHESIS.md` (정본 원장: `research/claims.json`, 19클레임 전원 accepted; 웨이브 로그: `research/waves/wave-{1,2,3,4,5}.md` — wave 4·5는 인터뷰 중 사용자 추가 요구로 재개된 조사).
 
 - **버전 경로 확정**: askDialog(옵션 preview/헤더/노트)는 16.4.5가 최초 published 버전(.d.ts 검증), 16.4.0→16.4.5 extension-API 파괴 zero, sibling 11종 exact-pin 락스텝 필수. 17.x는 loadMode default-flip + 17.0.0 registerTool 버그로 회피. askDialog는 docs 미기재 — 가드+폴백 필수.
 - **BYO-completion 계약 확정**: completeSimple/stream 시그니처·SimpleStreamOptions 전 필드(onTextDelta 없음 — event iterator 소비)·에러 이원성(provider 에러=terminal AssistantMessage resolve, resolver 실패=reject)·OAuth 스티키(sessionId 일관 전달)·비공백 systemPrompt(Codex 400 가드). canonical 선례 = host completion-bridge.ts:122-178.
 - **Bun/Node 경계**: pi-ai·pi-tui·coding-agent 런타임 값은 Node/Vitest에서 import 불가(TS 소스) — completion/TUI 어댑터는 Bun-로드 래퍼 심에 격리, pure core는 포트 주입(기존 statusbar 격리 관례).
 - **UX 선례**: 옵션-바인드 LLM explain은 조사 범위 내 선례 부재(novel). 최근접 부분 사례 = pi-ask-user(정적 split-pane, ctrl+g 코멘트)와 /btw(LLM, host-global). 호스트의 제거된 로컬 "Chat about this" wiring(onChat→{kind:'chat'}→chatRedirect details)이 직접 설계 선례.
 - **프로토콜 선례**: MCP sampling deprecated(shape 참조만); 리스크 완화 표준 = no-tools 강제+반복 상한+maxTokens+ephemeral 기본+명시적 승격; 컨텍스트 스코핑(full-history vs question-only)은 선례가 갈려 **설계 결정으로 이월**.
+- **텍스트 스타일·크기 (wave-4, 인터뷰 중 추가)**: 커스텀 컴포넌트의 스타일 제어는 사실상 무제한 — host Theme 시맨틱 API + 임의 24-bit ANSI(파이프라인 보존, Bun 프로브 재현). 인라인 markdown 강조는 현행 select에서도 렌더됨. '글자 크기'는 pi-tui의 Kitty OSC 66 구현이 실존하나 생태계 지원이 kitty뿐(foot width만, Ghostty 파서만, 나머지 부재) — capability-gated 점진 강화로만 타당, 인터뷰에서 미채택 확정(R12).
+- **프롬프트 캐시 (wave-4, 인터뷰 중 추가)**: 3단 판정 — ① 메인 턴 캐시 프리픽스 히트는 사실상 불가(provider-wire 바이트 동일성 + 호스트 비공개 변환·난독화 재현 필요), ② 사이드챗 자체 멀티턴 캐시는 가능(안정 promptCacheKey + 고유 side sessionId + 프리픽스 불변; Anthropic은 cacheRetention 마커 자동), ③ OpenAI/Codex 오염 방지용 고유 side sessionId 필수(/btw 선례 동일). 인터뷰에서 ②로 확정(R13).
+- **SDK 최신 버전 (wave-5, 인터뷰 중 추가)**: 2026-07-20 기준 latest=17.0.5(이후 없음), askDialog API 표면은 16.4.5=17.0.5 동일(런타임 폴리시만: 전 옵션 인라인 markdown preview·스크롤 페이징·Space 버그 수정). askDialog는 key-opaque+로컬 chat 훅 부재로 in-question 채팅과 구조 충돌. pi 계열은 select가 여전히 string[] 전용이라 기여 없음. 인터뷰 결정(R15): 17.0.5 락스텝 범프 + 자체 컴포넌트 유지(loadMode 마이그레이션 포함).
