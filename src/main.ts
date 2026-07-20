@@ -6,6 +6,7 @@ import { registerCompactionDirective } from "./craft/compact-directive.js";
 import { registerCraftEnforcement } from "./craft/enforcement.js";
 import { registerHashManifestTools } from "./craft/hash-manifest.js";
 import { registerLatencyReportTool } from "./craft/latency-report.js";
+import { registerLandTool } from "./craft/land.js";
 import { registerCraftReleaseTool } from "./craft/release.js";
 import { registerRunTestsTool } from "./craft/run-tests.js";
 import { registerAuditValidateTools } from "./craft/verdict.js";
@@ -33,6 +34,7 @@ export default function (pi: ExtensionAPI): void {
 	registerCraftAbortTool(pi);
 	registerCraftReleaseTool(pi);
 	registerAuditValidateTools(pi);
+	registerLandTool(pi);
 	registerUsageStatusBar(pi);
 	registerWatchdog(pi);
 	registerLatencyReportTool(pi);

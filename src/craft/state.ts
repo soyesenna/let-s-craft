@@ -201,14 +201,35 @@ export function getActiveCraft(): CraftState | undefined {
 	return activeCraft;
 }
 
+export interface SetActiveCraftOptions {
+	/**
+	 * "strict" = persist-or-throw, publish only after a successful durable write (the CS3/CS5
+	 * transactional publish lsc_craft_init relies on — a state-write failure leaves the craft
+	 * unpublished and any open-release still gating). Default "best-effort": the in-memory slot is
+	 * the enforcement authority and the persisted file restart-durable evidence, so an unwritable
+	 * evidence root (e.g. a foreign identity outside this process's filesystem authority) never
+	 * blocks in-memory activation (A).
+	 */
+	durability?: "strict" | "best-effort";
+}
+
 /**
- * Register (or re-register) the active craft and publish it AFTER a successful persist (CS3
- * commit-point order: invalidate → persist → publish). A persist throw leaves the previous
- * in-memory value intact — a failed activation must never expose active state. Activating a new
- * (or re-initialized) craft also revokes any pending destructive approval carried from the prior
- * context, so a stale "just approved" nonce cannot survive a re-init the user skipped.
+ * Register (or re-register) the active craft. Order: invalidate → merge-preserve → persist →
+ * publish. Two properties matter (A/D4):
+ *
+ * 1. PRESERVATION: durable evidence fields owned by the exact-root writers (recordAuditCycleBegin /
+ *    recordAuditValidated / recordReleaseApprovalAt — auditCycle, runLogAtCycleStart,
+ *    auditValidated, releaseApproval, a CLOSED openRelease) survive a re-registration whose caller
+ *    does not itself provide them — activating a craft must never erase audit/approval evidence it
+ *    did not produce. Loop-owned fields (testsPassed, lastFailureSummary, consecutiveFailures, …)
+ *    are NOT preserved: the caller's state wins there — a re-init genuinely resets the loop.
+ * 2. DURABILITY POLICY: see SetActiveCraftOptions — strict persist-or-throw for the lsc_craft_init
+ *    transaction, best-effort (default) everywhere else.
+ *
+ * Activating a new (or re-initialized) craft also revokes any pending destructive approval carried
+ * from the prior context, so a stale "just approved" nonce cannot survive a re-init the user skipped.
  */
-export function setActiveCraft(state: CraftState): void {
+export function setActiveCraft(state: CraftState, options: SetActiveCraftOptions = {}): void {
 	if (hasOpenRelease(state)) {
 		throw new Error(
 			`lets-craft: refusing to activate craft "${state.feature}" while it carries an unclosed open-release — ` +
@@ -216,7 +237,29 @@ export function setActiveCraft(state: CraftState): void {
 		);
 	}
 	invalidatePendingApproval();
-	activeCraft = persist(state);
+	let next = state;
+	try {
+		const existing = decodeCraftState(craftStatePath(state.worktreeRoot ?? state.projectRoot, state.feature));
+		if (existing && !hasOpenRelease(existing)) {
+			const preserved: Partial<CraftState> = {};
+			if (state.auditCycle === undefined && existing.auditCycle !== undefined) preserved.auditCycle = existing.auditCycle;
+			if (state.runLogAtCycleStart === undefined && existing.runLogAtCycleStart !== undefined) preserved.runLogAtCycleStart = existing.runLogAtCycleStart;
+			if (state.auditValidated === undefined && existing.auditValidated !== undefined) preserved.auditValidated = existing.auditValidated;
+			if (state.releaseApproval === undefined && existing.releaseApproval !== undefined) preserved.releaseApproval = existing.releaseApproval;
+			if (state.openRelease === undefined && existing.openRelease !== undefined) preserved.openRelease = existing.openRelease;
+			if (Object.keys(preserved).length > 0) next = { ...state, ...preserved };
+		}
+	} catch {
+		// An undecodable existing file never blocks activation — the caller's state stands alone.
+	}
+	try {
+		next = persist(next);
+	} catch (error) {
+		if (options.durability === "strict") throw error;
+		// Keep the in-memory stamp convention even when the disk half is unreachable.
+		next.stateVersion = CRAFT_STATE_VERSION;
+	}
+	activeCraft = next;
 }
 
 /**
@@ -332,7 +375,10 @@ export function recordAuditCycleBegin(root: string, feature: string, auditCycle:
 	if (!existing) {
 		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — run craft before starting a post-craft audit cycle.`);
 	}
-	const next: CraftState = { ...existing, auditCycle, runLogAtCycleStart };
+	// D4: a new cycle atomically clears any prior cycle's auditValidated marker (JSON.stringify drops
+	// the undefined), so a stale marker can never remain re-citable across cycles — land's cycle-aware
+	// evidence check (validateLandAuditEvidence) relies on this.
+	const next: CraftState = { ...existing, auditCycle, runLogAtCycleStart, auditValidated: undefined };
 	const stamped = persist(next);
 	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
 		activeCraft = stamped;
@@ -346,6 +392,12 @@ export function recordAuditCycleBegin(root: string, feature: string, auditCycle:
  * discipline as `recordAuditCycleBegin` above (post-craft typically has no active craft in
  * session at all by the time it validates). Fails closed (throws) when no persisted state exists
  * — mirrors `recordAuditCycleBegin`'s own precondition.
+ *
+ * NON-AUTHORITATIVE trace (A/D4): this marker is best-effort EVIDENCE, never a land gate on its own.
+ * lsc_land re-derives the verdict + cycle-freshness from disk independently every call
+ * (validateLandAuditEvidence) and treats this marker only as a cycle-aware consistency cross-check
+ * (a current-cycle verdict mismatch, or a future-cycle marker, is evidence-tamper). recordAuditCycleBegin
+ * clears it atomically when a new cycle begins, so it can never be re-cited across cycles.
  */
 export function recordAuditValidated(root: string, feature: string, cycle: number, verdict: string, at: string): CraftState {
 	const existing = readPersistedCraftState(root, feature);
