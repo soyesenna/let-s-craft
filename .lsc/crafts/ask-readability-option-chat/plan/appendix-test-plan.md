@@ -1,7 +1,7 @@
 # Appendix — Expanded Test Plan (deliberate mode)
 
 > Core 요약은 `plan.md` §AC Coverage Matrix. 여기는 층위별 상세. 클레임 [Cn] = claims.json 순서.
-> lets-craft는 vitest 사용(package.json:21). 스냅샷은 ANSI 문자열 고정.
+> lets-craft는 vitest 사용(package.json:21). 렌더 oracle 정책(D4 재비준): exact RGB/ANSI byte 스냅샷은 **비계약** — 테스트 소유 **불변식**(9역할 매핑·pairwise 역할 구분·light≠dark 적응·명시 reference bg 대비 방향·RESET 종결·크기 시퀀스 부재·dense 도달성)만 계약이다. production ROLE_TABLE을 기대값 산출 oracle로 재사용하지 않는다.
 
 ## Unit (vitest-on-Node, 포트 페이크)
 
@@ -30,18 +30,18 @@
 | I6 | LSC_FIXTURE 모드→채팅 어포던스 원천 비노출, 스크립트 응답 현행 동일; **custom factory와 CompletionPort 호출 수 모두 0** | AC2.2 |
 | I7 | destructive production-seam parity: registered `lsc_confirm` capture(test/destructive-approval.test.ts:155-163 선례) — (a) side response가 literal `yes`여도 final No/free/cancel은 approval 미발급, (b) side failure/abort 뒤에도 approval 없음, (c) final confirmed true만 기존 단일 approval 발급; `src/ask.ts:630-681`의 capture-before-await·stale-yes revoke·identity/scope check·persist-before-install 흐름은 details 타입 확장 외 무변경(수정 금지 영역) | AC1.4, AC4.1 |
 
-## Snapshot / Render (ANSI 고정, 결정론)
+## Snapshot / Render (렌더 불변식, 결정론 — D4)
 
 | # | 조건 | 검증 | AC |
 |---|---|---|---|
-| R1 | 옵션 4개 × SSOT 상한 설명 | 포커스 옵션 설명 전문 접근(내부 스크롤), ANSI 위계 스냅샷 | AC3.1, AC5.1 |
+| R1 | 옵션 4개 × SSOT 상한 설명 | 포커스 옵션 설명 전문 접근(내부 스크롤, dense segment union — sparse sentinel 금지·고정 스크롤 상한 금지), 9역할 위계 불변식(매핑·pairwise·RESET) | AC3.1, AC5.1 |
 | R2 | 동 조건 | 비포커스 옵션 label+설명 첫 줄 유지, 목록 스크롤 접근, '소실' 없음 | AC3.2 |
 | R3 | 소형 터미널(24행) | R1·R2 성립 | AC3.3 |
-| R4 | isLight=true / false | 모드별 팔레트 적응 스냅샷(대비 유지) | AC5.2 |
+| R4 | isLight=true / false | 모드별 팔레트 적응 불변식(light≠dark + reference bg 대비 방향, 대비 유지) | AC5.2 |
 | R5 | 임의 출력 | OSC 66/DECDWL 등 크기 시퀀스 부재 assert | AC5.3 |
-| R6 | 채팅 패널 열림(원버튼 답변 표시 상태) × isLight true/false | 채팅 질문/채팅 답변/에러/보더 역할 위계 ANSI 스냅샷(pure render-model 경유) | AC5.1, AC5.2 |
+| R6 | 채팅 패널 열림(원버튼 답변 표시 상태) × isLight true/false | 채팅 질문/채팅 답변/에러/보더 역할 위계 불변식(pure render-model 경유) | AC5.1, AC5.2 |
 
-주: ANSI 스냅샷은 **색 코드 회귀 증거**이고, 대비 수치는 **명시한 reference light/dark background에 대한 proxy**다 — 실제 미지 host background 전체에 대한 증명이 아니다.
+주: 렌더 불변식 테스트는 **역할→요소 매핑·구분·적응의 회귀 증거**이고(exact 색값 비계약), 대비 수치는 **명시한 reference light/dark background에 대한 proxy**다 — 실제 미지 host background 전체에 대한 증명이 아니다.
 
 ## Bun Adapter (PR5 게이트)
 

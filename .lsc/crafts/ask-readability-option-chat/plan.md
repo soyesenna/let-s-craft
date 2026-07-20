@@ -98,7 +98,7 @@ C1 SDK에 completion 심 부재 · C2 BYO-completion(pi-ai) 성립 · C3 select 
 - **Alternatives considered:** askDialog 채택(무효 — key-opaque+chat 훅 부재, [C8][C19]) · close-and-reopen(무효 — 상태 유실·체감 상실) · completion 인라인(무효 — 경계 위반) · 합성 오버레이 컴포넌트(무효 — 상태 보존 취약) · 16종 전부 essential(비채택 — 표면 비대).
 - **Why chosen:** custom<T>가 유일한 full-focus 라운드트립 표면이며([C3]) 상태를 outer coordinator 필드로 보존해 AC1.3을 자연 충족; BYO는 공식 선례로 성립([C2][C13]); Bun leaf 격리는 statusbar가 이미 증명한 경계 패턴([C12]).
 - **Consequences:** 컴포넌트가 전 키 소유(handleInput raw) → 키맵·폴백을 우리가 전담; BYO는 캐시 재사용·계측·시크릿 난독화를 상실(수용, [C9]); details.sideChat 신규 필드; pi-tui가 직접 의존이 됨; 모듈과 port가 늘고 Bun adapter용 별도 smoke test(B1-B3) 필요.
-- **Follow-ups:** craft 초기 BYO 라이브 스파이크(티어1 격상, trace §9); 캐시 1회 실측(AC6.2); 팔레트 RGB는 모드별 스냅샷으로 튜닝.
+- **Follow-ups:** craft 초기 BYO 라이브 스파이크(티어1 격상, trace §9); 캐시 1회 실측(AC6.2); 팔레트 RGB는 모드별 불변식 테스트(AC5) 하에서 craft 튜닝(exact RGB는 비계약 — D4 재비준).
 
 ## Task Flow
 
@@ -152,7 +152,7 @@ PR2만으로 가독성 단독 출하 가능(가독성/채팅 분리, trace Lane 
   provider/resolver error는 pure redactor를 통과한 뒤에만 details.sideChat.error에 저장한다.
   ```
 - 포트/배선: SelectUI/AskUI에 컴포넌트 구동 메서드 추가(인터페이스 ask.ts:176-188 + 페이크 test/ask.test.ts:169-216 + 래퍼 :553-684 — 원자적, Constraint 13). 배선은 §Guardrails Import graph 정본 — main이 createAskRuntimeFactory(pi)를 registerAskTools(pi, factory)에 주입하고, ask.ts는 leaf를 import하지 않는다. 헤드리스 하드에러 유지.
-- **AC:** ANSI 위계 스냅샷(AC5.1 — R1,R6) + 라이트/다크 스냅샷(AC5.2 — R4,R6) + OSC 66 부재(AC5.3 — R5); 포커스 전문+목록 스크롤+24행(AC3.1-3.3); 폴백/헤드리스(AC2.3 — I5); 상태 필드(체크/커서) 보존 스캐폴딩(AC1.3 — U8); 전이표+Host parity reducer 테스트(U9/U10, appendix-test-plan).
+- **AC:** 위계 렌더 불변식(AC5.1 — R1,R6: 9역할 매핑·pairwise 구분·RESET 종결; exact RGB/byte는 비계약, D4 재비준) + 라이트/다크 적응 불변식(AC5.2 — R4,R6) + OSC 66 부재(AC5.3 — R5); 포커스 전문+목록 스크롤+24행(AC3.1-3.3 — 도달성은 dense segment union); 폴백/헤드리스(AC2.3 — I5); 상태 필드(체크/커서) 보존 스캐폴딩(AC1.3 — U8); 전이표+Host parity reducer 테스트(U9/U10, appendix-test-plan).
 
 ### PR3 — completion 어댑터(BYO) + 원버튼 상세 수직 슬라이스 + details.sideChat
 - 신규 `src/ask-ui/completion.ts`(Bun leaf, pi-ai 값 import 격리) + pure `completion-core.ts`(request builder/error normalizer/redactor) + `CompletionPort` 인터페이스 + 테스트 페이크 + 래퍼 배선(3곳, Constraint 13).
@@ -203,8 +203,8 @@ PR2만으로 가독성 단독 출하 가능(가독성/채팅 분리, trace Lane 
 | AC3.3 | 소형 터미널(24행) | PR2 | snapshot (R3) |
 | AC4.1 | 실패/중단/resolver 실패→질문 생존 | PR3/PR4 | unit(U4)+integration(I4) |
 | AC4.2 | 패널 에러+재시도, 결과 비오염 | PR4 | integration (I4) |
-| AC5.1 | 위계 ANSI 스냅샷 | PR2 | snapshot (R1,R6) |
-| AC5.2 | 라이트/다크 적응 스냅샷 | PR2 | snapshot (R4,R6) |
+| AC5.1 | 위계 렌더 불변식(D4) | PR2 | snapshot (R1,R6) |
+| AC5.2 | 라이트/다크 적응 불변식(D4) | PR2 | snapshot (R4,R6) |
 | AC5.3 | OSC 66 부재 | PR2 | snapshot (R5) |
 | AC6.1 | 캐시 히트 형태 요청 단위 고정 | PR3 | unit (U3) |
 | AC6.2 | 라이브 cache_read 1회 실측 | PR5 | observability (O2) |
@@ -214,7 +214,7 @@ PR2만으로 가독성 단독 출하 가능(가독성/채팅 분리, trace Lane 
 ## Success Criteria
 
 - 5 PR 전부 각 AC 통과, 17.0.5 범프 후 기존 suite green + 전 모듈 컴파일(AC2.1).
-- 포커스 옵션 설명이 어떤 조건에서도 소실되지 않음(AC3); 팔레트 위계가 라이트/다크 모두 스냅샷 고정(AC5).
+- 포커스 옵션 설명이 어떤 조건에서도 소실되지 않음(AC3); 팔레트 위계가 라이트/다크 모두 불변식 테스트로 고정(AC5 — exact RGB 비계약, D4).
 - 3도구에서 원버튼+자유 멀티턴 채팅 왕복, 상태 보존, CONTENT 불변, details.sideChat 기록(AC1).
 - 실패 시 질문 생존·목록 복귀(AC4); fixture/헤드리스/폴백 무해(AC2).
 - 캐시 히트 형태 단위 고정(AC6.1) + 라이브 1회 실측 증거(AC6.2).
@@ -225,7 +225,7 @@ PR2만으로 가독성 단독 출하 가능(가독성/채팅 분리, trace Lane 
 
 1. **loadMode 배분** — **확정:** ask 3종(lsc_ask/lsc_select/lsc_confirm)=`essential`; 13 batch(lsc_doctor/scaffold/craft_abort/craft_init/verify_hash/restore_tests/land/latency_report/craft_release/run_tests/audit_begin/audit_validate/claims)=명시 `discoverable`. 근거: types.ts:539-540(기본 discoverable, essential=top-level), xdev.ts:64-66, 현행 xd:// 동작 관측(open-questions.md #1). 정의 위치·근거 표 → §OQ1 표(아래). (appendix-dr §DR-4)
 2. **키맵** — **확정:** browse(↑↓ nav·PgUp/PgDn 스크롤·Enter 선택·Space 토글·`?` 상세·`t` 채팅·Esc 취소), chat(Enter 전송·단계적 Esc), 검색은 `/` 게이트(**mandatory baseline parity** — 기존 HookSelector 검색 대체). custom<T>가 전 키 소유(진짜 호스트 충돌 없음, extension-ui-controller.ts:998-1018/tui.ts:2412-2419); `?`/`t`는 검색 서브모드와만 겹쳐 `/` 게이트로 무모호화. 충돌검사=statusbar TOGGLE_CHORD 선례(statusbar/index.ts:41-43). 상세 → appendix-palette-and-prompts §2 + §PR2 상태 전이 정본.
-3. **컬러 팔레트** — **확정:** lets-craft 브랜드 RGB 9역할 매핑, `Theme.isLight`로 라이트/다크 적응(getColorMode() 아님), 256color 폴백(24-bit SSOT에서 결정론 파생), 대비 목표(본문 ≥4.5:1 — 명시 reference background 대비 proxy). RGB 표는 제안치 — 모드별 스냅샷(AC5.2)으로 craft 튜닝. 상세 → appendix-palette-and-prompts §1.
+3. **컬러 팔레트** — **확정:** lets-craft 브랜드 RGB 9역할 매핑, `Theme.isLight`로 라이트/다크 적응(getColorMode() 아님), 256color 폴백(24-bit SSOT에서 결정론 파생), 대비 목표(본문 ≥4.5:1 — 명시 reference background 대비 proxy). RGB 표는 제안치 — 모드별 불변식 테스트(AC5.2) 하에서 craft 튜닝(exact RGB는 테스트 계약이 아님, D4 재비준). 상세 → appendix-palette-and-prompts §1.
 4. **17.0.5 시그니처 재확인** — **확정(explore 완료):** stream/completeSimple/StreamOptions(캐시 필드 전부 존재)·resolver·getBranch/getSystemPrompt·custom<T> 파괴 변경 0건, 유일 신규는 loadMode. §Context 표 참조.
 5. **원버튼 상세 고정 프롬프트** — **확정:** 비공백 systemPrompt(no-tools 리마인더) + 옵션/질문 대상 2변형 유저 프롬프트 + getBranch 스냅샷 주입. 전문 → appendix-palette-and-prompts §3.
 6. **details.sideChat 스키마** — **확정:** optional `sideChat.turns[]`(target/mode/prompt/response/model/startedAt/endedAt/status[/error]), 3 details 타입 모두에 배치, CONTENT 불변, 시크릿 미기록. 전문 → appendix-palette-and-prompts §4.

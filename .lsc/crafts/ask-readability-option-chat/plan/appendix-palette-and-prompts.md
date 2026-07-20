@@ -9,7 +9,7 @@
 
 **적응 규칙:** 라이트/다크는 `Theme.isLight`(theme.ts:1528-1534, statusLineLuminance>0.5)로 분기 — **`getColorMode()`는 쓰지 않는다**(그것은 truecolor/256color capability, theme.ts:1271,1669-1671). `getColorMode()==="256color"`일 때만 24-bit RGB를 xterm-256 근사로 폴백. 임의 24-bit ANSI는 렌더 파이프라인이 보존(wrapTextWithAnsi/truncateToWidth ANSI-aware, utils.ts:157-180; natives index.d.ts:1590-1605; [C17]).
 
-**위계 매핑 (9역할) — lets-craft 브랜드 팔레트(제안치, craft 스냅샷으로 튜닝 가능):**
+**위계 매핑 (9역할) — lets-craft 브랜드 팔레트(제안치 — exact RGB는 테스트 계약이 아니며[D4], craft에서 불변식 테스트 하에 튜닝):**
 
 | 역할 | 다크(다크 bg) RGB / SGR | 라이트(라이트 bg) RGB | 굵기/속성 | 256 폴백(다크/라이트) |
 |---|---|---|---|---|
@@ -25,7 +25,7 @@
 
 **SSOT:** 위 24-bit role table이 정본(SSOT)이며, 256 폴백 열은 결정론적 근사 함수로 파생한다 — 동일 역할의 두 표현(24-bit/256)을 별도 하드코딩으로 유지하지 않는다.
 
-**대비 목표:** 본문(설명/답변) fg는 명시한 reference light/dark background 대비 ≥ 4.5:1, bold/제목/label은 ≥ 3:1 지향. 정확한 bg는 호스트 소관이라 미지 — isLight 변형으로 명암 방향을 맞춘다. **모드별 ANSI 스냅샷 테스트**(AC5.2)는 **색 코드 회귀 증거**이고, 대비 수치는 **명시한 reference light/dark background에 대한 proxy**다(실제 미지 host background 전체에 대한 증명이 아님). 팔레트는 `src/ask-ui/palette.ts`(pure — 값만, SGR 함수는 Theme 시맨틱 API `theme.fg/bold/...` theme.ts:1607-1636 또는 직접 24-bit SGR).
+**대비 목표:** 본문(설명/답변) fg는 명시한 reference light/dark background 대비 ≥ 4.5:1, bold/제목/label은 ≥ 3:1 지향. 정확한 bg는 호스트 소관이라 미지 — isLight 변형으로 명암 방향을 맞춘다. **모드별 불변식 테스트**(AC5.2, D4 재비준)는 **역할 매핑·구분·적응의 회귀 증거**이고(exact 색값 비계약), 대비 수치는 **명시한 reference light/dark background에 대한 proxy**다(실제 미지 host background 전체에 대한 증명이 아님). 팔레트는 `src/ask-ui/palette.ts`가 SSOT.
 
 **주의:** 굵기·색 대비·여백·구분선만으로 '크기감' 구현. OSC 66/DECDWL 미사용(AC5.3, Constraint 15).
 
