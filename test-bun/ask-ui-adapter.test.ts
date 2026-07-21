@@ -750,3 +750,52 @@ describe("ask-ui Bun adapter (B1-B3 + U7 + production assembly)", () => {
 		expect(textOf(result.content)).toContain("User selected: Alpha");
 	});
 });
+
+// ── audit-0 RF1/RF2 canon amendment (cycle 0, [Canon Amendment]-approved, append-only): input echo
+//    and search projection END-TO-END through the REAL component (state → view-model → render).
+//    Closes the gap audit-0 M1/M2 identified: reducers accumulated askDraft/chatDraft/searchQuery
+//    but no rendered surface carried them, and search rendered the unfiltered list so the highlight
+//    could diverge from the Enter commit target. Also exercises a real buildAsk mount (a coverage
+//    hole the audit's explore pass flagged: the B-suite only typeof-checked buildAsk). ────────────
+describe("ask-ui input echo & search projection (audit-0 RF1/RF2)", () => {
+	const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
+	const rendered = (component: ExtensionUiComponent): string => strip(((component.render() as string[]) ?? []).join("\n"));
+
+	it("RF1 — a mounted ask component echoes typed draft text and Enter commits it", async () => {
+		const { runtime } = await freshRuntime();
+		const { promise, resolve } = Promise.withResolvers<AskResult>();
+		const component = await runtime.buildAsk({ question: "Describe the blocker" })(renderSurface(), renderSurface(), renderSurface(), resolve);
+		component.render();
+		for (const ch of "hotfix") component.handleInput?.(ch);
+		expect(rendered(component)).toContain("hotfix"); // the draft is visible BEFORE submit
+		component.handleInput?.(LEGACY.enter);
+		const result = await promise;
+		expect(result).toEqual({ kind: "answer", response: "hotfix" });
+	});
+
+	it("RF2 — search echoes the query and the highlighted row is exactly the commit target", async () => {
+		const { runtime } = await freshRuntime();
+		const mounted = await mountSelect(runtime, SAMPLE_SELECT);
+		mounted.feed(LEGACY["/"]);
+		for (const ch of "bet") mounted.feed(ch);
+		const out = rendered(mounted.component);
+		expect(out).toContain("bet"); // the active query is visible ("Beta" alone cannot satisfy lowercase "bet")
+		expect(out).not.toContain("Alpha"); // the projection excludes non-matches
+		const focusLine = ((mounted.component.render() as string[]) ?? []).map(strip).find(l => l.startsWith("\u276f")) ?? "";
+		expect(focusLine).toContain("Beta"); // highlight row === the filtered focus target
+		mounted.feed(LEGACY.enter); // Enter commits exactly the highlighted (filtered) option
+		const result = await mounted.result;
+		expect(result).toEqual({ kind: "answer", selections: ["Beta"] });
+	});
+
+	it("RF1 — the chat panel echoes the free-prompt draft being typed; closing it never settles the mount", async () => {
+		const { runtime } = await freshRuntime();
+		const mounted = await mountSelect(runtime, SAMPLE_SELECT);
+		mounted.feed(LEGACY.t); // open free-prompt chat on the focused option (editor focused, no auto turn)
+		for (const ch of "why") mounted.feed(ch);
+		expect(rendered(mounted.component)).toContain("why");
+		mounted.feed(LEGACY.escape); // blur the chat editor
+		mounted.feed(LEGACY.escape); // close the panel back to the list — the question survives
+		expect(mounted.doneCount()).toBe(0);
+	});
+});
