@@ -159,9 +159,9 @@ async function mountComponent<T>(
 	build: () => unknown,
 ): Promise<{ kind: "answered"; result: T } | { kind: "fallback" } | { kind: "error" }> {
 	if (typeof ui.custom !== "function") return { kind: "fallback" };
-	const factory = build();
 	let raw: unknown;
 	try {
+		const factory = build();
 		raw = await ui.custom(factory, { overlay: true });
 	} catch {
 		return { kind: "error" };
