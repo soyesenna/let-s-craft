@@ -131,7 +131,7 @@ lets-craft의 질문 심 3종(lsc_ask/lsc_select/lsc_confirm)을 **자체 TUI �
 - **구현 좌표**: src/ask.ts의 performX 루프(:404-458, :513-527)가 컴포넌트 호출로 대체/확장되는 지점; SelectUI/AskUI 포트에 신규 메서드(컴포넌트 구동·completion 주입) 추가 — 인터페이스+페이크+래퍼 3곳.
 - **컴포넌트 계약**: ctx.ui.custom<T>(factory(tui: TUI, theme: Theme, keybindings: KeybindingsManager, done)) — Component 인터페이스(render 필수, handleInput/dispose 선택), Container 상속 가능; Markdown·Editor·wrapTextWithAnsi·truncateToWidth·matchesKey + 17.0.5 신규 FuzzyText·Editor.setScrollbarVisible·Loader 애니메이션 가용; 테마는 getMarkdownTheme()/getEditorTheme()(coding-agent 루트 export).
 - **스타일 재료 (wave-4)**: 렌더 파이프라인은 임의 ANSI(24-bit)·SGR 속성을 보존(wrap/truncate ANSI-aware — pi-natives 검증); Theme.getColorMode()로 명암 감지; 인라인 markdown 강조는 renderInlineMarkdown 경유로 현행도 동작; Box/Text/Spacer/DynamicBorder + 심볼 프리셋이 위계 재료.
-- **completion 계약**: `stream(model, {systemPrompt:[...], messages}, {apiKey: modelRegistry.resolver(model, sessionId), signal, sessionId: side고유, promptCacheKey: 메인ID, cacheRetention})`의 event iterator에서 text_delta 소비(스트리밍 표시), stopReason 'error'/'aborted' 게이트 + try/catch(resolver reject); 히스토리는 ctx.sessionManager.getBranch() 스냅샷 직렬화(omp examples/hooks/qna.ts 선례). /btw도 16.4에선 providerSessionState 미전달 — Codex append-chain 재사용은 비목표(17.0.5 시그니처 재확인은 plan에서).
+- **completion 계약**: `streamSimple(model, {systemPrompt:[...], messages}, {apiKey: modelRegistry.resolver(model, sessionId), signal, sessionId: side고유, promptCacheKey: 메인ID, cacheRetention})` — **resolver-aware 엔트리 필수**: raw `stream`은 ApiKeyResolver를 문자열로 해소하지 않고 provider로 직전달해 크래시한다(`key.includes is not a function` — O1 라이브 실측). apiKey는 리졸버를 identity로 전달하며 streamSimple이 내부 해소(회전 시 재호출)한다. messages의 **assistant 히스토리는 content-block 배열**(`[{type:"text",text}]`)로 전달한다(pi-ai의 무조건 redaction pass가 assistant 문자열을 미가드 — `content.map` 크래시, O1 라이브 실측). event iterator에서 text_delta 소비(스트리밍 표시), stopReason 'error'/'aborted' 게이트 + try/catch(resolver reject); 히스토리는 ctx.sessionManager.getBranch() 스냅샷 직렬화(omp examples/hooks/qna.ts 선례). /btw도 16.4에선 providerSessionState 미전달 — Codex append-chain 재사용은 비목표(17.0.5 시그니처 재확인은 plan에서).
 - **캐시 재료 (wave-4)**: promptCacheKey는 OpenAI/Codex prompt_cache_key로 전달; Anthropic은 키 개념 없이 cacheRetention에 따른 cache_control 마커+프리픽스 동일성(applyPromptCaching 자동); 멀티턴 프리픽스 불변이 히트 조건.
 - **선례 재사용**: 호스트의 제거된 'Chat about this' wiring(onChat→{kind:'chat'})은 UX 참고; /btw의 no-tools 리마인더 프롬프트 패턴 재사용; pi-ask-user의 검색·랩핑 기법 + 17.0.5 askDialog의 인라인 preview 렌더 기법(a741e0b38) 참고.
 - **리스크 상수**: BYO 라이브 실행은 티어2(타입+예제) — craft 초기 스파이크로 티어1 격상 권고(trace §9); 캐시 실효는 craft 1회 실측(AC6.2); 17.0.5 범프 회귀는 AC2.1로 게이트.
@@ -183,3 +183,10 @@ lets-craft의 질문 심 3종(lsc_ask/lsc_select/lsc_confirm)을 **자체 TUI �
 **R15 [Constraints]** SDK 버전×UI 경로 — 16.4.0 유지+자체 컴포넌트(권장)/17.0.5 범프+자체 컴포넌트/17.0.5 범프+askDialog → **17.0.5 범프 + 자체 컴포넌트**.
 
 각 라운드에서 점수표(Dimension/Score/Weight/Weighted/Gap)·병목 1문장·타깃 로테이션을 채팅에 표시하고 lsc_select(15회)로 질의함. 질문 전부 §1.2 태깅 규약 준수. 3-point injection: trace §7을 초기 아이디어에 주입, 코드베이스 컨텍스트를 trace 종합으로 대체, 첫 질문(R1)을 Lane 4/5 critical unknown에서 추출. R10 이후 사용자 추가 요구 2회로 Goal/Constraints 재개방(각각 wave-4·wave-5 리서치 선행) 후 R11-R15로 게이트 재통과.
+
+## Amendment Log
+
+### Amendment — audit cycle 1, 2026-07-21
+- **Change**: Technical Context의 completion 계약 문언을 raw `stream` 기준에서 resolver-aware `streamSimple` + assistant content-block 배열 기준으로 정정
+- **Reason**: audit-1 Major 1 악화 요인 — O1 라이브 실측(appendix-live-spike.md :59-75)이 raw `stream`의 resolver 미해소 크래시와 assistant 문자열 content 크래시를 증명; 어댑터는 4e15dff에서 동일 방향으로 수정·라이브 재검증됨
+- **Disposition**: Accepted via [Spec Change] lsc_select

@@ -45,7 +45,7 @@
 | Space | 체크 토글(멀티선택만) |
 | `?` | 원버튼 상세(포커스 옵션, 질문 자체는 question header focus(canonicalCursor=-1) 시) |
 | `t` | 자유 프롬프트 채팅 진입 |
-| `/` | FuzzyText 검색 서브모드 진입(**mandatory baseline parity** — 기존 HookSelector 검색 대체) |
+| `/` | substring 검색 서브모드 진입(**mandatory baseline parity** — 기존 HookSelector 검색 대체; 매칭은 대소문자 무시 `.includes`, fuzzy 스코어링 아님 — audit-1 amendment) |
 | Esc | 질문 취소(현행 동작) |
 
 **chat 서브모드(패널 열림):**
@@ -56,7 +56,7 @@
 | Enter | 프롬프트 전송(멀티턴) |
 | Esc (단계적) | ① 에디터 포커스 → 패널로 blur; ② 패널 → 닫고 목록 복귀(질문 생존); ③ 목록 → 질문 취소 |
 
-**search 서브모드(`/` 진입 시, mandatory):** 인쇄 문자=검색어(label+description fuzzy filter, original-index mapping, checked state 유지, empty result, backspace/clear), `?`/`t` 비활성(모호성 제거), Esc=검색 종료(Esc-to-browse). `matchesKey(data, keyId)`(keys.ts:547-549)로 키 판정, KeyId enter/up/down/pageUp/pageDown/space(keys.ts:139-177) 사용.
+**search 서브모드(`/` 진입 시, mandatory):** 인쇄 문자=검색어(label+description substring filter — 대소문자 무시 `.includes`, audit-1 amendment; original-index mapping, checked state 유지, empty result, backspace/clear), `?`/`t` 비활성(모호성 제거), Esc=검색 종료(Esc-to-browse). `matchesKey(data, keyId)`(keys.ts:547-549)로 키 판정, KeyId enter/up/down/pageUp/pageDown/space(keys.ts:139-177) 사용.
 
 **상태 전이(정본):**
 
@@ -70,7 +70,8 @@ select/confirm: question header는 option row가 아닌 canonicalCursor=-1 focus
 ask: printable ?/t는 editor 입력으로 전달한다. Esc 1회는 draft/cursor를 보존한 채
 question-header focus로 이동하고, header의 ?/t가 side chat을 열며, Enter/Down은 editor로
 복귀하고 header에서 Esc 2회째만 질문을 취소한다. side panel 종료 시 returnMode로 복귀한다.
-/ search는 optional이 아니라 mandatory baseline parity다. label+description fuzzy filter,
+/ search는 optional이 아니라 mandatory baseline parity다. label+description substring filter
+(대소문자 무시 `.includes` — audit-1 amendment),
 original-index mapping, checked state, empty result, backspace/clear, Esc-to-browse를 보존한다.
 ```
 
