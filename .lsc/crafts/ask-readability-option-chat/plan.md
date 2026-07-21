@@ -136,7 +136,8 @@ PR2만으로 가독성 단독 출하 가능(가독성/채팅 분리, trace Lane 
   ask: printable ?/t는 editor 입력으로 전달한다. Esc 1회는 draft/cursor를 보존한 채
   question-header focus로 이동하고, header의 ?/t가 side chat을 열며, Enter/Down은 editor로
   복귀하고 header에서 Esc 2회째만 질문을 취소한다. side panel 종료 시 returnMode로 복귀한다.
-  / search는 optional이 아니라 mandatory baseline parity다. label+description fuzzy filter,
+  / search는 optional이 아니라 mandatory baseline parity다. label+description substring filter
+  (canon 비준 — 대소문자 무시 `.includes` 매칭; fuzzy 스코어링 아님 — audit-1 amendment),
   original-index mapping, checked state, empty result, backspace/clear, Esc-to-browse를 보존한다.
   ```
   마운트 시 초기 포커스는 recommended ?? 0의 옵션 행이며 question header가 아니다. ask의 2단 Esc(에디터→header→취소)는 현행 1단 Esc 대비 의도된 UX 변경이며, 폴백(ctx.ui.editor) 경로는 현행 1단 Esc를 유지한다.
@@ -259,3 +260,10 @@ PR2만으로 가독성 단독 출하 가능(가독성/채팅 분리, trace Lane 
 - **Architect:** reviewed — iteration 1, blocking(AWC-equivalent); Change Spec 8항(CS1-CS8) 전량 반영.
 - **Critic:** APPROVE-WITH-CHANGE — iteration 1; Major Fix 1-4 + Minor ⓐ-ⓓ + What's-Missing 3소항 전량 반영. diff-only recheck 대기.
 - **Consensus:** DR/ADR 골격 유지 위에 PR 재배치(가독성-우선 수직 슬라이스 실현), Import graph·상태 전이·Fallback/Failure·캐시 수명·destructive parity 계약 정본화, 팔레트 9-role SSOT 통일 반영.
+
+## Amendment Log
+
+### Amendment — audit cycle 1, 2026-07-21
+- **Change**: 검색 문언 "fuzzy filter"/"FuzzyText 검색"을 substring 매칭(label+description 대소문자 무시 `.includes`, original-index mapping)으로 정정 — 상태 전이 정본(:139) 및 plan/appendix-palette-and-prompts.md §2(:48,:59,:73) 동반 정정
+- **Reason**: audit-0 §8 Deferred 항목의 재상정 — canon 스위트가 substring 동작을 핀으로 고정(state.ts:111-121, render-model/state canon)했고 audit-0 RF2가 substring 유지를 명시 지시함; 문언 방치 시 후속 사이클이 fuzzy 스코어링을 구현하다 canon과 충돌할 위험
+- **Disposition**: Accepted via [Plan Change] lsc_select

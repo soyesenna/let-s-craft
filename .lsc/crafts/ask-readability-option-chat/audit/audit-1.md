@@ -185,9 +185,11 @@ mounted multi-select에서 filtered projection 대상 Space 토글 E2E 부재; m
 ## 8. Proposed Spec/Plan Amendments
 
 1. **[Spec Change 후보] spec.md:134 completion 계약 문언 정정** — Technical Context의 "`stream(model, {systemPrompt:[...], messages}, {apiKey: modelRegistry.resolver(...)...})`" 기술을 resolver-aware 엔트리(`streamSimple`, apiKey 리졸버 identity 전달·내부 해소) 기준으로 정정하고 assistant content-block 요건을 병기. 근거: O1 라이브 실측이 raw `stream`은 resolver를 해소하지 않음을 증명(appendix-live-spike :59-64); 문언 방치 시 후속 작업자가 spec을 따라 raw stream으로 "회귀 구현"할 유인이 됨(critic Major 1 악화 요인).
-   - Disposition: (§6.2 게이트 결과 추기)
+   - Disposition: **Accepted** (audit-1 §6.2 [Spec Change] 게이트, 2026-07-21) — spec.md:134 정정 + Amendment Log 추가 적용됨
 2. **[Plan Change 후보, cycle-0 Deferred 재상정] "fuzzy" 문언의 substring 비준 명문화** — plan.md의 "label+description fuzzy filter"(상태 전이 정본) 및 §OQ2 검색 기술, appendix-palette-and-prompts §2의 "FuzzyText 검색" 문언을 canon·구현이 비준한 substring 매칭(label+description `.includes`, original-index mapping)으로 정정. 근거: audit-0에서 Deferred("다음 사이클에서 재검토") — RF2가 substring 유지를 지시했고 이번 사이클 canon 핀이 substring을 고정했으므로 문언 정합화 시점 도래.
-   - Disposition: (§6.2 게이트 결과 추기)
+   - Disposition: **Accepted** (audit-1 §6.2 [Plan Change] 게이트, 2026-07-21) — plan.md 상태 전이 정본(:139-141) + appendix-palette-and-prompts §2(:48,:59,:73-74) 정정 + Amendment Log 추가 적용됨
+
+**Verdict invalidation guard (§6.2) 적용 note**: 위 2건의 Accept로 spec.md/plan.md가 verdict 렌더 후 수정되었으므로 본 사이클 verdict는 land 근거로 사용할 수 없다 — 본 verdict는 어차피 APPROVE-WITH-CHANGE(land 불가)이며, 다음 사이클(audit-2)이 수정된 canon 기준으로 재감사한다(RF4/RF5 fix-verification과 자연 합류).
 
 ## 9. Adversarial Class Matrix
 
