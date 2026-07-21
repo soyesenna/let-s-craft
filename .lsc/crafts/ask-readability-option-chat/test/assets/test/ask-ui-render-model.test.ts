@@ -188,3 +188,67 @@ describe("chat panel target/status content mapping (render-model)", () => {
 		expect(renderChatPanel(optVm, ENV)).not.toEqual(renderChatPanel(qVm, ENV)); // only the target differs
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Input echo & search projection (audit-0 RF1/RF2 canon amendment, cycle 0 —
+// [Canon Amendment]-approved, append-only). Pins the optional view-model fields
+// the audit's Required Fix introduces: SelectViewModel.searchQuery/filteredIndices/
+// editorDraft and ChatPanelViewModel.chatDraft. Semantics: when filteredIndices is
+// defined the option rows are EXACTLY that projection, focusIndex is a FILTERED
+// position (highlight row === options[filteredIndices[focusIndex]]), checked marks
+// map through ORIGINAL indices, and draft/query text is visible in the output.
+// ---------------------------------------------------------------------------
+
+describe("search projection & input echo (audit-0 RF1/RF2)", () => {
+	it("renders only the filtered projection and interprets focusIndex as a filtered position", () => {
+		// query "gam" matches only Gamma (original index 2): the single projected row must also be
+		// the highlight target — highlight row === options[filteredIndices[focusIndex]].
+		const lines = renderSelectView(selectVm({ searchQuery: "gam", filteredIndices: [2], focusIndex: 0 }), ENV);
+		const out = plain(lines);
+		expect(out).toContain("Gamma");
+		expect(out).not.toContain("Alpha");
+		expect(out).not.toContain("Beta");
+		const focusRow = lines.map(stripAnsi).find(l => l.startsWith("\u276f")) ?? "";
+		expect(focusRow).toContain("Gamma");
+	});
+
+	it("echoes the active search query in the output", () => {
+		// "gam" (lowercase) cannot be satisfied by the label "Gamma" itself — only by a query echo line.
+		const out = plain(renderSelectView(selectVm({ searchQuery: "gam", filteredIndices: [2], focusIndex: 0 }), ENV));
+		expect(out).toContain("gam");
+	});
+
+	it("maps checked marks through original indices while filtered", () => {
+		// Beta+Gamma projected; only Gamma (original index 2) is checked → [x] on Gamma, [ ] on Beta.
+		const lines = renderSelectView(
+			selectVm({ multi: true, checkedIndices: [2], searchQuery: "e", filteredIndices: [1, 2], focusIndex: 0 }),
+			ENV,
+		);
+		expect(stripAnsi(rowWith(lines, "Gamma"))).toContain("[x]");
+		expect(stripAnsi(rowWith(lines, "Beta"))).toContain("[ ]");
+	});
+
+	it("an empty projection renders no option rows, keeps the query visible, and never throws", () => {
+		const lines = renderSelectView(selectVm({ searchQuery: "zzz", filteredIndices: [], focusIndex: 0 }), ENV);
+		const out = plain(lines);
+		expect(out).not.toContain("Alpha");
+		expect(out).not.toContain("Beta");
+		expect(out).not.toContain("Gamma");
+		expect(out).toContain("zzz"); // the user must see why the list is empty
+	});
+
+	it("echoes the ask editor draft (RF1)", () => {
+		const out = plain(renderSelectView(selectVm({ options: [], editorDraft: { text: "draft under edit", cursor: 5 } }), ENV));
+		expect(out).toContain("draft under edit");
+	});
+
+	it("echoes the chat input draft (RF1)", () => {
+		const vm: ChatPanelViewModel = {
+			target: { kind: "question" },
+			turns: [],
+			status: "complete",
+			chatDraft: { text: "why is B risky", focused: true },
+		};
+		expect(plain(renderChatPanel(vm, ENV))).toContain("why is B risky");
+	});
+});
