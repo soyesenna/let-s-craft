@@ -164,6 +164,7 @@ export function registerClaimsTool(pi: ExtensionAPI, deps?: ClaimsToolDeps): voi
 
 	pi.registerTool<typeof parameters, ClaimsDetails>({
 		name: "lsc_claims",
+		loadMode: "discoverable",
 		label: "Craft: re-evaluate the research claim ledger",
 		description:
 			"Re-evaluate the feature worktree's research/claims.json through the pure decision ladder (dropCondition required; " +

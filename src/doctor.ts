@@ -509,6 +509,7 @@ export function registerDoctorTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, DoctorReport>({
 		name: "lsc_doctor",
+		loadMode: "discoverable",
 		label: "Craft: diagnose the lets-craft operational surface",
 		description:
 			"Read-only diagnosis (8 checks): dist↔src drift (srcHash canonical), plugin link (loaded-at-runtime = UNKNOWN), " +

@@ -307,6 +307,7 @@ export function registerRunTestsTool(pi: ExtensionAPI): void {
 	// deep" instantiation against this SDK's TSchema union — see hash-manifest.ts.
 	pi.registerTool<typeof parameters, RunTestsDetails>({
 		name: "lsc_run_tests",
+		loadMode: "discoverable",
 		label: "Craft: run run_test.sh",
 		description:
 			"Run the feature's run_test.sh in the correct source root (the worktree, if --worktree was used, else " +

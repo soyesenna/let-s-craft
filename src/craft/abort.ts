@@ -46,6 +46,7 @@ export function registerCraftAbortTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, CraftAbortDetails>({
 		name: "lsc_craft_abort",
+		loadMode: "discoverable",
 		label: "Craft: abort loop",
 		description:
 			"Mark the active craft as user-aborted so the session_stop backstop stops forcing continuation (C23). Only call " +

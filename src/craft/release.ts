@@ -102,6 +102,7 @@ export function registerCraftReleaseTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, CraftReleaseDetails>({
 		name: "lsc_craft_release",
+		loadMode: "discoverable",
 		label: "Craft: release protected canon for approved modification",
 		description:
 			"Clear the active craft's hash-protection so its test/ canon can be intentionally modified — the 4th " +
