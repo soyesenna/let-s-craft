@@ -232,10 +232,12 @@ let completionStarted = Promise.withResolvers<void>();
 mock.module("@oh-my-pi/pi-ai", () => {
 	return {
 		...actualPiAi,
-		stream: (model: unknown, context: unknown, options: unknown) => {
-			streamCalls.push({ model, context, options });
-			completionStarted.resolve();
-			return nextStream();
+		// O1 regression trap (audit-1 RF4): raw `stream` never resolves an ApiKeyResolver — the exact
+		// live crash class the O1 spike proved. The adapter MUST stay on the resolver-aware
+		// `streamSimple`; any regression back to raw `stream` now fails the suite loudly instead of
+		// staying green through a shared capture array (the hollow-pin defect audit-1 Major 1 flagged).
+		stream: () => {
+			throw new TypeError("key.includes is not a function (simulated — O1 ①: raw stream never resolves an ApiKeyResolver)");
 		},
 		completeSimple: async (model: unknown, context: unknown, options: unknown) => {
 			completeSimpleCalls.push({ model, context, options });
