@@ -130,3 +130,72 @@ above, both at runtime on 17.0.5 and at the code level). Fix direction (NOT appl
 Raw captures (throwaway harness, outside the worktree): `/tmp/lsc-live-gates/omp-probe-result.json`
 (O1/O2), `/tmp/lsc-live-gates/e1-runtime.log` + extracted enumeration (E1),
 `/tmp/lsc-live-gates/zod-probe-result.json` (`--no-extensions` vs `-e` isolation).
+
+---
+
+## POST-FIX RE-VERIFICATION — O1 RF3 bugs fixed, shipped adapter live path now PASSES
+
+> Follow-up to the O1 CRITICAL FINDINGS above (fix cycle after audit-0 RF3). The two live bugs the O1
+> spike proved were then fixed in `src/ask-ui/completion.ts` and RE-VERIFIED live against the real
+> provider — driving the **fixed, shipped `createCompletionPort` DIRECTLY** (not the raw builders).
+> **fail-closed**: results recorded exactly as observed.
+
+### The fix (src/ask-ui/completion.ts)
+
+1. **`import { stream }` → `streamSimple`** (the resolver-aware entry). The event-iteration logic is
+   unchanged (`streamSimple` returns the same `AssistantMessageEventStream`; text_delta/done/error
+   handling, stopReason gate, and redaction are all invariant). The `apiKey` is still forwarded as the
+   resolver BY IDENTITY — `streamSimple` resolves it internally (stream.ts:1015-1116), so the O1 bug ①
+   crash (`key.includes is not a function`) can no longer occur.
+2. **Assistant content → content-block array.** `Context.messages` now maps an `assistant` message's
+   content to `[{ type: "text", text }]`; user/other roles keep the plain string. This satisfies
+   pi-ai's unconditional redaction pass (`transform-messages`), which has no string guard for the
+   assistant arm — so the O1 bug ② crash (`assistantMsg.content.map is not a function`) is gone.
+
+### Live re-verification probe
+
+- date: 2026-07-21T09:26:14Z
+- omp: global **17.0.6** (`~/.bun/bin/omp`), plain `-e` load (no `--no-extensions`, per the E1 finding).
+- provider/model: **anthropic/claude-haiku-4-5** (resolved via `ctx.models.resolve`; ctx.model was the
+  preset's claude-fable-5, so the probe pinned the ship model, same as O1).
+- vehicle: **registered tool `execute`** (throwaway `-e` extension `postfix-probe-ext.ts`) inside a real
+  omp session — the same context O1 used. Real `ctx.modelRegistry.resolver` (minted a real key), real
+  provider response, no mock. The probe imports the **freshly-built `dist/ask-ui/completion.js`** and
+  calls `createCompletionPort(ctx)` → `port.run(request, { signal, onDelta })`.
+- request: built with the production `createSideChatSession` + `buildSideRequest` over a seeded history
+  containing **4 assistant turns** (`assistantHistoryCount: 4`, `messageCount: 9`) — the exact history
+  shape that crashed the old adapter's redaction pass (bug ②).
+
+### Result — a no-throw round-trip carrying assistant history
+
+- `run.ok`: **true**; `status`: **complete**; `error`: null (no throw — neither `key.includes` nor
+  `content.map`).
+- reply text: **973 chars**, non-empty; first line: `**Discriminated union: what it does**`.
+- streaming incremental: **yes** — `deltaCount: 16` `onDelta` increments (`onDeltaIncremental: true`),
+  firstDeltaMs 1186, totalMs 4157; usage cacheRead 0 / cacheWrite 0 (fresh session).
+- omp confirmed the tool succeeded and echoed the marker `LSC-POSTFIX-PROBE-DONE 842 bytes written`
+  (no spurious tool error).
+
+Contrast with the pre-fix O1 captures above (`omp-probe-result.json`): `o1_stream_adapter` (raw
+`stream` + string messages = the OLD adapter) FAILED with `key.includes is not a function`;
+`o1_rawmsg_streamSimple` (streamSimple but string assistant messages) FAILED with
+`assistantMsg.content.map is not a function`. The fixed adapter (streamSimple + assistant blocks) now
+matches the passing `o1_streamSimple` path.
+
+### Deterministic suite (fixed adapter, run-9)
+
+- build: **PASS** (tsc, 0). type-check gate (ask-ui contract `.test-d.ts`): **PASS** (0).
+- Vitest (`LSC_E2E= LSC_FIXTURE= npx vitest run`): **1491 passed / 16 skipped**, all green.
+- Bun (`bun test test-bun`): **21 pass / 0 fail** — including the new B2 assistant-block-array pin
+  (`B2 — assistant history is forwarded as a CONTENT-BLOCK array`) that was RED at run-8.
+
+### POST-FIX VERDICT (fail-closed)
+
+- Shipped adapter live path (resolver-aware completion + assistant-history round-trip + incremental
+  streaming): **PASS** — the two O1 RF3 bugs are fixed and confirmed live. BYO-completion adapter is no
+  longer blocked by the O1 findings.
+- Probe ② UI round-trip (custom mount → done → re-select): still **NOT VERIFIED** (needs an interactive
+  TTY; unchanged by this fix, which is on the completion path only).
+
+Raw captures (throwaway, outside the worktree): `/tmp/lsc-live-gates/postfix-probe-result.json`
+(this re-verification) + `/tmp/lsc-live-gates/postfix-probe-ext.ts` (the probe extension).
