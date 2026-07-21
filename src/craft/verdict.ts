@@ -294,6 +294,7 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, AuditBeginDetails>({
 		name: "lsc_audit_begin",
+		loadMode: "discoverable",
 		label: "Craft: begin a post-craft audit cycle",
 		description:
 			"Record the current max test/logs/run-N.log index as this feature's new post-craft audit cycle's freshness " +
@@ -440,6 +441,7 @@ function registerAuditValidateTool(pi: ExtensionAPI): void {
 
 	pi.registerTool<typeof parameters, AuditValidateDetails>({
 		name: "lsc_audit_validate",
+		loadMode: "discoverable",
 		label: "Craft: validate the latest audit verdict",
 		description:
 			"Machine-verify the latest .lsc/crafts/{feature}/audit/audit-N.md before land: parse its **AUDIT VERDICT: " +

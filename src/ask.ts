@@ -23,6 +23,8 @@ import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@oh-my-pi/
 import { canonicalizeFreeText, detectFixturePath, type FixtureAnswerBody, type FixtureAnswerSet, getFixtureAnswerSet } from "./fixtures.js";
 import { createPendingApproval, installPendingApproval, invalidatePendingApproval, invalidatePreparedOperation, matchDestructiveGateTag, peekPreparedOperation, sameCraftIdentity } from "./craft/destructive-approval.js";
 import { getActiveCraft, recordReleaseApproval, recordReleaseApprovalAt } from "./craft/state.js";
+import { buildSideChatDetails, type SideChatDetails } from "./ask-ui/completion-core.js";
+import type { AskExecutionContext, AskResult, AskRuntime, AskRuntimeBinder, ConfirmResult, SelectResult, SideChatTurn } from "./ask-ui/types.js";
 
 const HEADLESS_ERROR =
 	"lets-craft: interactive UI is not available (headless print/RPC mode) and no fixture is configured — set " +
@@ -84,15 +86,23 @@ function serializeEnvelope(selections: string[], freeText?: string): string {
 	return lines.join("\n");
 }
 
+/** Attach details.sideChat only when the component recorded at least one turn (appendix §4). */
+function attachSideChat<T extends { sideChat?: SideChatDetails }>(details: T, sideChat: readonly SideChatTurn[] | undefined): T {
+	if (!sideChat) return details;
+	const built = buildSideChatDetails(sideChat);
+	return built ? { ...details, sideChat: built } : details;
+}
+
 function selectResult(
 	question: string,
 	selections: string[],
 	freeText: string | undefined,
 	source: "fixture" | "ui",
+	sideChat?: readonly SideChatTurn[],
 ): AgentToolResult<SelectResultDetails> {
-	const details: SelectResultDetails =
+	const base: SelectResultDetails =
 		freeText !== undefined ? { question, selections, freeText, source } : { question, selections, source };
-	return { content: [{ type: "text", text: serializeEnvelope(selections, freeText) }], details };
+	return { isError: false, content: [{ type: "text", text: serializeEnvelope(selections, freeText) }], details: attachSideChat(base, sideChat) };
 }
 
 function confirmResult(
@@ -100,11 +110,12 @@ function confirmResult(
 	confirmed: boolean | null,
 	freeText: string | undefined,
 	source: "fixture" | "ui",
+	sideChat?: readonly SideChatTurn[],
 ): AgentToolResult<ConfirmResultDetails> {
-	const details: ConfirmResultDetails =
+	const base: ConfirmResultDetails =
 		freeText !== undefined ? { question, confirmed, freeText, source } : { question, confirmed, source };
 	const text = confirmed === null ? serializeEnvelope([], freeText) : confirmed ? "yes" : "no";
-	return { content: [{ type: "text", text }], details };
+	return { isError: false, content: [{ type: "text", text }], details: attachSideChat(base, sideChat) };
 }
 
 /**
@@ -128,16 +139,42 @@ export interface AskResultDetails {
 	question: string;
 	response: string;
 	source: "fixture" | "ui";
+	sideChat?: SideChatDetails;
 }
 
 export interface AskUI {
 	editor(title: string, prefill?: string): Promise<string | undefined>;
+	custom?(factory: unknown, opts?: { overlay?: boolean }): Promise<unknown>;
+}
+
+/**
+ * Mount the side-chat component through ctx.ui.custom and classify the outcome (plan §PR2
+ * Fallback/Failure canon): the factory is built ONLY when a custom method exists (so a host without
+ * custom never even attempts the runtime); a resolved value is the answer; `undefined` (the factory
+ * never started) is the sole fallback-eligible condition; a reject (started then errored) surfaces as
+ * an error rather than being masked by the legacy path.
+ */
+async function mountComponent<T>(
+	ui: { custom?(factory: unknown, opts?: { overlay?: boolean }): Promise<unknown> },
+	build: () => unknown,
+): Promise<{ kind: "answered"; result: T } | { kind: "fallback" } | { kind: "error" }> {
+	if (typeof ui.custom !== "function") return { kind: "fallback" };
+	let raw: unknown;
+	try {
+		const factory = build();
+		raw = await ui.custom(factory, { overlay: true });
+	} catch {
+		return { kind: "error" };
+	}
+	if (raw === undefined) return { kind: "fallback" };
+	return { kind: "answered", result: raw as T };
 }
 
 export async function performAsk(
 	channel: AskChannel,
 	ui: AskUI,
 	params: { question: string; prefill?: string },
+	runtime?: AskRuntime,
 ): Promise<AgentToolResult<AskResultDetails>> {
 	const { question, prefill } = params;
 	if (channel.kind === "unavailable") return { isError: true, content: [{ type: "text", text: HEADLESS_ERROR }] };
@@ -152,14 +189,24 @@ export async function performAsk(
 		if (body.kind !== "free-text") {
 			return { isError: true, content: [{ type: "text", text: `lets-craft fixture: this rule provides no free-text answer (kind: ${body.kind}).` }] };
 		}
-		return { content: [{ type: "text", text: body.freeText }], details: { question, response: body.freeText, source: "fixture" } };
+		return { isError: false, content: [{ type: "text", text: body.freeText }], details: { question, response: body.freeText, source: "fixture" } };
+	}
+
+	if (runtime) {
+		const mounted = await mountComponent<AskResult>(ui, () => runtime.buildAsk({ question, prefill }));
+		if (mounted.kind === "error") return { isError: true, content: [{ type: "text", text: "lets-craft: the lsc_ask component failed to render." }] };
+		if (mounted.kind === "answered") {
+			if (mounted.result.kind === "cancel") return { isError: true, content: [{ type: "text", text: "lets-craft: the user cancelled the lsc_ask prompt." }] };
+			const details: AskResultDetails = { question, response: mounted.result.response, source: "ui" };
+			return { isError: false, content: [{ type: "text", text: mounted.result.response }], details: attachSideChat(details, mounted.result.sideChat) };
+		}
 	}
 
 	const response = await promptFreeText(ui, question, prefill);
 	if (response === undefined) {
 		return { isError: true, content: [{ type: "text", text: "lets-craft: the user cancelled the lsc_ask prompt." }] };
 	}
-	return { content: [{ type: "text", text: response }], details: { question, response, source: "ui" } };
+	return { isError: false, content: [{ type: "text", text: response }], details: { question, response, source: "ui" } };
 }
 
 // ============================================================================
@@ -171,6 +218,7 @@ export interface SelectResultDetails {
 	selections: string[];
 	freeText?: string;
 	source: "fixture" | "ui";
+	sideChat?: SideChatDetails;
 }
 
 export interface SelectUI {
@@ -185,6 +233,7 @@ export interface SelectUI {
 		},
 	): Promise<string | undefined>;
 	editor(title: string, prefill?: string): Promise<string | undefined>;
+	custom?(factory: unknown, opts?: { overlay?: boolean }): Promise<unknown>;
 }
 
 /** Escape a string for literal use inside a RegExp source. */
@@ -462,6 +511,7 @@ export async function performSelect(
 	channel: AskChannel,
 	ui: SelectUI,
 	params: { question: string; options: SelectOptionInput[]; multi?: boolean; recommended?: number },
+	runtime?: AskRuntime,
 ): Promise<AgentToolResult<SelectResultDetails>> {
 	const { question, options, multi = false, recommended } = params;
 	if (channel.kind === "unavailable") return { isError: true, content: [{ type: "text", text: HEADLESS_ERROR }] };
@@ -470,6 +520,15 @@ export async function performSelect(
 	if (invalid !== undefined) return { isError: true, content: [{ type: "text", text: invalid }] };
 
 	if (channel.kind === "fixture") return selectFromFixture(channel.answers, question, options, multi);
+
+	if (runtime) {
+		const mounted = await mountComponent<SelectResult>(ui, () => runtime.buildSelect({ question, options, multi, recommended }));
+		if (mounted.kind === "error") return { isError: true, content: [{ type: "text", text: "lets-craft: the lsc_select component failed to render." }] };
+		if (mounted.kind === "answered") {
+			if (mounted.result.kind === "cancel") return { isError: true, content: [{ type: "text", text: "lets-craft: the user cancelled the lsc_select prompt." }] };
+			return selectResult(question, mounted.result.selections, mounted.result.freeText, "ui", mounted.result.sideChat);
+		}
+	}
 
 	return multi ? selectMultiUI(ui, question, options, recommended) : selectSingleUI(ui, question, options, recommended);
 }
@@ -483,12 +542,14 @@ export interface ConfirmResultDetails {
 	confirmed: boolean | null;
 	freeText?: string;
 	source: "fixture" | "ui";
+	sideChat?: SideChatDetails;
 }
 
 export async function performConfirm(
 	channel: AskChannel,
 	ui: SelectUI,
 	params: { question: string },
+	runtime?: AskRuntime,
 ): Promise<AgentToolResult<ConfirmResultDetails>> {
 	const { question } = params;
 	if (channel.kind === "unavailable") return { isError: true, content: [{ type: "text", text: HEADLESS_ERROR }] };
@@ -503,6 +564,15 @@ export async function performConfirm(
 		if (body.kind === "confirmation") return confirmResult(question, body.confirm, undefined, "fixture");
 		if (body.kind === "free-text") return confirmResult(question, null, body.freeText, "fixture");
 		return { isError: true, content: [{ type: "text", text: `lets-craft fixture: this rule provides no confirm answer (kind: ${body.kind}).` }] };
+	}
+
+	if (runtime) {
+		const mounted = await mountComponent<ConfirmResult>(ui, () => runtime.buildConfirm({ question }));
+		if (mounted.kind === "error") return { isError: true, content: [{ type: "text", text: "lets-craft: the lsc_confirm component failed to render." }] };
+		if (mounted.kind === "answered") {
+			if (mounted.result.kind === "cancel") return { isError: true, content: [{ type: "text", text: "lets-craft: the user cancelled the lsc_confirm prompt." }] };
+			return confirmResult(question, mounted.result.confirmed, mounted.result.freeText, "ui", mounted.result.sideChat);
+		}
 	}
 
 	// Yes/No are fixed English system identifiers (like the question tags) — self-evident, so no
@@ -540,8 +610,12 @@ function channelFor(pi: ExtensionAPI, ctx: Pick<ExtensionContext, "hasUI">): Ask
 }
 
 /** Register lsc_ask, lsc_select, lsc_confirm. */
-export function registerAskTools(pi: ExtensionAPI): void {
+export function registerAskTools(pi: ExtensionAPI, binder?: AskRuntimeBinder): void {
 	const z = pi.zod;
+
+	// Bind the runtime ONLY on the UI channel (v2 §1); fixture/unavailable channels never call the binder.
+	const runtimeFor = (channel: AskChannel, ctx: AskExecutionContext): AskRuntime | undefined =>
+		channel.kind === "ui" && binder ? binder(ctx) : undefined;
 
 	// Explicit type arguments (`typeof parameters`, not left to inference) avoid TS2589
 	// "excessively deep" instantiation against this SDK's TSchema union — see
@@ -552,6 +626,7 @@ export function registerAskTools(pi: ExtensionAPI): void {
 	});
 	pi.registerTool<typeof askParameters, AskResultDetails>({
 		name: "lsc_ask",
+		loadMode: "essential",
 		label: "lets-craft: ask (free text)",
 		description:
 			"Ask the user a free-text question in a multi-line editor (ctx.ui.editor); an optional prefill seeds the editor. " +
@@ -561,7 +636,8 @@ export function registerAskTools(pi: ExtensionAPI): void {
 		approval: "read",
 		parameters: askParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<AskResultDetails>> {
-			return performAsk(channelFor(pi, ctx), ctx.ui, params);
+			const channel = channelFor(pi, ctx);
+			return performAsk(channel, ctx.ui, params, runtimeFor(channel, ctx));
 		},
 	});
 
@@ -599,6 +675,7 @@ export function registerAskTools(pi: ExtensionAPI): void {
 	});
 	pi.registerTool<typeof selectParameters, SelectResultDetails>({
 		name: "lsc_select",
+		loadMode: "essential",
 		label: "lets-craft: ask (select)",
 		description:
 			"Ask the user to choose among 2-4 { label, description } options; a free-text 'Other' entry is always appended (do " +
@@ -609,7 +686,8 @@ export function registerAskTools(pi: ExtensionAPI): void {
 		approval: "read",
 		parameters: selectParameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<SelectResultDetails>> {
-			return performSelect(channelFor(pi, ctx), ctx.ui, params);
+			const channel = channelFor(pi, ctx);
+			return performSelect(channel, ctx.ui, params, runtimeFor(channel, ctx));
 		},
 	});
 
@@ -618,6 +696,7 @@ export function registerAskTools(pi: ExtensionAPI): void {
 	});
 	pi.registerTool<typeof confirmParameters, ConfirmResultDetails>({
 		name: "lsc_confirm",
+		loadMode: "essential",
 		label: "lets-craft: ask (confirm)",
 		description:
 			"Ask the user a yes/no question via a Yes / No / Other selector. The result CONTENT is exactly `yes` or `no` for a " +
@@ -636,7 +715,8 @@ export function registerAskTools(pi: ExtensionAPI): void {
 			//     the freshest same-tag no/free/cancel must retract a stale yes (P8 stale-yes barrier).
 			if (tag) invalidatePendingApproval();
 			// (c) The confirm itself is unchanged (craft-agnostic — C9).
-			const result = await performConfirm(channelFor(pi, ctx), ctx.ui, params);
+			const channel = channelFor(pi, ctx);
+			const result = await performConfirm(channel, ctx.ui, params, runtimeFor(channel, ctx));
 			const confirmedYes = !result.isError && result.details?.confirmed === true;
 			// (d) Prepared-operation issuance branch (A land) — takes PRIORITY over the craft-bound path,
 			//     but only for a prepared envelope captured at prompt time whose approvalQuestion EXACTLY

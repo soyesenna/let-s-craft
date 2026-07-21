@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
  *   2. Module isolation — nothing outside `src/statusbar/` imports from it EXCEPT `src/main.ts`,
  *      and main.ts reaches it only through the public entry `./statusbar/index.js`.
  *   3. Runtime dependency — `package.json` declares `@oh-my-pi/pi-ai` as a DIRECT dependency pinned
- *      to `16.4.0` (plan §3 F8 / DR-C). The first runtime VALUE import (`resolveUsedFraction` from
+ *      to `17.0.5` (plan §3 F8 / DR-C). The first runtime VALUE import (`resolveUsedFraction` from
  *      `@oh-my-pi/pi-ai/usage`) needs the package present at install time in a real omp; the exact
  *      pin keeps that value surface from drifting off the compiled type surface (the transitive
  *      `@oh-my-pi/pi-coding-agent` pin). Leaning on the transitive dep is a regression.
@@ -87,7 +87,7 @@ const EXISTING_REGISTRARS = [
 // ── Manifest / I/O structural invariants (M5) ───────────────────────────────
 // The runtime value import needs the package present AND pinned (plan §3 F8 / DR-C).
 const PI_AI_PACKAGE = "@oh-my-pi/pi-ai";
-const PI_AI_PIN = "16.4.0";
+const PI_AI_PIN = "17.0.5";
 
 // AC8 is a WHOLE-subsystem contract: no file under src/statusbar/ may reach the network
 // directly. Matched over comment-stripped source; conformant display-only code has none of these.
