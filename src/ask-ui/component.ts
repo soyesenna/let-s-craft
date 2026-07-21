@@ -8,6 +8,7 @@ import { createSideChatSession, normalizeSideError, type CompletionPort, type Si
 import {
 	createInitialState,
 	reduce,
+	searchOptions,
 	type AskUiEffect,
 	type AskUiEvent,
 	type AskUiState,
@@ -182,8 +183,9 @@ export function createComponentFactory(ctx: AskExecutionContext, port: Completio
 
 function selectViewModel(state: AskUiState): SelectViewModel {
 	const cursor = state.canonicalCursor;
-	const descriptionScroll = cursor >= 0 && cursor < state.view.options.length ? state.descriptionScrollByTarget[cursor] ?? 0 : 0;
-	return {
+	const searching = state.mode === "search";
+	const descriptionScroll = !searching && cursor >= 0 && cursor < state.view.options.length ? state.descriptionScrollByTarget[cursor] ?? 0 : 0;
+	const vm: SelectViewModel = {
 		question: state.view.question,
 		options: state.view.options,
 		multi: state.view.multi,
@@ -193,6 +195,16 @@ function selectViewModel(state: AskUiState): SelectViewModel {
 		optionScroll: state.optionScroll,
 		descriptionScroll,
 	};
+	if (searching) {
+		// Reuse the reducer's searchOptions so the rendered projection maps to the SAME original
+		// indices the search-mode commit path resolves (highlight === Enter target).
+		vm.searchQuery = state.searchQuery;
+		vm.filteredIndices = searchOptions(state.view.options, state.searchQuery).map(entry => entry.index);
+	}
+	if (state.mode === "editor") {
+		vm.editorDraft = { text: state.askDraft, cursor: state.askCursor };
+	}
+	return vm;
 }
 
 function chatViewModel(state: AskUiState): ChatPanelViewModel {
@@ -208,5 +220,6 @@ function chatViewModel(state: AskUiState): ChatPanelViewModel {
 		turns,
 		status,
 		error: live?.status === "error" ? live.error : undefined,
+		chatDraft: { text: state.chatDraft, focused: state.chatEditorFocused },
 	};
 }

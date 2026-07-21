@@ -346,7 +346,14 @@ function reduceSettle(state: AskUiState, turnId: number, result: SideChatResult,
 		status: result.status,
 		error: result.status === "error" ? result.error : undefined,
 	};
-	return noop({ ...state, turns: [...state.turns, finalized], liveTurn });
+	return noop({
+		...state,
+		turns: [...state.turns, finalized],
+		liveTurn,
+		// On a provider error, blur the free-prompt editor so the `r` retry key is classified as a
+		// key rather than editor text — the user can retry without an intervening Esc (audit-0 Minor8).
+		chatEditorFocused: result.status === "error" ? false : state.chatEditorFocused,
+	});
 }
 
 function reduceKey(state: AskUiState, key: AskUiKey, at: string | undefined): ReduceResult {
