@@ -17,16 +17,22 @@
   once, stable `promptCacheKey` = main session id, unique side `sessionId` = `{main}:side:{nonce}`,
   `cacheRetention: "short"`, prefix-invariant messages (verified `prefixInvariant: true`).
 
-## Method note (why not through the shipped adapter)
+## Method note (why not through the shipped adapter — historical, pre-fix)
 
 The measurement was issued through pi-ai's resolver-aware `streamSimple` with provider-valid message
-shapes (assistant content as content-block arrays). The **shipped adapter** `src/ask-ui/completion.ts`
-could **not** be used to reach the provider because it crashes on two real bugs — see
-`appendix-live-spike.md` (O1). The AC6.2 question ("does the request SHAPE produce a cache hit?")
-is answered against the exact request `buildSideRequest` produces; the cache-relevant fields
+shapes (assistant content as content-block arrays). **At capture time (pre-fix)** the shipped adapter
+`src/ask-ui/completion.ts` could **not** be used to reach the provider because it crashed on two real
+bugs — see `appendix-live-spike.md` (O1). The AC6.2 question ("does the request SHAPE produce a cache
+hit?") is answered against the exact request `buildSideRequest` produces; the cache-relevant fields
 (system prefix, message prefix, `promptCacheKey`, side `sessionId`, `cacheRetention`) are byte-identical
-to what the adapter would send. The cache-lifetime canon is therefore validated, but the shipped
-**delivery** path is currently blocked by the O1 adapter bugs.
+to what the adapter would send. The cache-lifetime canon is therefore validated.
+
+**Superseded (audit-1 RF5)**: both O1 bugs were subsequently fixed in `src/ask-ui/completion.ts`
+(commit 4e15dff — `streamSimple` + assistant content-block arrays) and the FIXED shipped adapter was
+live re-verified end-to-end on 2026-07-21T09:26:14Z (`appendix-live-spike.md` § POST-FIX
+RE-VERIFICATION: `createCompletionPort` driven directly, `run.ok=true`, incremental streaming, no
+throw). Any "delivery path blocked" wording in this file describes the PRE-FIX capture-time state
+only and no longer holds.
 
 ## Measured usage (per turn, same frozen SideChatSession, run-unique prefix)
 
@@ -55,8 +61,10 @@ detail, not a construction defect — the byte-stable frozen prefix is what the 
 
 **PASS** — turn-2 `cache_read_input_tokens = 7187 > 0` observed on a real Anthropic model with the
 feature's own frozen-session / stable-`promptCacheKey` / prefix-invariant construction; turn-1
-cache creation also observed. Caveat: delivery via the shipped `completion.ts` adapter is blocked by
-the O1 bugs (see `appendix-live-spike.md`) and must be fixed before this hit is reachable in production.
+cache creation also observed. Caveat (historical, capture-time): delivery via the shipped
+`completion.ts` adapter was blocked by the O1 bugs at capture time — since **fixed** (4e15dff) and
+**live re-verified** (`appendix-live-spike.md` § POST-FIX RE-VERIFICATION, 2026-07-21T09:26:14Z);
+the measured hit is reachable through the shipped adapter as of audit-1 RF5.
 
 Raw capture: `/tmp/lsc-live-gates/omp-probe-result.json` (`o2_cache` block), throwaway harness at
 `/tmp/lsc-live-gates/` (outside the worktree).
