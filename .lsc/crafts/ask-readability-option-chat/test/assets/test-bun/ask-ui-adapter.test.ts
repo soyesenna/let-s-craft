@@ -242,7 +242,17 @@ mock.module("@oh-my-pi/pi-ai", () => {
 			completionStarted.resolve();
 			return await nextStream().result();
 		},
-		// Boundary cast: a test double for pi-ai's two network entry points; all else is real.
+		// O1 live evidence (audit-0 RF3, appendix-live-spike.md): raw `stream` never resolves an
+		// ApiKeyResolver — the resolver-aware entry point is streamSimple, so the adapter MUST use it
+		// and the mock intercepts it as the third network entry (same capture array: every existing
+		// B2 forwarding assertion applies unchanged at the streamSimple boundary, where forwarding the
+		// resolver BY IDENTITY is the correct contract).
+		streamSimple: (model: unknown, context: unknown, options: unknown) => {
+			streamCalls.push({ model, context, options });
+			completionStarted.resolve();
+			return nextStream();
+		},
+		// Boundary cast: a test double for pi-ai's three network entry points; all else is real.
 	} as unknown as typeof actualPiAi;
 });
 
@@ -542,7 +552,7 @@ describe("ask-ui Bun adapter (B1-B3 + U7 + production assembly)", () => {
 
 	// ── B2 — completion.ts: TYPED fake + call-arg capture verify createCompletionPort forwards the
 	//    real request shape to pi-ai and maps the terminal state + usage. ────────────────────────────
-	it("B2 — createCompletionPort streams text_delta and forwards model/{systemPrompt:[...]}/messages/no-tools/resolver/signal/sessionId/promptCacheKey/cacheRetention to pi-ai stream", async () => {
+	it("B2 — createCompletionPort streams text_delta and forwards model/{systemPrompt:[...]}/messages/no-tools/resolver/signal/sessionId/promptCacheKey/cacheRetention to pi-ai streamSimple (resolver-aware — O1: raw stream never resolves an ApiKeyResolver)", async () => {
 		// Dynamic import (module-loading-boundary exception): Bun-only leaf, absent at author time,
 		// and must load AFTER the pi-ai mock is installed.
 		const completionMod = (await import("../src/ask-ui/completion")) as unknown as CompletionModule;
@@ -659,6 +669,38 @@ describe("ask-ui Bun adapter (B1-B3 + U7 + production assembly)", () => {
 				{ signal: new AbortController().signal },
 			),
 		).rejects.toThrow();
+	});
+
+	it("B2 — assistant history is forwarded as a CONTENT-BLOCK array (O1 live evidence: pi-ai redaction requires assistant blocks; a bare string crashes content.map)", async () => {
+		const completionMod = (await import("../src/ask-ui/completion")) as unknown as CompletionModule; // module-loading-boundary exception
+		const { ctx } = createFakeCtx(undefined);
+		const port = completionMod.createCompletionPort(ctx);
+		await port.run(
+			{
+				systemPrompt: "no tools",
+				messages: [
+					{ role: "user", content: "Explain option Alpha." },
+					{ role: "assistant", content: "Alpha means the first choice." },
+					{ role: "user", content: "And versus Beta?" },
+				],
+				model: "acme/side-model",
+				sessionId: "main-session-1:side:n6",
+				promptCacheKey: "main-session-1",
+				cacheRetention: "short",
+			},
+			{ signal: new AbortController().signal },
+		);
+		expect(streamCalls.length).toBe(1);
+		const context = streamCalls[0].context as CapturedContext;
+		const assistant = context.messages?.[1];
+		expect(assistant?.role).toBe("assistant");
+		// The assistant arm MUST be a block array — pi-ai's unconditional redaction pass has no string
+		// guard for assistant content (transform-messages), so a bare string crashes live.
+		expect(Array.isArray(assistant?.content)).toBe(true);
+		const blocks = assistant?.content as Array<{ type?: string; text?: string }>;
+		expect(blocks.some(b => b.type === "text" && (b.text ?? "").includes("Alpha means the first choice."))).toBe(true);
+		// User text still reaches the provider intact (string or blocks — the carrier is free).
+		expect(textOf(context.messages?.[0].content)).toContain("Explain option Alpha.");
 	});
 
 	// ── PRODUCTION ASSEMBLY DISCRIMINATOR (critic bar ②) — the ONE test that catches "main.ts forgot
