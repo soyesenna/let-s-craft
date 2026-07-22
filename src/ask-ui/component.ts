@@ -147,6 +147,10 @@ export function createComponentFactory(ctx: AskExecutionContext, port: Completio
 			if (matchesKey(data, "down")) return { type: "key", key: "down" };
 			if (matchesKey(data, "pageUp")) return { type: "key", key: "pageUp" };
 			if (matchesKey(data, "pageDown")) return { type: "key", key: "pageDown" };
+			if (matchesKey(data, "left")) return { type: "key", key: "left" };
+			if (matchesKey(data, "right")) return { type: "key", key: "right" };
+			if (matchesKey(data, "home")) return { type: "key", key: "home" };
+			if (matchesKey(data, "end")) return { type: "key", key: "end" };
 			if (matchesKey(data, "enter")) return state.mode === "editor" ? { type: "submitAsk" } : { type: "key", key: "enter", at: now() };
 			if (textEntry) {
 				const ch = printableChar(data);

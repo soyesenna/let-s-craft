@@ -19,6 +19,10 @@ export type { AskUiView } from "./types.js";
 export type AskUiKey =
 	| "up"
 	| "down"
+	| "left"
+	| "right"
+	| "home"
+	| "end"
 	| "pageUp"
 	| "pageDown"
 	| "enter"
@@ -369,10 +373,28 @@ function reduceKey(state: AskUiState, key: AskUiKey, at: string | undefined): Re
 	}
 }
 
+// Move a UTF-16 cursor one code point left/right without splitting a surrogate pair.
+function prevCodePoint(text: string, cursor: number): number {
+	if (cursor <= 0) return 0;
+	const prev = cursor >= 2 ? text.codePointAt(cursor - 2) : undefined;
+	return prev !== undefined && prev > 0xffff ? cursor - 2 : cursor - 1;
+}
+
+function nextCodePoint(text: string, cursor: number): number {
+	if (cursor >= text.length) return text.length;
+	const cp = text.codePointAt(cursor);
+	return cursor + (cp !== undefined && cp > 0xffff ? 2 : 1);
+}
+
 function reduceEditorKey(state: AskUiState, key: AskUiKey): ReduceResult {
 	// The ask/Other free-text editor. Esc returns to browse preserving the draft (ask -> header at -1;
 	// Other -> the Other row at n — both are just "keep canonicalCursor, drop editor mode").
 	if (key === "esc") return noop({ ...state, mode: "browse" });
+	// Cursor movement inside the draft (code-point aware, surrogate-safe).
+	if (key === "left") return noop({ ...state, askCursor: prevCodePoint(state.askDraft, state.askCursor) });
+	if (key === "right") return noop({ ...state, askCursor: nextCodePoint(state.askDraft, state.askCursor) });
+	if (key === "home") return noop({ ...state, askCursor: 0 });
+	if (key === "end") return noop({ ...state, askCursor: state.askDraft.length });
 	return noop(state);
 }
 
@@ -484,6 +506,9 @@ function reduceBrowseKey(state: AskUiState, key: AskUiKey, at: string | undefine
 		case "enter":
 			return reduceBrowseEnter(state, c, n);
 		case "retry":
+			return noop(state);
+		default:
+			// left/right/home/end have no browse-mode meaning.
 			return noop(state);
 	}
 }
