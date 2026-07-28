@@ -27,6 +27,7 @@ const postCraft = read("skills/post-craft/SKILL.md");
 const lscPlanner = read("agents/lsc-planner.md");
 const lscArchitect = read("agents/lsc-architect.md");
 const lscCritic = read("agents/lsc-critic.md");
+const lscCriticRecheck = read("agents/lsc-critic-recheck.md");
 const readme = read("README.md");
 
 describe("U3 — lightweight lsc-critic-recheck agent", () => {
@@ -210,9 +211,41 @@ describe("U11 — conditional-parallel review lanes", () => {
 		expect(readme).not.toContain("리뷰 전문을 입력으로");
 	});
 
-	it("the sequential fallback is triggered by AWC-EQUIVALENT alone, and does not consume an iteration", () => {
-		expect(preCraft).toContain("architect returned `AWC-EQUIVALENT`, i.e. it supplied a Change Spec");
+	it("the sequential fallback does not consume an iteration", () => {
 		expect(preCraft).toContain("does **not** consume a new one against the cap");
+	});
+
+	// The fallback is the one architect-facing check with measured yield, so the
+	// wiring around it gets its own assertions: gating it on the verdict token
+	// instead of the Change Spec's presence would let `NOT-BLOCKING` + Change Spec
+	// (an explicit AWC-path entry condition) hand an unaudited Change Spec to the
+	// author, and that is precisely what the fallback exists to prevent.
+	it("the fallback triggers on the Change Spec's presence, not on the verdict token", () => {
+		expect(preCraft).toContain("The trigger is the Change Spec's presence, not the token");
+		expect(preCraft).toContain("Wherever a Change Spec is present, it gets audited");
+	});
+
+	it("the fallback's own verdict is not the iteration's — the plan-only lane's is", () => {
+		expect(preCraft).toContain("Its `**VERDICT:**` line is NOT this iteration's critic verdict");
+		expect(preCraft).toContain("the **`plan-only` lane's** critic rendered REVISE or REJECT");
+	});
+
+	it("the AWC path consumes the audit before the author applies anything", () => {
+		expect(preCraft).toContain("the author never receives an unaudited Change Spec");
+		expect(preCraft).toContain("the item is dropped from the fix set");
+	});
+
+	it("lsc-critic-recheck checks the post-audit fix set, so an applied amendment is not scope creep", () => {
+		expect(preCraft).toContain("as they stand after item 5.0's audit");
+		expect(lscCriticRecheck).toContain("Applying an amended item in its amended form is not scope creep");
+	});
+
+	it("each lane echoes the digest it actually computed, so the join gate compares three values", () => {
+		expect(preCraft).toContain("a three-way comparison, not a two-way one");
+		for (const content of [lscArchitect, lscCritic]) {
+			expect(content).toContain("Reviewed: {absolute path} @ sha256");
+			expect(content).toContain("Compute that digest rather than copying the assignment's");
+		}
 	});
 
 	it("the join gate refuses to finalize from a single lane", () => {

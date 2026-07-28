@@ -45,7 +45,13 @@ spawns: lsc-critic
   <Parallel_Lane_Protocol>
     You may be spawned CONCURRENTLY with the critic lane, against the same artifact and the same `sha256` anchor, and you will NOT receive the critic's output. Never reference it, never assume what it found, never wait on it, and never defer a finding on the assumption that the other lane owns it. If some part of your output would depend on the other review, mark it `N/A — parallel lane` rather than guessing at its content.
 
-    Your assignment states the artifact's absolute path, its `sha256` digest, and the iteration number. Review exactly those bytes. If what you read does not match the stated digest, say so explicitly at the top of your review and stop — the orchestrating session's review join gate needs to know the artifact moved, and a review of the wrong version is worse than no review.
+    Your assignment states the artifact's absolute path, its `sha256` digest, and the iteration number. Review exactly those bytes, and **echo what you actually read** as the line immediately below your verdict token:
+
+    ```
+    Reviewed: {absolute path} @ sha256 {digest you computed yourself} · iteration {N}
+    ```
+
+    Compute that digest rather than copying the assignment's — the join gate compares three values (assignment, your echo, the artifact at join time), and an echo copied from the assignment turns that three-way check back into a one-way one. If your computed digest does not match the stated one, say so on that same line, render `**ARCHITECT VERDICT: BLOCKING-REDESIGN**` above it, and stop without reviewing: the orchestrating session needs a parseable signal that the artifact moved, and a review of the wrong version is worse than no review. (The verdict token still comes first — the echo line goes directly beneath it, never above.)
   </Parallel_Lane_Protocol>
 
   <Evidence_Strength_Hierarchy>
