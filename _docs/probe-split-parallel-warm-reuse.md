@@ -3,6 +3,7 @@
 - 근거: `.omc/plans/ralplan-pre-craft-latency-round2.md` U9, `.omc/specs/deep-dive-pre-craft-latency-round2.md` C4/AC9
 - 대상 AC: **AC9** — "피기백 프로브 스펙 문서(실행 절차 + 합격선 겹침률 ≥80%·CRITICAL 누락 0건) 존재"
 - 관련: 이번 패키지는 (a) critic 조사단계 분할병렬, (b) architect/critic warm-reuse를 **비채택**으로 남긴다(`.omc/specs/deep-dive-pre-craft-latency-round2.md` §C2 "비채택(프로브 조건부)"). 이 문서는 그 두 구조 개편안을 **채택할지 여부를 결정하기 위한 실측 절차**를 확정한다 — 이 문서 자체는 계약을 바꾸지 않는다.
+- **상태(2026-07-28)**: **P2는 SUPERSEDED** — 분할병렬은 P2 실행 없이 채택됐고 P2는 사후 품질 확인으로 격하됐다(근거 4항은 §2 상단). **P3는 원문 그대로 유효** — warm-reuse는 여전히 미채택이며 P3 합격이 채택 트리거다. 두 프로브의 상태가 달라졌으므로, §5의 합격·불합격 분기처럼 원래 "P2·P3 공통"으로 쓰인 절은 이제 프로브별로 갈라 읽어야 한다.
 - 실행 시점: 다음 실전 pre-craft(이 U1~U8 패키지가 착지된 이후, fixture/E2E가 아닌 실제 유저 요청 기반 pre-craft) 1회. P2/P3 모두 **같은 실전 pre-craft에 피기백** 가능(별개 실행 불필요) — 단, 아래 iteration 조건이 겹치는 경우에 한함.
 
 ## 0. 공통 원칙
@@ -22,9 +23,26 @@
 
 ## 2. P2 — 분할병렬 품질 A/B (critic이 architect 리포트 없이 조사)
 
+> ### ⚠️ SUPERSEDED (2026-07-28) — P2는 더 이상 채택 게이트가 아니다
+>
+> **P2가 게이트하던 구조 개편은 P2 실행 없이 채택되었다.** `skills/pre-craft/SKILL.md`의 Stage 3/4 합의 루프는 이제 architect·critic을 단일 `task` 배치로 동시 스폰하는 `plan-only lane` 기본 + `sequential fallback` + `review join gate` 구조다. 이 절 이하의 절차·합격선은 **사후 품질 확인**으로 남으며, 실행되더라도 그 결과는 계약을 되돌리는 근거가 아니라 `sequential fallback` 범위를 조정하는 입력이다.
+>
+> 이 문서가 대신하는 결정 기록은 `.omc/specs/deep-dive-pre-craft-latency-round2.md` §C2다. `.omc/`는 gitignored이므로 그 원문을 여기에 verbatim 인용해 tracked 히스토리 안에서 결정 체인을 닫는다:
+>
+> > **비채택(프로브 조건부)**: (a) critic 조사단계 분할병렬, (b) architect/critic warm-reuse — P2/P3 합격 후 별도 라운드에서 채택. **이번 패키지에서는 계약 변경 금지.**
+>
+> **supersede 근거 4항** (전문: `.omc/specs/deep-dive-trace-architect-critic-parallel-lanes.md`):
+>
+> 1. **원래 근거가 이 호스트에 성립하지 않는다.** 순차 강제의 유일한 도입 근거는 Claude Code가 `ask_codex` 형제 호출을 429에서 취소하는 동작이었다(oh-my-claudecode `ac4373d6`, 커밋 본문과 diff 전체에 품질 언급 없음). lets-craft의 호스트인 omp `task` 배치는 형제를 격리한다 — async는 아이템별 독립 job(`oh-my-pi/packages/coding-agent/src/task/index.ts:1022-1050`), sync는 fail-fast가 아닌 `mapWithConcurrencyLimitAllSettled`(`parallel.ts:94-98`). fail-fast 프리미티브는 같은 모듈에 있으나 `task` 경로가 쓰지 않는다.
+> 2. **품질 근거는 이식 시점 창작이다.** "critic's evaluation depends on architect's antithesis/tradeoff findings"는 이식 커밋 `7a1ac1a`가 인용한 소스(`.omc/state/deep-dive-lane-reports/lane2-omc-contracts-full.md` L688-792)에 **존재하지 않는다**. 그 소스에는 순서 지시만 있다.
+> 3. **저장소가 이미 철회했다.** `c6799f2`가 계약을 "architect 리뷰를 입력으로 받되 **독립 VERDICT**"로 재작성했다. 그 커밋이 실제로 고친 문제는 순서가 아니라 *critic이 건너뛰어지는 것*이었다 — load-bearing 속성은 always-both이지 critic-second가 아니다.
+> 4. **P2가 측정하려던 리스크는 구조로 보존된다.** critic의 architect-대면 검증 중 실측 수율이 확인된 것은 Change Spec 감사 하나뿐이고(`deferred-pool/plan/plan-2.md:10`의 C1·C2 보정, `plan-4.md:7`의 CF1 반박), 새 계약의 `sequential fallback`이 정확히 그 경로만 순차로 유지한다.
+>
+> **정직한 한계 병기**: 위 4항은 프로버넌스와 호스트 동작에 대한 증거이지, "plan-only critic이 같은 CRITICAL을 찾는다"에 대한 controlled reproduction이 아니다. 그 질문에는 여전히 T1급 증거가 없다. 이 문서의 절차를 사후에 1회 실행하면 그 공백이 닫힌다.
+
 ### 가설
 
-`.lsc-critic.md` 계약상 critic은 정규 루프에서 항상 architect의 리뷰를 입력 컨텍스트로 받는다(`skills/pre-craft/SKILL.md` §Stage 3 "critic's task assignment must include architect's review in full as input context"). architect 리포트를 먼저 읽는 것이 critic의 판단에 **앵커링**(선행 리포트가 발견 방향을 좁힘)을 일으켜, architect가 놓친 것을 critic도 놓치게 만들 가능성이 trace 조사에서 제기됐다(`.omc/specs/deep-dive-trace-pre-craft-latency-round2.md` H2: "architect-critic 읽은 파일 목록 거의 비겹침 — 단 critic 첫 read가 architect 리포트"). 분할병렬(critic이 architect 리포트 없이 독립 조사)이 이 앵커링을 없애면서도 발견 품질을 유지하는지가 P2의 질문.
+`.lsc-critic.md` 계약상 critic은 정규 루프에서 항상 architect의 리뷰를 입력 컨텍스트로 받는다(`skills/pre-craft/SKILL.md` §Stage 3 "critic's task assignment must include architect's review in full as input context" — **인용 원문은 위 supersede 변경으로 제거됨(구 `:318`)**; 현행 계약에서 critic 레인은 기본이 `plan-only`이고 architect 리뷰를 받는 것은 `sequential fallback` 패스뿐이다). architect 리포트를 먼저 읽는 것이 critic의 판단에 **앵커링**(선행 리포트가 발견 방향을 좁힘)을 일으켜, architect가 놓친 것을 critic도 놓치게 만들 가능성이 trace 조사에서 제기됐다(`.omc/specs/deep-dive-trace-pre-craft-latency-round2.md` H2: "architect-critic 읽은 파일 목록 거의 비겹침 — 단 critic 첫 read가 architect 리포트"). 분할병렬(critic이 architect 리포트 없이 독립 조사)이 이 앵커링을 없애면서도 발견 품질을 유지하는지가 P2의 질문.
 
 ### 트리거 조건
 
@@ -111,11 +129,13 @@ trace 조사에서 planner 동일 인스턴스 재사용 시 리비전이 2h10m�
 
 ### 합격 시
 
-해당 구조(P2 합격 → critic 조사단계 분할병렬 / P3 합격 → architect·critic warm-reuse)를 **채택하는 별도 라운드**를 개시한다 — 이 문서나 이번 패키지가 계약을 바꾸는 것이 아니라, 합격이라는 결과 자체가 다음 ralplan/craft 사이클의 트리거가 된다. P2/P3 중 하나만 합격하면 그 하나만 채택 라운드로 넘어간다(둘은 독립적으로 판정).
+- **P2 — 해당 없음(SUPERSEDED).** 분할병렬은 P2 실행 전에 이미 채택됐다(§2 상단). P2 합격은 더 이상 채택 트리거가 아니라 채택된 구조에 대한 사후 확인일 뿐이다.
+- **P3 — 원문 유지.** P3 합격 → architect·critic warm-reuse를 **채택하는 별도 라운드**를 개시한다 — 이 문서가 계약을 바꾸는 것이 아니라, 합격이라는 결과 자체가 다음 ralplan/craft 사이클의 트리거가 된다.
 
 ### 불합격 시
 
-**현행 유지**(critic은 계속 architect 리포트를 먼저 읽고, 리뷰어는 계속 fresh 스폰) — `.omc/specs/deep-dive-pre-craft-latency-round2.md` §C2 "비채택(프로브 조건부)"가 그대로 유지된다. 불합격 원인(어떤 결함이 왜 누락됐는지)은 §4 기록에 남겨, 이후 재시도(예: 프롬프트를 보강한 재도전) 여부 판단의 근거로 삼는다 — 단, 재시도 자체도 이 문서가 정의한 동일 절차·합격선을 다시 통과해야 한다.
+- **P2 — 현행(병렬) 유지, 되돌리지 않는다.** 불합격은 계약을 순차로 되돌리는 근거가 **아니다** — 병렬 채택의 근거는 §2 상단 supersede 4항(프로버넌스 + 호스트 동작)이지 P2 결과가 아니기 때문이다. 대신 누락된 결함 유형을 §4 기록에 남기고, 그 유형이 `sequential fallback`의 범위를 넓혀 덮을 수 있는 것인지(예: Change Spec 감사 외에 또 어떤 architect-대면 검증이 필요한지) 판단하는 입력으로 쓴다.
+- **P3 — 원문 유지.** **현행 유지**(리뷰어는 계속 fresh 스폰) — 불합격 원인(어떤 결함이 왜 누락됐는지)은 §4 기록에 남겨, 이후 재시도(예: 프롬프트를 보강한 재도전) 여부 판단의 근거로 삼는다 — 단, 재시도 자체도 이 문서가 정의한 동일 절차·합격선을 다시 통과해야 한다.
 
 ## 6. 실행 비용 가드 재확인
 
