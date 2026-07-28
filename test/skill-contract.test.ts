@@ -25,6 +25,9 @@ const preCraft = read("skills/pre-craft/SKILL.md");
 const craft = read("skills/craft/SKILL.md");
 const postCraft = read("skills/post-craft/SKILL.md");
 const lscPlanner = read("agents/lsc-planner.md");
+const lscArchitect = read("agents/lsc-architect.md");
+const lscCritic = read("agents/lsc-critic.md");
+const readme = read("README.md");
 
 describe("U3 — lightweight lsc-critic-recheck agent", () => {
 	it("agents/lsc-critic-recheck.md exists", () => {
@@ -132,6 +135,122 @@ describe("U4 — plan core/appendix split (C9 revision)", () => {
 			expect(content).toContain("plan/plan-{N}.md");
 			expect(content).toContain("plan/appendix-{topic}.md");
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// U11 — architect/critic conditional-parallel review lanes.
+//
+// A prose lint, deliberately: `_docs/reference-insights.md` records the
+// "architect→critic 순서 백스톱" as explicitly rejected for runtime code
+// (`src/craft/enforcement.ts:9-20` — caps/counters are the platform's, duplicate
+// tracking risks desync), so the contract lives in the skill/agent text and the
+// text is what we assert. Two arrays: the new contract MUST appear, and the
+// superseded sequential contract MUST NOT survive anywhere.
+//
+// The must-not list is scoped to literals unique to the OLD contract. Note the
+// deliberate omission of "after architect completes": the sequential fallback is
+// by definition a pass that runs after architect completes, so banning that
+// phrase would collide with the new contract's own most natural wording.
+// ---------------------------------------------------------------------------
+
+describe("U11 — conditional-parallel review lanes", () => {
+	const PARALLEL_CONTRACT_LITERALS = [
+		"plan-only lane",
+		"sequential fallback",
+		"review join gate",
+		"two review lanes",
+		"sha256",
+	] as const;
+
+	const SUPERSEDED_SEQUENTIAL_LITERALS = [
+		"never in parallel",
+		"must complete before critic starts",
+		"must include architect's review in full as input context",
+	] as const;
+
+	describe("pre-craft SKILL.md carries the new contract and none of the old", () => {
+		for (const literal of PARALLEL_CONTRACT_LITERALS) {
+			it(`states "${literal}"`, () => {
+				expect(preCraft).toContain(literal);
+			});
+		}
+
+		for (const literal of SUPERSEDED_SEQUENTIAL_LITERALS) {
+			it(`no longer states "${literal}"`, () => {
+				expect(preCraft).not.toContain(literal);
+			});
+		}
+	});
+
+	describe("agents/lsc-planner.md is synced — it restated the sequential mandate verbatim and no other test covers it", () => {
+		for (const literal of PARALLEL_CONTRACT_LITERALS.filter((l) => l !== "sha256")) {
+			it(`states "${literal}"`, () => {
+				expect(lscPlanner).toContain(literal);
+			});
+		}
+
+		for (const literal of SUPERSEDED_SEQUENTIAL_LITERALS) {
+			it(`no longer states "${literal}"`, () => {
+				expect(lscPlanner).not.toContain(literal);
+			});
+		}
+
+		it("no longer reports verdicts lsc-critic cannot emit (APPROVE / ITERATE)", () => {
+			expect(lscPlanner).not.toContain("ITERATE");
+			expect(lscPlanner).not.toContain("returns APPROVE");
+		});
+	});
+
+	it("README.md's Stage 3 overview describes the parallel model in the canonical Korean terms", () => {
+		for (const literal of ["plan-only 레인", "순차 fallback", "리뷰 join gate"]) {
+			expect(readme).toContain(literal);
+		}
+		expect(readme).not.toContain("순서의 합의 루프");
+		expect(readme).not.toContain("리뷰 전문을 입력으로");
+	});
+
+	it("the sequential fallback is triggered by AWC-EQUIVALENT alone, and does not consume an iteration", () => {
+		expect(preCraft).toContain("architect returned `AWC-EQUIVALENT`, i.e. it supplied a Change Spec");
+		expect(preCraft).toContain("does **not** consume a new one against the cap");
+	});
+
+	it("the join gate refuses to finalize from a single lane", () => {
+		expect(preCraft).toContain("Never finalize, pass, or escalate from a single lane");
+	});
+
+	it("the critic veto stays unconditional in the plan-only lane", () => {
+		expect(preCraft).toContain("This holds identically for a `plan-only` critic lane");
+	});
+
+	it("both review agents carry the Parallel_Lane_Protocol block", () => {
+		for (const content of [lscArchitect, lscCritic]) {
+			expect(content).toContain("<Parallel_Lane_Protocol>");
+			expect(content).toContain("N/A — ");
+		}
+	});
+
+	it("lsc-architect emits a literal three-value verdict token so a degraded review can fail to parse", () => {
+		expect(lscArchitect).toContain("**ARCHITECT VERDICT: [NOT-BLOCKING / AWC-EQUIVALENT / BLOCKING-REDESIGN]**");
+		expect(preCraft).toContain("`**ARCHITECT VERDICT:**` line that fails to parse");
+	});
+
+	it("lsc-architect's Change Spec requires propagation targets, not just the edit site", () => {
+		expect(lscArchitect).toContain("Propagation targets");
+	});
+
+	it("lsc-critic's architect cross-check row is conditional but never absent", () => {
+		expect(lscCritic).toContain("N/A — plan-only lane");
+		expect(lscCritic).toContain("Emit this row in both lane modes");
+	});
+
+	it("lsc-critic's Change Spec audit — the one architect-facing check with measured yield — is anchored in the prompt", () => {
+		expect(lscCritic).toContain("Change Spec audit");
+	});
+
+	it("the two lanes have non-overlapping mandates so parallel reviews stay complementary", () => {
+		expect(lscArchitect).toContain("you own the DECISION");
+		expect(lscCritic).toContain("you own the ARTIFACT");
 	});
 });
 
