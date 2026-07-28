@@ -199,7 +199,9 @@ describe("U11 — conditional-parallel review lanes", () => {
 
 		it("no longer reports verdicts lsc-critic cannot emit (APPROVE / ITERATE)", () => {
 			expect(lscPlanner).not.toContain("ITERATE");
-			expect(lscPlanner).not.toContain("returns APPROVE");
+			// Negative lookahead: APPROVE-WITH-CHANGE *is* one of critic's five, so
+			// "returns APPROVE-WITH-CHANGE" must stay legal. Only bare APPROVE is wrong.
+			expect(lscPlanner).not.toMatch(/returns APPROVE(?!-WITH-CHANGE)/);
 		});
 	});
 
@@ -256,11 +258,29 @@ describe("U11 — conditional-parallel review lanes", () => {
 		expect(preCraft).toContain("This holds identically for a `plan-only` critic lane");
 	});
 
-	it("both review agents carry the Parallel_Lane_Protocol block", () => {
+	// The load-bearing assertion of this whole block. Everything else here survives
+	// a hand re-serialization ("compute the anchor, spawn architect, then spawn
+	// critic against the same sha256") — the must-not literals only catch a verbatim
+	// revert of the old contract, and the echo/join-gate rules read perfectly well
+	// under a sequential order. Pin the mechanism, not just its vocabulary.
+	it("the two lanes are spawned in ONE batch — the mechanism, not just the vocabulary", () => {
+		expect(preCraft).toContain("spawn **both reviewers in a single `task` batch call**");
+		expect(lscPlanner).toContain("launch together as two review lanes in a single spawn batch");
+	});
+
+	it("both review agents carry the Parallel_Lane_Protocol block with their own N/A literal", () => {
 		for (const content of [lscArchitect, lscCritic]) {
 			expect(content).toContain("<Parallel_Lane_Protocol>");
-			expect(content).toContain("N/A — ");
 		}
+		// Exact literals per agent — a bare `toContain("N/A — ")` would pass on any
+		// stray "N/A — anything" left elsewhere in the file.
+		expect(lscArchitect).toContain("N/A — parallel lane");
+		expect(lscCritic).toContain("N/A — plan-only lane");
+	});
+
+	it("the anchor's computation is pinned, not just its verification", () => {
+		expect(preCraft).toContain("shasum -a 256");
+		expect(preCraft).toContain("both lanes must be re-spawned against the new anchor");
 	});
 
 	it("lsc-architect emits a literal three-value verdict token so a degraded review can fail to parse", () => {
