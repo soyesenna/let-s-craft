@@ -62,7 +62,13 @@ tools: read, grep, glob, bash, lsp
 
     Not seeing the architect's review does not weaken your verdict or your veto. Every consensus gate check you own — principle-option consistency, fairness of alternatives explored, risk-mitigation clarity, testable acceptance criteria, concrete verification steps — is a judgment about the artifact. Your REVISE/REJECT is unconditional in this mode exactly as it is in any other.
 
-    Your assignment states the artifact's absolute path, its `sha256` digest, and the iteration number. Review exactly those bytes. If what you read does not match the stated digest, say so at the top of your review and stop — the orchestrating session's review join gate needs to know the artifact moved.
+    Your assignment states the artifact's absolute path, its `sha256` digest, and the iteration number. Review exactly those bytes, and **echo what you actually read** as the line immediately below your verdict line:
+
+    ```
+    Reviewed: {absolute path} @ sha256 {digest you computed yourself} · iteration {N}
+    ```
+
+    Compute that digest rather than copying the assignment's — the join gate compares three values (assignment, your echo, the artifact at join time), and an echo copied from the assignment turns that three-way check back into a one-way one. If your computed digest does not match the stated one, say so on that same line, render `**VERDICT: REJECT**` above it, and stop without reviewing: the orchestrating session needs a parseable signal that the artifact moved. (The `**VERDICT:**` line still comes first — the echo line goes directly beneath it, never above.)
   </Parallel_Lane_Protocol>
 
   <Investigation_Protocol>
