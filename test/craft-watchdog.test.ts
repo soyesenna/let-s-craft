@@ -149,6 +149,77 @@ describe("shouldSetStickyForToolExecution (DR-2)", () => {
 		expect(shouldSetStickyForToolExecution({ toolName: "bash" })).toBe(false);
 		expect(shouldSetStickyForToolExecution({ toolName: "read" })).toBe(false);
 	});
+
+	it("is true for a batch task spawn with one lsc- prefixed agent", () => {
+		expect(
+			shouldSetStickyForToolExecution({
+				toolName: "task",
+				args: { context: "c", tasks: [{ agent: "lsc-architect", task: "t" }] },
+			}),
+		).toBe(true);
+	});
+
+	it("is true for a batch task spawn where only a later task is lsc- prefixed", () => {
+		expect(
+			shouldSetStickyForToolExecution({
+				toolName: "task",
+				args: {
+					context: "c",
+					tasks: [
+						{ agent: "general-purpose", task: "t1" },
+						{ agent: "general-purpose", task: "t2" },
+						{ agent: "lsc-critic", task: "t3" },
+					],
+				},
+			}),
+		).toBe(true);
+	});
+
+	it("is false for a batch task spawn with no lsc- prefixed agent", () => {
+		expect(
+			shouldSetStickyForToolExecution({
+				toolName: "task",
+				args: {
+					context: "c",
+					tasks: [
+						{ agent: "general-purpose", task: "t1" },
+						{ agent: "general-purpose", task: "t2" },
+					],
+				},
+			}),
+		).toBe(false);
+	});
+
+	it("is false for a batch task spawn with an empty tasks array", () => {
+		expect(shouldSetStickyForToolExecution({ toolName: "task", args: { context: "c", tasks: [] } })).toBe(false);
+	});
+
+	it("is false when tasks is present but not an array", () => {
+		expect(shouldSetStickyForToolExecution({ toolName: "task", args: { context: "c", tasks: "lsc-architect" } })).toBe(false);
+		expect(shouldSetStickyForToolExecution({ toolName: "task", args: { context: "c", tasks: { agent: "lsc-architect" } } })).toBe(false);
+	});
+
+	it("does not throw and is false for malformed elements within tasks", () => {
+		expect(
+			shouldSetStickyForToolExecution({
+				toolName: "task",
+				args: { context: "c", tasks: [null, 42, {}, { agent: 7 }, { task: "no agent field" }] },
+			}),
+		).toBe(false);
+	});
+
+	it("is false for a non-task tool name with a batch-shaped args payload", () => {
+		expect(
+			shouldSetStickyForToolExecution({
+				toolName: "bash",
+				args: { context: "c", tasks: [{ agent: "lsc-architect", task: "t" }] },
+			}),
+		).toBe(false);
+	});
+
+	it("short-circuits to true for lsc_ prefixed tool names regardless of args", () => {
+		expect(shouldSetStickyForToolExecution({ toolName: "lsc_run_tests", args: { tasks: "not-an-array" } })).toBe(true);
+	});
 });
 
 describe("isWatchdogActive / markWatchdogActive / resetWatchdogState", () => {
