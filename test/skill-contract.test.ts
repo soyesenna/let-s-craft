@@ -138,7 +138,9 @@ describe("U4 — plan core/appendix split (C9 revision)", () => {
 describe("U6 — progress visibility contract", () => {
 	it("pre-craft SKILL's Stage 3/4 loop mandates a visible progress line at every stage/iteration boundary", () => {
 		expect(preCraft).toContain("Progress visibility");
-		expect(preCraft).toContain("architect review complete, critic review complete, a revision started, an AWC edit applied, `lsc-critic-recheck` passed");
+		expect(preCraft).toContain(
+			"both review lanes spawned, architect lane complete, critic lane complete, the review join gate passed, a sequential-fallback pass issued, a revision started, an AWC edit applied, `lsc-critic-recheck` passed",
+		);
 	});
 
 	it("cites the measured evidence for the requirement (13-hour run, 2 lines of progress, 114-minute stall)", () => {
