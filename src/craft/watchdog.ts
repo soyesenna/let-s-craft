@@ -126,13 +126,21 @@ export interface StickyToolExecutionInput {
 	args?: unknown;
 }
 
-/** Pure decision: does this tool_execution_start observation prove lets-craft's pipeline is in use this session (DR-2)? */
+/** Pure decision: does this tool_execution_start observation prove lets-craft's pipeline is in use this session (DR-2)? Recognizes both the flat single-spawn task form ({agent}) and the batch form ({tasks: [{agent}, ...]}). */
 export function shouldSetStickyForToolExecution(event: StickyToolExecutionInput): boolean {
 	if (event.toolName.startsWith("lsc_")) return true;
 	if (event.toolName === "task") {
 		const args = event.args as Record<string, unknown> | undefined;
 		const agent = args?.agent;
 		if (typeof agent === "string" && agent.startsWith("lsc-")) return true;
+		const tasks = args?.tasks;
+		if (Array.isArray(tasks)) {
+			for (const item of tasks) {
+				if (item === null || typeof item !== "object") continue;
+				const itemAgent = (item as Record<string, unknown>).agent;
+				if (typeof itemAgent === "string" && itemAgent.startsWith("lsc-")) return true;
+			}
+		}
 	}
 	return false;
 }
