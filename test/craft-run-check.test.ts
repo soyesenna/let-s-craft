@@ -16,6 +16,7 @@ import {
 	runFeatureCheck,
 } from "../src/craft/run-check";
 import { type CraftState, clearActiveCraft, getActiveCraft, setActiveCraft } from "../src/craft/state";
+import { isPassingCheckLog } from "../src/craft/verdict";
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -166,6 +167,80 @@ describe("runFeatureCheck", () => {
 		});
 
 		expect(details.passed).toBe(false);
+	});
+
+	// F2 (ordering defect): an empty-transcript exit-0 run's log line must never read as a genuine
+	// pass to isPassingCheckLog's freshness regex, even though this function's own `details.passed`
+	// is still true here — the empty-transcript REJECT authority lives one layer up in
+	// performRunCheck/isEmptyCheckTranscript, not in runFeatureCheck. The log itself must already
+	// carry the tell so a fresh-looking-but-fake pass can never back validateLandAuditEvidence.
+	it("decorates the exit line so an empty-transcript exit-0 run is never read as a passing check log, mirroring the (killed) idiom", async () => {
+		const logsDir = tmpLogsDir();
+		const { details } = await runFeatureCheck({
+			feature: "my-feature",
+			scriptPath: "/repo/.lsc/crafts/my-feature/check/run_check.sh",
+			scriptText: DEFAULT_SCRIPT,
+			execCwd: "/repo",
+			logsDir,
+			exec: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+		});
+
+		const logContent = readFileSync(details.logPath, "utf8");
+		expect(logContent).toContain("--- exit 0 (empty-transcript: rejected) ---");
+		expect(logContent).not.toMatch(/^--- exit 0 ---$/m);
+		expect(isPassingCheckLog(logContent), "an empty-transcript log must never be read as a genuine passing check log").toBe(false);
+	});
+
+	// F5 — post-exec rehash: the pre-lint (evaluateCheckScriptShape) judges the script text read
+	// BEFORE exec; these two tests pin that a self-modification during the run is surfaced (both log
+	// and result text), and that the ordinary unmodified case says so explicitly too.
+	it("F5: flags a script whose on-disk content changed during execution, in both the log and result text", async () => {
+		const logsDir = tmpLogsDir();
+		const scriptDir = mkdtempSync(join(tmpdir(), "lsc-selfmod-"));
+		tempDirs.push(scriptDir);
+		const scriptPath = join(scriptDir, "run_check.sh");
+		writeFileSync(scriptPath, DEFAULT_SCRIPT);
+
+		const { details, text } = await runFeatureCheck({
+			feature: "my-feature",
+			scriptPath,
+			scriptText: DEFAULT_SCRIPT,
+			execCwd: "/repo",
+			logsDir,
+			exec: async () => {
+				// Simulate the script rewriting itself mid-run: the file on disk after exec no longer
+				// matches the text the pre-lint actually evaluated.
+				writeFileSync(scriptPath, `${DEFAULT_SCRIPT}\necho self-modified\n`);
+				return { stdout: "3 passed", stderr: "", code: 0, killed: false };
+			},
+		});
+
+		expect(details.passed, "self-modification is an audit-trail flag, not a new reject rule").toBe(true);
+		expect(text).toContain("[NOTE]");
+		expect(text).toContain("changed during execution");
+		const logContent = readFileSync(details.logPath, "utf8");
+		expect(logContent).toMatch(/post-exec script sha256: [0-9a-f]{64} \(CHANGED from pre-exec [0-9a-f]{64}/);
+	});
+
+	it("F5: records 'unchanged' when the script's on-disk content is untouched by execution", async () => {
+		const logsDir = tmpLogsDir();
+		const scriptDir = mkdtempSync(join(tmpdir(), "lsc-unmod-"));
+		tempDirs.push(scriptDir);
+		const scriptPath = join(scriptDir, "run_check.sh");
+		writeFileSync(scriptPath, DEFAULT_SCRIPT);
+
+		const { details, text } = await runFeatureCheck({
+			feature: "my-feature",
+			scriptPath,
+			scriptText: DEFAULT_SCRIPT,
+			execCwd: "/repo",
+			logsDir,
+			exec: async () => ({ stdout: "3 passed", stderr: "", code: 0, killed: false }),
+		});
+
+		expect(text).not.toContain("[NOTE]");
+		const logContent = readFileSync(details.logPath, "utf8");
+		expect(logContent).toMatch(/post-exec script sha256: [0-9a-f]{64} \(unchanged\)/);
 	});
 });
 
@@ -411,5 +486,9 @@ describe("performRunCheck (B-1 target resolution + AC11 non-degeneracy gates, to
 		expect((result.content[0] as { text: string }).text).toContain("empty-transcript");
 		const logNames = readdirSync(craftCheckLogsDir(root, feature));
 		expect(logNames).toContain("check-1.log");
+		// F2: the tool rejected this run (isError), so its log must not be later mistaken for fresh
+		// passing evidence by validateLandAuditEvidence's isPassingCheckLog scan.
+		const logContent = readFileSync(join(craftCheckLogsDir(root, feature), "check-1.log"), "utf8");
+		expect(isPassingCheckLog(logContent), "an isError-rejected empty-transcript run must not read as a passing check log").toBe(false);
 	});
 });
