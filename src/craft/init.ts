@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { ensureCheckLogsGitignored, ensureCraftStateGitignored } from "../artifacts/gitignore.js";
 import { craftDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
 import { readPersistedCraftState, setActiveCraft } from "./state.js";
 
@@ -20,7 +21,7 @@ const REQUIRED_PRECRAFT_ARTIFACTS = ["trace.md", "spec.md", "plan.md"];
  * Verify that pre-craft's three artifacts (trace.md/spec.md/plan.md) exist directly under
  * `featureDir` (`.lsc/crafts/{feature}/`) and are non-blank. Codifies the invariant that
  * pre-craft's output is craft's only input (design contract A-3): without this check,
- * lsc_craft_init would happily start a craft loop against a missing or empty trace/spec/plan,
+ * lsc_craft_init would happily start a craft run against a missing or empty trace/spec/plan,
  * silently discarding pre-craft's role. Pure — returns a list of "{file}: {reason}" violations,
  * empty when all three pass.
  */
@@ -54,7 +55,7 @@ export function registerCraftInitTool(pi: ExtensionAPI): void {
 		loadMode: "discoverable",
 		label: "Craft: init active craft",
 		description:
-			"Start a craft loop for a pre-craft feature: verify trace.md/spec.md/plan.md exist and are non-blank " +
+			"Start a single-shot craft run for a pre-craft feature: verify trace.md/spec.md/plan.md exist and are non-blank " +
 			"under .lsc/crafts/{feature}/, then register it as the active craft. Call once at the start of the " +
 			"craft skill, before spawning the executor.",
 		parameters,
@@ -96,6 +97,13 @@ export function registerCraftInitTool(pi: ExtensionAPI): void {
 				{ feature, projectRoot: ctx.cwd, worktreeRoot, aborted: false, releaseApproval: previousState?.releaseApproval },
 				{ durability: "strict" },
 			);
+
+			// F3: register the two per-feature sidecars (.craft-state.json, check/logs/) in the PROJECT
+			// ROOT's .gitignore — mirrors ensureWorktreesGitignored's own convention (scaffold.ts) so a
+			// consumer project that installs this plugin (and so never inherits this repo's own
+			// hand-written .gitignore) still gets them registered, not just this repo's dogfooding checkout.
+			ensureCraftStateGitignored(ctx.cwd);
+			ensureCheckLogsGitignored(ctx.cwd);
 
 			return {
 				content: [{ type: "text", text: `lets-craft: craft "${feature}" active.` }],

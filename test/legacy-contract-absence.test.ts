@@ -27,7 +27,7 @@ function walkFiles(absDir: string, extensions: readonly string[] | null): string
 	return out;
 }
 
-/** Scan range (AC4-범위): skills/**\/*.md · agents/**\/*.md · rules/**\/*.md · _docs/**\/*.md · fixtures/** (unrestricted, any extension) · README.md · src/**\/*.ts · test/**\/*.ts. */
+/** Scan range (AC4-범위): skills/**\/*.md · agents/**\/*.md · rules/**\/*.md · _docs/**\/*.md · fixtures/** (unrestricted, any extension) · README.md · src/**\/*.ts · test/**\/*.ts · test-bun/**\/*.ts (F7 — the separate Bun-runtime suite, `test/**` alone never collected it, so it was a silent gap in AC4's "구 계약 잔재 0건" guarantee). */
 function scanFiles(): string[] {
 	const absFiles: string[] = [
 		...walkFiles(join(repoRoot, "skills"), [".md"]),
@@ -37,6 +37,7 @@ function scanFiles(): string[] {
 		...walkFiles(join(repoRoot, "fixtures"), null),
 		...walkFiles(join(repoRoot, "src"), [".ts"]),
 		...walkFiles(join(repoRoot, "test"), [".ts"]),
+		...walkFiles(join(repoRoot, "test-bun"), [".ts"]),
 		join(repoRoot, "README.md"),
 	];
 	return absFiles.map(f => relative(repoRoot, f));
@@ -104,6 +105,13 @@ const ALLOWED: ReadonlyMap<string, readonly string[] | "*"> = new Map<string, re
 	["test/ask-ui-contract.test-d.ts", ["run_test.sh"]],
 	["test/ask-ui-e2e.test.ts", ["run_test.sh"]],
 	["test/statusbar-e2e.test.ts", ["run_test.sh"]],
+	// F7 (test-bun/** newly in scan range): "run_test.sh" here cites the SAME unrelated ask-ui
+	// wiring-canon-v2-§7 CI/gating concept as the run_test.sh entries just above — this Bun-runtime
+	// smoke suite's own gating doc comment, not this pipeline's removed fixture script. "Canon
+	// Amendment" cites a specific past audit cycle (audit-0, RF1/RF2, a real historical approval tag)
+	// exactly the way test/ask-ui-render-model.test.ts's own "Canon Amendment" citation above does —
+	// a factual record of what happened, not a remnant of the retired release-approval mechanism.
+	["test-bun/ask-ui-adapter.test.ts", ["run_test.sh", "Canon Amendment"]],
 ]);
 
 /** AC4-리터럴: the 28 forbidden literals. C-number literals need a word-boundary match (below) so "C18" never matches inside an unrelated longer token; the rest are plain case-sensitive substrings. */
