@@ -98,12 +98,19 @@ export function registerCraftInitTool(pi: ExtensionAPI): void {
 				{ durability: "strict" },
 			);
 
-			// F3: register the two per-feature sidecars (.craft-state.json, check/logs/) in the PROJECT
-			// ROOT's .gitignore — mirrors ensureWorktreesGitignored's own convention (scaffold.ts) so a
-			// consumer project that installs this plugin (and so never inherits this repo's own
-			// hand-written .gitignore) still gets them registered, not just this repo's dogfooding checkout.
-			ensureCraftStateGitignored(ctx.cwd);
-			ensureCheckLogsGitignored(ctx.cwd);
+			// F3 (corrected — root, not ctx.cwd): register the two per-feature sidecars
+			// (.craft-state.json, check/logs/) in the CRAFT ROOT's .gitignore — `root` is the SAME
+			// worktreeRoot ?? ctx.cwd already computed above for craftDir/setActiveCraft. Always-worktree
+			// (C6/R5) means these sidecars are created INSIDE the worktree, and a linked worktree only
+			// ever reads its OWN working tree's .gitignore (the committed content of whatever branch it
+			// has checked out) — an uncommitted edit to the PROJECT ROOT's .gitignore has no effect there
+			// at all (verified: root IGNORED / worktree NOT ignored, `?? .lsc/` still showed up). Writing
+			// into `root` means a plain (non-worktree) craft still targets ctx.cwd exactly as before, and
+			// a worktree craft gets an uncommitted-but-immediately-effective entry in its own tree, which
+			// the executor's own "commit any leftover artifacts" step then carries onto the feature branch
+			// (and eventually into base via land) so it stays effective on any future reuse too.
+			ensureCraftStateGitignored(root);
+			ensureCheckLogsGitignored(root);
 
 			return {
 				content: [{ type: "text", text: `lets-craft: craft "${feature}" active.` }],
