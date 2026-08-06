@@ -6,7 +6,7 @@
 
 1. **pre-craft** — 아무 코드도 작성하지 않고, `trace(조사) → interview(요구사항 인터뷰) → plan(계획 합의)` 순서로 진행해 `.lsc/crafts/{feature}/` 아래에 `trace.md`, `spec.md`, `plan.md`를 만듭니다. 이 산출물이 다음 단계의 유일한 입력입니다.
 2. **craft** — pre-craft 산출물(또는 post-craft가 남긴 감사 결과)을 입력받아 **단발로** 구현합니다. plan.md의 작업이 서로소 단위로 나뉘면 병렬 `lsc-executor` 레인을, 아니면 단일 `lsc-executor`를 스폰하고 스스로 통합·정리한 뒤 종료합니다 — 반복 루프도 보호된 테스트 트리도 없습니다. 테스트는 이제 post-craft가 구현 완료 후에 저작합니다.
-3. **post-craft** — craft가 만든 구현물을 `trace.md`/`spec.md`/`plan.md`에 대해 적대적으로 재검증하고, 4단계 판정(`APPROVE` / `APPROVE-WITH-COMMENT` / `APPROVE-WITH-CHANGE` / `REJECT`)을 `.lsc/crafts/{feature}/audit/audit-N.md`에 기록합니다. 판정에 따라 craft를 다시 호출하거나(수정 필요), 사용자의 명시적 승인 후 병합·워크트리 정리(land)까지 진행합니다.
+3. **post-craft** — craft가 만든 구현물에 대한 회귀 테스트와 결정적 체크 진입점(`check/run_check.sh`)을 먼저 저작한 뒤, `trace.md`/`spec.md`/`plan.md`에 대해 적대적으로 재검증하고, 4단계 판정(`APPROVE` / `APPROVE-WITH-COMMENT` / `APPROVE-WITH-CHANGE` / `REJECT`)을 `.lsc/crafts/{feature}/audit/audit-N.md`에 기록합니다. 판정에 따라 craft를 다시 호출하거나(수정 필요), 사용자의 명시적 승인 후 병합·워크트리 정리(land)까지 진행합니다.
 
 모든 산출물은 기본적으로 프로젝트 디렉터리 안의 `.lsc/`에 저장되고, 전역 설정(모델 프리셋 등)은 `~/.omp/.lsc/`에 저장됩니다.
 
@@ -65,7 +65,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 
 - **pre-craft**: `trace → interview → plan` 3단계를 고정 순서로 실행해 `.lsc/crafts/{feature}/`에 `trace.md`/`spec.md`/`plan.md`를 생성합니다. 구현 코드는 절대 작성하지 않고, 마지막에 `craft` 실행을 안내하는 핸드오프 메시지로 끝납니다.
 - **craft**: pre-craft 산출물(또는 post-craft의 `audit/audit-N.md`)을 입력으로, plan.md가 서로소 작업으로 분해되면 병렬 executor 레인을, 아니면 단일 `lsc-executor`를 스폰하는 **단발 실행**입니다. 루프를 소유하지 않으며, 병렬 레인은 `cherry-pick`으로 직접 통합합니다 — `git merge`는 이 스킬에서 절대 호출되지 않고, 병합은 post-craft의 `lsc_land` 전용입니다.
-- **post-craft**: 완성된 구현을 `trace.md`/`spec.md`/`plan.md`에 대해 적대적으로 검증하고 4단계 판정을 `.lsc/crafts/{feature}/audit/audit-N.md`에 기록한 뒤, 판정에 따라 craft 재호출을 제안하거나(사용자 승인 시) 병합·워크트리 정리를 진행합니다.
+- **post-craft**: 회귀 테스트와 `check/run_check.sh`를 저작한 뒤, 완성된 구현을 `trace.md`/`spec.md`/`plan.md`에 대해 적대적으로 검증하고 4단계 판정을 `.lsc/crafts/{feature}/audit/audit-N.md`에 기록합니다. 판정에 따라 craft 재호출을 제안하거나(사용자 승인 시) 병합·워크트리 정리를 진행합니다.
 
 ### `/lsc-preset` 커맨드
 
@@ -165,9 +165,9 @@ presets:
 
 ### 3. post-craft 실행
 
-`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-explore`(코드 매핑)와 `lsc-critic`(적대적 리뷰)를 병렬 스폰하고, spec/plan 컴플라이언스 매트릭스를 직접 확인한 뒤, 테스트를 재실행해 4단계 판정을 워크트리 내부의 `audit/audit-N.md`에 기록합니다.
+`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-test-engineer`를 스폰해 구현 diff를 커버하는 회귀 테스트와 `check/run_check.sh`를 저작시키고, `lsc_run_check`로 결정적 체크를 실행한 뒤, `lsc-explore`(코드 매핑)와 `lsc-critic`(적대적 리뷰)를 병렬 스폰해 spec/plan 컴플라이언스 매트릭스를 직접 확인하고 4단계 판정을 워크트리 내부의 `audit/audit-N.md`에 기록합니다. 결정적 체크가 실패하면(또는 재저작 상한을 넘겨 실행조차 못 하면) verdict는 `REJECT`/`APPROVE-WITH-CHANGE`만 가능한 하드 게이트입니다.
 
-- `REJECT` / `APPROVE-WITH-CHANGE` → craft를 감사 문서 경로로 재호출하도록 제안(사용자 승인 시 자동 체이닝). 감사가 보호된 test 캐논 자체의 수정을 요구하는 특수한 경우에는, `lsc_confirm` 승인 후 `lsc_craft_release`로 해시 보호를 해제하고 캐논을 수정한 뒤 `lsc_craft_init`을 재호출해 다시 보호를 켜는 경로를 사용합니다.
+- `REJECT` / `APPROVE-WITH-CHANGE` → craft를 감사 문서 경로로 재호출하도록 제안(사용자 승인 시 자동 체이닝).
 - `APPROVE` / `APPROVE-WITH-COMMENT` → 사용자에게 명시적 병합 승인을 요청한 뒤(`git merge`는 이 승인 없이는 절대 실행되지 않음) feature 브랜치를 base 브랜치로 `--no-ff` 병합하고, 워크트리를 정리(`git worktree remove` + `git worktree prune`)합니다. 병합 전까지 base 브랜치는 이 feature의 산출물·구현·감사 어느 것도 담고 있지 않습니다.
 
 ### 항상 워크트리 (all-in-worktree)
@@ -190,12 +190,11 @@ land(병합) 전까지, 모든 feature 산출물은 base 브랜치가 아니라 
                         ├── research/           # 외부 리서치 세션 (라이브 모드)
                         ├── spec.md             # pre-craft Stage 2
                         ├── plan.md             # pre-craft Stage 3
-                        ├── test/
-                        │   ├── run_test.sh     # 단일 진입점, craft 시작 시 해시 보호됨
-                        │   ├── logs/
-                        │   │   └── run-N.log   # lsc_run_tests 실행 로그 (해시 보호 제외)
-                        │   ├── .hash-manifest.json   # lsc_craft_init이 기록 (해시 보호 제외)
-                        │   └── .craft-state.json     # 재시작 durable craft 상태 (해시 보호 제외)
+                        ├── .craft-state.json   # 재시작 durable craft 상태 (gitignored)
+                        ├── check/              # post-craft가 구현 완료 후 저작
+                        │   ├── run_check.sh    # 단일 진입점 (추적됨)
+                        │   └── logs/
+                        │       └── check-N.log # lsc_run_check 실행 로그 (gitignored)
                         └── audit/
                             └── audit-{N}.md    # post-craft 감사 결과 (N은 0부터)
 
