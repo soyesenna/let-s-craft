@@ -91,14 +91,13 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 
 ### 강제 도구
 
-`src/craft/*.ts`, `src/ask.ts`가 등록하는, 사용자가 실제로 마주치는 도구들입니다.
+`src/craft/*.ts`, `src/artifacts/*.ts`, `src/ask.ts`가 등록하는, 사용자가 실제로 마주치는 도구들입니다.
 
-- **`lsc_craft_init`**: craft 루프 시작 시 한 번만 호출됩니다. `.lsc/crafts/{feature}/test/`(run_test.sh + 테스트 자산, `logs/`는 제외)의 SHA-256 해시 매니페스트를 기록하고, 이 feature를 "활성 craft"로 등록해 해시 보호와 중단 방지 백스톱을 켭니다.
-- **`lsc_verify_hash`**: 매 실행 반복 후, 테스트 자산이 기록된 해시와 여전히 일치하는지 재확인합니다. 위반 시 어떤 경로가 추가/삭제/수정되었는지 함께 보고합니다.
-- **`lsc_run_tests`**: `run_test.sh`를 LLM 자신의 bash 도구가 아니라 신뢰된 실행기(`pi.exec`)로 실행합니다. 전체 실행 로그를 `test/logs/run-N.log`에 저장하고, 통과/실패 여부와 실패 라인 요약을 반환합니다.
+- **`lsc_scaffold`**: pre-craft의 Stage 0을 결정론적으로 수행합니다. `.lsc/worktrees/{feature}/` 워크트리와 브랜치를 만들고(`base_ref` 지정 가능, 병렬 executor 레인의 기준점), 그 안에 crafts 디렉터리를 마련하고, 프로젝트 루트 `.gitignore`에 `.lsc/worktrees/`를 등록합니다. 재실행은 진짜 no-op입니다.
+- **`lsc_craft_init`**: craft 시작 시 한 번만 호출됩니다. `trace.md`/`spec.md`/`plan.md`가 모두 존재하고 비어있지 않은지 확인한 뒤, 이 feature를 "활성 craft"로 등록합니다.
+- **`lsc_run_check`**: post-craft가 저작한 `check/run_check.sh`를 LLM 자신의 bash 도구가 아니라 신뢰된 실행기(`pi.exec`)로 실행합니다. 스크립트의 sha256과 전문을 포함한 전체 실행 로그를 `check/logs/check-N.log`에 저장하고, 통과/실패 여부와 실패 라인 요약을 반환합니다. 실행 라인이 2줄 미만이거나 전부 무조건-성공이면 실행 전에 거부하고, 결과 transcript가 완전히 비어있으면 실행 후에도 거부합니다.
 - **`lsc_ask` / `lsc_select` / `lsc_confirm`**: 파이프라인이 사람에게 무언가를 물어볼 때 사용하는 유일한 통로입니다(자유 텍스트 / 객관식 / 예-아니오). 대화형 UI가 없는 헤드리스 모드에서 `LSC_FIXTURE`가 설정되지 않으면 이 도구들은 답을 추측하지 않고 즉시 오류로 실패합니다.
-- **`lsc_craft_abort`**: craft 루프를 사용자 의사로 중단시키는 유일한 출구입니다. 해시 위반 복구를 사용자가 거부했거나 `run_test.sh` 실행 불가 상황에서 계속 진행을 거부했을 때만 호출되며, 이후 중단 방지 백스톱이 더 이상 세션을 강제로 이어가지 않습니다.
-- **`lsc_craft_release`**: 감사(post-craft)가 보호된 test 캐논 자체의 의도적 수정을 요구하는 상황을 위한 승인 경로입니다. 반드시 `lsc_confirm`을 통한 사용자 승인 후에만 호출되어야 하며, 호출 즉시 해시 보호가 해제됩니다. 캐논을 수정한 뒤에는 `lsc_craft_init`을 다시 호출해 매니페스트를 재기록해야만 해시 보호와 중단 방지 백스톱이 다시 켜집니다 — 재호출을 생략하면 보호 없이 루프가 계속됩니다.
+- **`lsc_craft_abort`**: 활성 craft를 사용자 의사로 중단 상태로 기록하는 유일한 출구입니다. craft는 이제 단발 실행이라 이 도구를 자동으로 호출하는 게이트가 없으며, 사용자가 명시적으로 중단을 요청했을 때만 호출됩니다.
 
 ## model preset 사용법
 
@@ -288,7 +287,7 @@ pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`ls
 - **v1 → v2 마이그레이션**: v1의 `"response"` 필드는 kind 태깅 body로 대체되었습니다 — 자유 텍스트 `response`→`{"kind":"free-text","freeText":...}`, select 라벨→`{"kind":"selection","selections":[...]}` 또는 `{"kind":"selection-index","optionIndex":n}`, yes/no→`{"kind":"confirmation","confirm":true|false}`. 파일 최상위에 `"version": 2`를 반드시 추가하세요(구포맷을 감지하면 파서가 이 매핑을 안내합니다).
 - **게이트 규칙 규약**: 게이트 태그(`^\[…\]`)를 겨냥한 규칙에는 `selection` 또는 `confirmation`을 쓰세요. 게이트에서 `free-text`는 승인으로 해석되지 않고(자유답변=지침, 같은 게이트 재발문 유발) 파괴적 액션을 열지 않습니다.
 
-번들된 샘플 픽스처는 `fixtures/sample-ts-cli/`입니다. 의존성 없는 `node --test` 기반의 최소 TypeScript CLI 프로젝트로, `slugify()`에 의도적인 버그(연속된 구분자를 하나로 합치지 못함)가 남아 있어 craft 루프가 실제로 반복 수정할 거리가 있습니다. `answers.json`(인터뷰 응답 스크립트), `recorded-research.md`(픽스처 모드에서 외부 웹 리서치 대신 읽어들이는 사전 기록 리서치), `run_test.sh`(`node --test`를 실행하고 결과를 요약하는 단일 진입점)를 포함합니다.
+번들된 샘플 픽스처는 `fixtures/sample-ts-cli/`입니다. 의존성 없는 `node --test` 기반의 최소 TypeScript CLI 프로젝트로, `slugify()`에 의도적인 버그(연속된 구분자를 하나로 합치지 못함)가 남아 있어 craft가 실제로 고칠 거리가 있습니다. `answers.json`(인터뷰 응답 스크립트), `recorded-research.md`(픽스처 모드에서 외부 웹 리서치 대신 읽어들이는 사전 기록 리서치)를 포함하며, 회귀 테스트와 결정적 체크 진입점(`check/run_check.sh`)은 이제 post-craft가 구현 완료 후에 저작합니다.
 
 ## dogfooding 절차
 

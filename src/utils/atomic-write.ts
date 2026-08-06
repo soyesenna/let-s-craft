@@ -1,6 +1,5 @@
-// Durable writes for the craft loop's restart-durable state (`.craft-state.json`,
-// `.hash-manifest.json`): both are read back by a later process (state.ts's
-// loadActiveCraft, hash-manifest.ts's loadManifest) that must never observe a
+// Durable writes for the pipeline's restart-durable state (e.g. `.craft-state.json`,
+// read back by a later process via state.ts's loadActiveCraft) that must never observe a
 // half-written file from a crash or concurrent read mid-write. A plain
 // `writeFileSync` truncates the destination before the new bytes land, so a crash
 // between truncate and write leaves an empty/partial file in place. Writing to a

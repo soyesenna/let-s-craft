@@ -1,11 +1,11 @@
-// lets-craft artifact path conventions (spec §8 산출물 경로 규약; project .lsc/, global
-// ~/.omp/.lsc/). Single source of truth for where every artifact lives — craft/*,
+// lets-craft artifact path conventions (_docs/spec.md:4-5's 산출물 경로 규칙; project .lsc/,
+// global ~/.omp/.lsc/). Single source of truth for where every artifact lives — craft/*,
 // preset/*, and any future skill wiring should derive paths from here rather than
 // joining path segments locally.
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 
-/** Global lets-craft root: `~/.omp/.lsc/` (spec §산출물). */
+/** Global lets-craft root: `~/.omp/.lsc/` (_docs/spec.md:4-5). */
 export function globalLscDir(): string {
 	return join(homedir(), ".omp", ".lsc");
 }

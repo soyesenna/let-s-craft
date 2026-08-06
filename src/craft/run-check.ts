@@ -1,5 +1,5 @@
 // `lsc_run_check` — the deterministic check entrypoint's trusted execution primitive (C3,
-// generalized from the former `lsc_run_tests`/C19 step②/C21). Runs post-craft's own
+// generalized from the former single-purpose test-runner tool). Runs post-craft's own
 // check/run_check.sh (build/lint/typecheck/test, authored together with the tests it exercises)
 // via `pi.exec` — never the LLM's own bash tool — saves the full transcript (with the script's own
 // sha256 + full text, for audit) to check/logs/check-N.log, and returns a best-effort structured
@@ -119,10 +119,10 @@ export const RECOGNIZED_MANIFEST_NAMES = Object.keys(MANIFEST_RUNNER_TOKENS);
  *
  * Only rules ②③ carry REJECT authority: ② too few execution lines (< 2) — `degenerate-too-short`;
  * ③ every execution line is an unconditional pass (echo/true/:/exit 0 only) — `degenerate-always-pass`.
- * Rule ④ is WARN-only (P2 scope-limited exception, iter 3 architect BL-N1): this repository's own
- * fixture (`fixtures/sample-ts-cli/run_test.sh`) calls `node --test` directly with zero `npm`
- * tokens — a completely legitimate script that would be wrongly rejected if ④ carried reject
- * authority. Widening the token list to accommodate it would make the check meaningless, so ④
+ * Rule ④ is WARN-only (P2 scope-limited exception, iter 3 architect BL-N1): a script that calls
+ * `node --test` (or any other runner) directly, with zero package-manager tokens, is a completely
+ * legitimate script that would be wrongly rejected if ④ carried reject authority. Widening the
+ * token list to accommodate it would make the check meaningless, so ④
  * observes rather than judges: a present-but-silent manifest gets one warning line, judgment is
  * left to the human audit (post-craft's Adversarial Class "결정적 체크의 형해화"). No manifests at
  * all skips rule ④ entirely (not even a warning).
@@ -240,7 +240,7 @@ export async function runFeatureCheck(args: RunFeatureCheckArgs): Promise<RunFea
 	return { details, text };
 }
 
-/** Structured failure summary handed to the next reader (C21 precedent). */
+/** Structured failure summary handed to the next reader. */
 export function failureSummaryFor(details: RunCheckDetails): string | undefined {
 	if (details.passed) return undefined;
 	if (details.failureLines.length > 0) return details.failureLines.join("\n");
@@ -319,7 +319,7 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 			content: [
 				{
 					type: "text",
-					text: `lets-craft: check/run_check.sh not found at ${scriptPath}. post-craft's test-authoring step must author check/run_check.sh first (C23c).`,
+					text: `lets-craft: check/run_check.sh not found at ${scriptPath}. post-craft's test-authoring step must author check/run_check.sh first.`,
 				},
 			],
 		};
@@ -347,7 +347,7 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 		const message = error instanceof Error ? error.message : String(error);
 		return {
 			isError: true,
-			content: [{ type: "text", text: `lets-craft: run_check.sh failed to execute — ${message}. Escalate to the user (C23c).` }],
+			content: [{ type: "text", text: `lets-craft: run_check.sh failed to execute — ${message}. Escalate to the user.` }],
 		};
 	}
 
@@ -359,7 +359,7 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 					type: "text",
 					text:
 						`lets-craft: run_check.sh produced no output at all (empty-transcript) despite exit ${outcome.details.exitCode} — a ` +
-						`script that never ran a real command cannot back a check result. Log: ${outcome.details.logPath}. Re-author check/run_check.sh (C23c).`,
+						`script that never ran a real command cannot back a check result. Log: ${outcome.details.logPath}. Re-author check/run_check.sh.`,
 				},
 			],
 		};
