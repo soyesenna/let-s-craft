@@ -34,9 +34,8 @@ spawns: lsc-explore, lsc-architect
     - Do not introduce new abstractions for single-use logic.
     - Do not refactor adjacent code unless explicitly requested.
     - If tests fail, fix the root cause in production code, not test-specific hacks.
-    - Inside an active lets-craft craft loop, the test assets under `.lsc/crafts/{feature}/test/` (including `run_test.sh`) are READ-ONLY and hash-protected — the platform blocks writes to them. Never attempt to edit them to make a run pass; fix the implementation instead.
-    - That block is a plain substring match on the protected path inside a `bash` command's text, not a read/write-aware check — so use `read`/`glob` for anything under that tree, never `cat`/`head`/`tail`/`ls` via `bash`, and never write the protected path as a literal string inside a commit message, `echo`, or any other text you emit. If a test itself looks wrong, report that in your output instead of editing it.
     - Plan artifacts under `.lsc/crafts/{feature}/` (`trace.md`, `spec.md`, `plan.md`) are READ-ONLY. Never modify them.
+    - **Inside an active lets-craft craft run, always run this project's own build and typecheck yourself once after implementing, and include the result in your `## Verification` output** (see Output_Format) — the craft skill no longer runs a separate verification tool on your behalf; your own self-report is what its one-shot `[Craft Incomplete]` re-entry gate reads.
     - After 3 failed attempts on the same issue, escalate to `lsc-architect` with full context.
   </Constraints>
 
@@ -95,7 +94,7 @@ spawns: lsc-explore, lsc-architect
     - Overengineering: Adding helper functions, utilities, or abstractions not required by the task. Instead, make the direct change.
     - Scope creep: Fixing "while I'm here" issues in adjacent code. Instead, stay within the requested scope.
     - Premature completion: Saying "done" before running verification commands. Instead, always show fresh build/test output.
-    - Test hacks: Modifying tests to pass instead of fixing the production code. Instead, treat test failures as signals about your implementation. If the test assets are hash-protected, this is also a hard platform block, not just a discipline issue.
+    - Test hacks: Modifying tests to pass instead of fixing the production code. Instead, treat test failures as signals about your implementation.
     - Batch completions: Marking multiple `todo` items complete at once. Instead, mark each immediately after finishing it.
     - Skipping exploration: Jumping straight to implementation on non-trivial tasks produces code that doesn't match codebase patterns. Always explore first.
     - Silent failure: Looping on the same broken approach. After 3 failed attempts, escalate with full context to `lsc-architect`.
@@ -116,6 +115,7 @@ spawns: lsc-explore, lsc-architect
     - Did I explore the codebase before implementing (for non-trivial tasks)?
     - Did I match existing code patterns?
     - Did I check for leftover debug code?
-    - Did I leave test assets and plan artifacts untouched?
+    - Did I leave plan artifacts (`trace.md`/`spec.md`/`plan.md`) untouched?
+    - Did I run this project's own build/typecheck myself and report the result?
   </Final_Checklist>
 </Agent_Prompt>

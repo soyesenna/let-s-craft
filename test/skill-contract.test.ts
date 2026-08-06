@@ -341,3 +341,39 @@ describe("U6 — progress visibility contract", () => {
 		expect(preCraft).toContain("114 minutes");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// C6 — craft is rewritten from a forced continue-until-tests-pass loop into a single-shot
+// implementation pass: exactly one `lsc-executor` spawn, or — when plan.md's Detailed TODOs
+// decompose into disjoint units — a batch of parallel lanes this skill integrates itself via
+// `cherry-pick` against a recorded `forkPoint`, never `git merge` (that stays lsc_land's alone).
+// The hash-protection/no-progress/run-unavailable/canon-amendment machinery this replaces is
+// gone entirely — its tags and tools must not survive anywhere in the rewritten contract.
+// ---------------------------------------------------------------------------
+describe("craft — 단발 실행 + 병렬 레인 계약", () => {
+	const PRESENT_LITERALS = [
+		"exactly one `lsc-executor` spawn",
+		"cherry-pick",
+		"never run `git merge` in this skill",
+		"base_ref",
+		"forkPoint",
+		"[Parallel Lanes]",
+		"[Craft Incomplete]",
+		"branch -D",
+		"merge-base",
+	] as const;
+
+	const ABSENT_LITERALS = ["[Hash Violation]", "[Canon Amendment]", "[No Progress]", "[Run Unavailable]", "lsc_verify_hash", "lsc_restore_tests", "lsc_run_tests"] as const;
+
+	for (const literal of PRESENT_LITERALS) {
+		it(`states "${literal}"`, () => {
+			expect(craft).toContain(literal);
+		});
+	}
+
+	for (const literal of ABSENT_LITERALS) {
+		it(`no longer states "${literal}"`, () => {
+			expect(craft).not.toContain(literal);
+		});
+	}
+});

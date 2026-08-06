@@ -1,12 +1,13 @@
-// C-3: compaction canon re-read directive. A long craft loop's skill contract (test-tree
-// invariants, hash-verification discipline, the loop's only exits, question tagging) lives
-// entirely in craft/SKILL.md plus this feature's own spec.md/plan.md — none of it is
-// reconstructible from a compaction summary alone. Without an explicit nudge at the exact
-// moment compaction happens, a resumed turn can silently treat the summary as the whole truth
-// and let the loop's real contract quietly lapse. This module is the pure "what to say" half —
-// same resume-discipline tone and "don't trust memory, re-read the durable files" shape as
-// enforcement.ts's continuationResult, but for the session.compacting seam instead of
-// session_stop. registerCompactionDirective below is the thin "when/how" registration wrapper.
+// C-3/C6: compaction canon re-read directive. A craft run's skill contract (its single-shot
+// exit discipline, forkPoint recovery for a parallel-lane run, question tagging) lives entirely
+// in craft/SKILL.md plus this feature's own spec.md/plan.md — none of it is reconstructible from
+// a compaction summary alone. Without an explicit nudge at the exact moment compaction happens, a
+// resumed turn can silently treat the summary as the whole truth and let the run's real contract
+// quietly lapse. This module is the pure "what to say" half — the same "don't trust memory,
+// re-read the durable files" resume-discipline tone `enforcement.ts`'s `continuationResult` used
+// to carry for the now-removed `session_stop` backstop (C2 deleted that module along with the
+// hash-protection loop it enforced), but for the `session.compacting` seam instead.
+// registerCompactionDirective below is the thin "when/how" registration wrapper.
 //
 // Channel choice — session.compacting, `context` field (not `prompt`): verified against
 // node_modules/@oh-my-pi/pi-coding-agent's shared-events.d.ts (SessionCompactingResult =
@@ -41,11 +42,14 @@ export function buildCompactionDirective(craft: CraftState | undefined): string 
 	return (
 		`lets-craft: craft "${craft.feature}" is compacting. Do not trust the compaction summary as memory of this craft's ` +
 		"contract or progress — re-read the actual files below before acting on anything past this point. " +
-		"1) read skill://craft (skills/craft/SKILL.md) again in full; its loop contract is not safely summarizable. " +
+		"1) read skill://craft (skills/craft/SKILL.md) again in full; its single-shot execution contract is not safely summarizable. " +
 		`2) Read ${specPath} and ${planPath} — the real acceptance criteria and plan for this feature, not a paraphrase of them. ` +
-		"3) Re-confirm the invariants this craft enforces: the protected test/ tree (run_test.sh and test assets) must never " +
-		"be modified while this craft is active (C20); and any question that needs a human goes through lsc_ask/" +
-		"lsc_select/lsc_confirm, never a bare prose question."
+		"3) Re-confirm the invariants this craft enforces: craft is a single-shot execution — its only valid exits are the " +
+		"execution (or parallel-lane integration) completing, or an explicit lsc_craft_abort, never an automatic repeat; and " +
+		"any question that needs a human goes through lsc_ask/lsc_select/lsc_confirm, never a bare prose question. " +
+		"4) If a parallel-lane execution was in flight, the forkPoint §3.1 recorded may not have survived into this summary — " +
+		"do not restore it from memory or substitute the feature branch's current tip; re-derive it via §3.4 step 0's " +
+		"merge-base rule instead."
 	);
 }
 
