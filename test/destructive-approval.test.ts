@@ -1,19 +1,30 @@
-// Unit canon for the release-gate feature's authority core (plan §4 W1). Three layers:
+// Unit canon for the destructive-approval authority core (plan §4 W1; R9 tag retirement, C2).
+// Three layers:
 //   1. destructive-approval.ts — the in-memory single-use approval slot (권위), the gate-tag
-//      SSOT, and craft-identity binding (field equality, F-12);
-//   2. state.ts — the durable evidence ledger it feeds (recordReleaseApproval/recordOpenRelease,
-//      CS3 persist-before-publish) plus the pure reducers (hasOpenRelease/openReleaseGuidance);
+//      SSOT (now `[Land]` alone — Canon Amendment/Hash Violation retired along with their sole
+//      consumers, release.ts/hash-manifest.ts), and craft-identity binding (field equality, F-12);
+//   2. state.ts — the durable evidence ledger it feeds (recordReleaseApproval, CS3
+//      persist-before-publish);
 //   3. the lsc_confirm issuance transaction (ask.ts execute wrapper) that installs the slot,
 //      exercised through the ACTUALLY-registered execute (CS6/CS7), not a hand-driven performConfirm.
+//
+// R8 (C2): craft-release-flow.test.ts — the release-gate's own end-to-end wiring test — is
+// deleted alongside release.ts/hash-manifest.ts/the openRelease state machine. Its
+// nonce-issuance/single-use/reuse-rejection coverage is not lost in that deletion: the same
+// mechanism (issue → single-use consume → conditional non-burn on a mismatch) is exercised here
+// under the surviving `[Land]` tag (see the "pending approval slot" describe block below), and at
+// the real registered-tool level for lsc_land in craft-land-flow.test.ts (replay-after-success
+// rejection, approval-required with no pending approval, etc.) — untouched by this commit. This
+// file only re-tags its own generic examples from the retired `[Canon Amendment]` to `[Land]`; it
+// does not need to invent new scenarios that would duplicate that existing coverage.
 //
 // Conventions (trace Lane 5 / plan §4): no business mocks or snapshots — the sole sanctioned
 // exception is the SDK-boundary mock `pi` that captures the registered tool execute (precedent
 // test/ask-schema.test.ts:1-42). Real singletons + mkdtempSync(tmpdir()), per-field assertions,
 // clearActiveCraft()/invalidatePendingApproval() reset before and after every test.
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import * as zod from "zod/v4";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { craftStatePath } from "../src/artifacts/paths";
@@ -31,29 +42,20 @@ import {
 	peekPendingApproval,
 	sameCraftIdentity,
 } from "../src/craft/destructive-approval";
-import { type HashManifest, closeOpenRelease, fingerprintManifestFile } from "../src/craft/hash-manifest";
-import { RELEASE_CONSUMABLE_TAGS } from "../src/craft/release";
 import {
 	type CraftState,
-	type OpenReleaseEvidence,
 	type ReleaseApprovalEvidence,
 	clearActiveCraft,
 	getActiveCraft,
-	hasOpenRelease,
 	loadActiveCraft,
 	markCraftAborted,
-	openReleaseGuidance,
-	recordOpenRelease,
 	recordReleaseApproval,
 	registerCraftStateResets,
 	setActiveCraft,
 } from "../src/craft/state";
 
-// A representative tagged confirm question: the [Canon Amendment] prompt release consumes.
-const CANON_QUESTION =
-	"[Canon Amendment] Protected test canon needs an approved, intentional modification. Release hash protection and proceed? Proceed?";
-// A [Land] prompt — issuable infrastructure, but NOT in RELEASE_CONSUMABLE_TAGS.
-const LAND_QUESTION = "[Land] Merge this approved feature into the main branch? land?";
+// The sole surviving destructive gate tag's representative confirm question (R9).
+const LAND_QUESTION = "[Land] Merge this approved feature into the main branch? Proceed?";
 
 // ── shared fixtures / helpers ───────────────────────────────────────────────
 const tempDirs: string[] = [];
@@ -94,7 +96,7 @@ function identityOf(state: CraftState): ApprovalCraftIdentity {
 	return { feature: state.feature, projectRoot: state.projectRoot, worktreeRoot: state.worktreeRoot };
 }
 
-function installFor(identity: ApprovalCraftIdentity, tag: DestructiveGateTag = "[Canon Amendment]", question = CANON_QUESTION): void {
+function installFor(identity: ApprovalCraftIdentity, tag: DestructiveGateTag = "[Land]", question = LAND_QUESTION): void {
 	installPendingApproval(createPendingApproval({ tag, question, identity }));
 }
 
@@ -191,27 +193,23 @@ function breakPersistPath(root: string): void {
 }
 
 // ── gate-tag SSOT & identity ────────────────────────────────────────────────
-describe("matchDestructiveGateTag — gate-tag SSOT (C10/C11)", () => {
-	it("exposes exactly the three destructive gate tags as the SSOT", () => {
-		expect(DESTRUCTIVE_GATE_TAGS).toEqual(["[Canon Amendment]", "[Land]", "[Hash Violation]"]);
+describe("matchDestructiveGateTag — gate-tag SSOT (C10/C11, R9 retirement)", () => {
+	it("exposes exactly the one surviving destructive gate tag as the SSOT — Canon Amendment/Hash Violation retired with their consumers (release.ts/hash-manifest.ts, C2)", () => {
+		expect(DESTRUCTIVE_GATE_TAGS).toEqual(["[Land]"]);
 	});
 
-	it("release consumes exactly the Canon Amendment tag", () => {
-		expect(RELEASE_CONSUMABLE_TAGS).toEqual(["[Canon Amendment]"]);
-	});
-
-	it("matches each destructive gate tag as an exact question prefix", () => {
+	it("matches the destructive gate tag as an exact question prefix", () => {
 		for (const tag of DESTRUCTIVE_GATE_TAGS) {
 			expect(matchDestructiveGateTag(`${tag} do the thing. Proceed?`)).toBe(tag);
 		}
 	});
 
 	it("does not match a bare tag word stripped of its brackets", () => {
-		expect(matchDestructiveGateTag("Canon Amendment needs approval. Proceed?")).toBeUndefined();
+		expect(matchDestructiveGateTag("Land this feature. Proceed?")).toBeUndefined();
 	});
 
 	it("does not match a tag that appears mid-question rather than as a prefix", () => {
-		expect(matchDestructiveGateTag("Please review the [Canon Amendment] change. Proceed?")).toBeUndefined();
+		expect(matchDestructiveGateTag("Please review the [Land] change. Proceed?")).toBeUndefined();
 	});
 
 	it("does not match an unknown or legacy tag prefix", () => {
@@ -257,10 +255,10 @@ describe("sameCraftIdentity — field equality, not reference (F-12)", () => {
 describe("pending approval slot — install / consume / single-use / conditional non-burn", () => {
 	it("createPendingApproval builds a record without touching the slot (prepare != install, CS2)", () => {
 		const identity: ApprovalCraftIdentity = { feature: "f", projectRoot: "/p" };
-		const record = createPendingApproval({ tag: "[Canon Amendment]", question: CANON_QUESTION, identity });
+		const record = createPendingApproval({ tag: "[Land]", question: LAND_QUESTION, identity });
 		expect(peekPendingApproval()).toBeUndefined(); // prepare must not publish
-		expect(record.tag).toBe("[Canon Amendment]");
-		expect(record.question).toBe(CANON_QUESTION);
+		expect(record.tag).toBe("[Land]");
+		expect(record.question).toBe(LAND_QUESTION);
 		expect(record.response).toBe("yes");
 		expect(record.identity).toEqual(identity);
 		expect(record.nonce).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
@@ -269,38 +267,38 @@ describe("pending approval slot — install / consume / single-use / conditional
 
 	it("installPendingApproval publishes the record so peek returns it", () => {
 		const identity: ApprovalCraftIdentity = { feature: "f", projectRoot: "/p" };
-		const record = createPendingApproval({ tag: "[Canon Amendment]", question: CANON_QUESTION, identity });
+		const record = createPendingApproval({ tag: "[Land]", question: LAND_QUESTION, identity });
 		installPendingApproval(record);
 		expect(peekPendingApproval()).toEqual(record);
 	});
 
 	it("re-installing replaces the slot — the latest issuance wins", () => {
 		const identity: ApprovalCraftIdentity = { feature: "f", projectRoot: "/p" };
-		const first = createPendingApproval({ tag: "[Canon Amendment]", question: "q1", identity });
+		const first = createPendingApproval({ tag: "[Land]", question: "q1", identity });
 		const second = createPendingApproval({ tag: "[Land]", question: "q2", identity });
 		expect(first.nonce).not.toBe(second.nonce); // each prepare mints a fresh nonce
 		installPendingApproval(first);
 		installPendingApproval(second);
 		expect(peekPendingApproval()?.nonce).toBe(second.nonce);
-		expect(peekPendingApproval()?.tag).toBe("[Land]");
+		expect(peekPendingApproval()?.question).toBe("q2");
 	});
 
-	it("consume succeeds for a matching tag+identity and clears the slot", () => {
+	it("consume succeeds for a matching tag+identity and clears the slot (R8 — the retired release-gate's own nonce-consumption coverage now lives here under [Land])", () => {
 		const identity: ApprovalCraftIdentity = { feature: "f", projectRoot: "/p" };
 		installFor(identity);
-		const result = consumePendingApproval({ acceptedTags: ["[Canon Amendment]"], identity });
+		const result = consumePendingApproval({ acceptedTags: ["[Land]"], identity });
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw new Error("expected a successful consume");
-		expect(result.approval.tag).toBe("[Canon Amendment]");
+		expect(result.approval.tag).toBe("[Land]");
 		expect(result.approval.identity).toEqual(identity);
 		expect(peekPendingApproval()).toBeUndefined(); // burned on success
 	});
 
-	it("a second consume after success reports no-pending-approval (single-use)", () => {
+	it("a second consume after success reports no-pending-approval (single-use, R8 — nonce reuse rejection)", () => {
 		const identity: ApprovalCraftIdentity = { feature: "f", projectRoot: "/p" };
 		installFor(identity);
-		consumePendingApproval({ acceptedTags: ["[Canon Amendment]"], identity });
-		expect(consumePendingApproval({ acceptedTags: ["[Canon Amendment]"], identity })).toEqual({
+		consumePendingApproval({ acceptedTags: ["[Land]"], identity });
+		expect(consumePendingApproval({ acceptedTags: ["[Land]"], identity })).toEqual({
 			ok: false,
 			reason: "no-pending-approval",
 		});
@@ -308,37 +306,43 @@ describe("pending approval slot — install / consume / single-use / conditional
 
 	it("consume on an empty slot reports no-pending-approval", () => {
 		const identity: ApprovalCraftIdentity = { feature: "f", projectRoot: "/p" };
-		expect(consumePendingApproval({ acceptedTags: ["[Canon Amendment]"], identity })).toEqual({
+		expect(consumePendingApproval({ acceptedTags: ["[Land]"], identity })).toEqual({
 			ok: false,
 			reason: "no-pending-approval",
 		});
 	});
 
 	it("consume with a non-accepted tag reports tag-mismatch and preserves the slot (CS11 non-burn)", () => {
+		// Synthetic tag (R9): the SSOT now has only one real tag ([Land]), so a genuine
+		// tag-mismatch between two real gate tags can no longer arise. The mismatch branch is
+		// still live code — any consumer could pass a narrower acceptedTags list — so this forces
+		// the scenario with a tag outside the real SSOT purely to keep the non-burn path exercised.
 		const identity: ApprovalCraftIdentity = { feature: "f", projectRoot: "/p" };
-		installFor(identity, "[Land]", LAND_QUESTION);
-		const result = consumePendingApproval({ acceptedTags: RELEASE_CONSUMABLE_TAGS, identity });
-		expect(result).toEqual({ ok: false, reason: "tag-mismatch", pendingTag: "[Land]" });
-		expect(peekPendingApproval()?.tag).toBe("[Land]"); // the legit [Land] consumer's approval survives
+		const syntheticTag = "[Synthetic]" as unknown as DestructiveGateTag;
+		installFor(identity, syntheticTag, "[Synthetic] some other gate. Proceed?");
+		const result = consumePendingApproval({ acceptedTags: ["[Land]"], identity });
+		expect(result).toEqual({ ok: false, reason: "tag-mismatch", pendingTag: syntheticTag });
+		expect(peekPendingApproval()?.tag).toBe(syntheticTag); // preserved (conditional non-burn)
 	});
 
 	it("a mismatch preserves the slot, but the next same-tag confirm revokes it (CS11 continuity)", async () => {
 		const identity: ApprovalCraftIdentity = { feature: "f", projectRoot: "/p" };
-		installFor(identity); // a legit [Canon Amendment] approval
-		const wrong = consumePendingApproval({ acceptedTags: ["[Land]"], identity }); // a mis-targeted consumer
-		expect(wrong).toEqual({ ok: false, reason: "tag-mismatch", pendingTag: "[Canon Amendment]" });
+		const syntheticTag = "[Synthetic]" as unknown as DestructiveGateTag;
+		installFor(identity, syntheticTag, "[Synthetic] some other gate. Proceed?"); // a mis-targeted approval
+		const wrong = consumePendingApproval({ acceptedTags: ["[Land]"], identity });
+		expect(wrong).toEqual({ ok: false, reason: "tag-mismatch", pendingTag: syntheticTag });
 		expect(peekPendingApproval()).not.toBeUndefined(); // survived the mismatch (availability)
 		// A fresh same-tag prompt — even answered "no" — must revoke the surviving approval (no stale yes, P8).
 		const execute = captureConfirmExecute();
-		await execute("tc", { question: CANON_QUESTION }, undefined, undefined, uiCtx(makeUI(["No"])));
+		await execute("tc", { question: LAND_QUESTION }, undefined, undefined, uiCtx(makeUI(["No"])));
 		expect(peekPendingApproval()).toBeUndefined(); // revoked on the next tagged prompt (security)
 	});
 
 	it("consume with a mismatched identity reports identity-mismatch and preserves the slot", () => {
 		installFor({ feature: "installed-feature", projectRoot: "/p" });
 		const other: ApprovalCraftIdentity = { feature: "other-feature", projectRoot: "/q" };
-		const result = consumePendingApproval({ acceptedTags: ["[Canon Amendment]"], identity: other });
-		expect(result).toEqual({ ok: false, reason: "identity-mismatch", pendingTag: "[Canon Amendment]" });
+		const result = consumePendingApproval({ acceptedTags: ["[Land]"], identity: other });
+		expect(result).toEqual({ ok: false, reason: "identity-mismatch", pendingTag: "[Land]" });
 		expect(peekPendingApproval()).not.toBeUndefined(); // preserved (conditional non-burn)
 	});
 
@@ -359,7 +363,7 @@ describe("lifecycle invalidation — direct state helpers (P8 defense)", () => {
 		expect(peekPendingApproval()).not.toBeUndefined();
 		setActiveCraft(freshState(tmpProject(), "feat-2")); // a new activation
 		expect(peekPendingApproval()).toBeUndefined();
-		expect(consumePendingApproval({ acceptedTags: ["[Canon Amendment]"], identity: identityOf(state) })).toEqual({
+		expect(consumePendingApproval({ acceptedTags: ["[Land]"], identity: identityOf(state) })).toEqual({
 			ok: false,
 			reason: "no-pending-approval",
 		});
@@ -380,7 +384,7 @@ describe("lifecycle invalidation — direct state helpers (P8 defense)", () => {
 		installFor(identityOf(state));
 		clearActiveCraft();
 		expect(peekPendingApproval()).toBeUndefined();
-		expect(consumePendingApproval({ acceptedTags: ["[Canon Amendment]"], identity: identityOf(state) })).toEqual({
+		expect(consumePendingApproval({ acceptedTags: ["[Land]"], identity: identityOf(state) })).toEqual({
 			ok: false,
 			reason: "no-pending-approval",
 		});
@@ -404,7 +408,7 @@ describe("lifecycle invalidation — direct state helpers (P8 defense)", () => {
 	});
 });
 
-// ── lifecycle invalidation — real event / tool wiring (CS6 d/e/f) ───────────
+// ── lifecycle invalidation — real event / tool wiring (CS6 d/e) ─────────────
 describe("lifecycle invalidation — real event/tool wiring (CS6)", () => {
 	for (const event of ["session_switch", "session_branch", "session_shutdown"] as const) {
 		it(`the ${event} reset callback invalidates a pending approval (d)`, () => {
@@ -426,33 +430,10 @@ describe("lifecycle invalidation — real event/tool wiring (CS6)", () => {
 		const result = performCraftAbort("user declined to continue");
 		expect(result.isError).toBeFalsy();
 		expect(peekPendingApproval()).toBeUndefined();
-		expect(consumePendingApproval({ acceptedTags: ["[Canon Amendment]"], identity: identityOf(state) })).toEqual({
+		expect(consumePendingApproval({ acceptedTags: ["[Land]"], identity: identityOf(state) })).toEqual({
 			ok: false,
 			reason: "no-pending-approval",
 		});
-	});
-
-	it("loading a persisted unclosed open-release returns the record but does not promote it to the active singleton (f)", () => {
-		const root = tmpProject();
-		const feature = "reopened-feature";
-		const open: OpenReleaseEvidence = {
-			nonce: "n1",
-			tag: "[Canon Amendment]",
-			question: CANON_QUESTION,
-			response: "yes",
-			reason: "fix the canon",
-			openedAt: "2026-03-03T00:00:00.000Z",
-			// no closedAt → unclosed
-		};
-		const persisted: CraftState = { feature, projectRoot: root, aborted: false, openRelease: open };
-		const path = craftStatePath(root, feature);
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, JSON.stringify(persisted, null, 2));
-
-		const record = loadActiveCraft(root, feature);
-
-		expect(record?.openRelease?.nonce).toBe("n1"); // record surfaced for inspection
-		expect(getActiveCraft()).toBeUndefined(); // but NOT promoted — run_tests' !craft guard stays fail-closed
 	});
 });
 
@@ -464,20 +445,20 @@ describe("issuance transaction — captured lsc_confirm execute (CS2/CS6)", () =
 		setActiveCraft(state);
 		const execute = captureConfirmExecute();
 
-		const result = await execute("tc", { question: CANON_QUESTION }, undefined, undefined, uiCtx(makeUI(["Yes"])));
+		const result = await execute("tc", { question: LAND_QUESTION }, undefined, undefined, uiCtx(makeUI(["Yes"])));
 
 		expect(result.isError).toBeFalsy();
 		const pending = peekPendingApproval();
 		expect(pending).not.toBeUndefined();
-		expect(pending?.tag).toBe("[Canon Amendment]");
+		expect(pending?.tag).toBe("[Land]");
 		expect(pending?.response).toBe("yes");
-		expect(pending?.question).toBe(CANON_QUESTION);
+		expect(pending?.question).toBe(LAND_QUESTION);
 		expect(pending?.identity).toEqual(identityOf(state));
 		expect(typeof pending?.nonce).toBe("string");
 		// Durable evidence is committed before the slot goes live (persist-before-install, P7).
 		const persisted = JSON.parse(readFileSync(craftStatePath(root, "gated-feature"), "utf8"));
 		expect(persisted.releaseApproval?.nonce).toBe(pending?.nonce);
-		expect(persisted.releaseApproval?.tag).toBe("[Canon Amendment]");
+		expect(persisted.releaseApproval?.tag).toBe("[Land]");
 	});
 
 	for (const [label, makeSecondUI] of [
@@ -490,10 +471,10 @@ describe("issuance transaction — captured lsc_confirm execute (CS2/CS6)", () =
 			setActiveCraft(freshState(root, "gated-feature"));
 			const execute = captureConfirmExecute();
 
-			await execute("tc1", { question: CANON_QUESTION }, undefined, undefined, uiCtx(makeUI(["Yes"])));
+			await execute("tc1", { question: LAND_QUESTION }, undefined, undefined, uiCtx(makeUI(["Yes"])));
 			expect(peekPendingApproval()).not.toBeUndefined(); // issued
 
-			await execute("tc2", { question: CANON_QUESTION }, undefined, undefined, uiCtx(makeSecondUI()));
+			await execute("tc2", { question: LAND_QUESTION }, undefined, undefined, uiCtx(makeSecondUI()));
 			expect(peekPendingApproval()).toBeUndefined(); // revoked by the fresh tagged prompt
 		});
 	}
@@ -508,7 +489,7 @@ describe("issuance transaction — captured lsc_confirm execute (CS2/CS6)", () =
 		});
 		const ui: SelectUI = { select: () => gate, editor: async () => undefined };
 
-		const pending = execute("tc", { question: CANON_QUESTION }, undefined, undefined, uiCtx(ui));
+		const pending = execute("tc", { question: LAND_QUESTION }, undefined, undefined, uiCtx(ui));
 		clearActiveCraft(); // the craft context vanishes mid-await...
 		releaseSelect("Yes"); // ...then the user answers yes
 		const result = await pending;
@@ -527,7 +508,7 @@ describe("issuance transaction — captured lsc_confirm execute (CS2/CS6)", () =
 		});
 		const ui: SelectUI = { select: () => gate, editor: async () => undefined };
 
-		const pending = execute("tc", { question: CANON_QUESTION }, undefined, undefined, uiCtx(ui));
+		const pending = execute("tc", { question: LAND_QUESTION }, undefined, undefined, uiCtx(ui));
 		setActiveCraft(freshState(tmpProject(), "different-feature")); // craft transition mid-await
 		releaseSelect("Yes");
 		await pending;
@@ -543,7 +524,7 @@ describe("issuance transaction — captured lsc_confirm execute (CS2/CS6)", () =
 		breakPersistPath(root); // the next persist (the issuance's recordReleaseApproval) will throw
 		const execute = captureConfirmExecute();
 
-		await expect(execute("tc", { question: CANON_QUESTION }, undefined, undefined, uiCtx(makeUI(["Yes"])))).rejects.toThrow();
+		await expect(execute("tc", { question: LAND_QUESTION }, undefined, undefined, uiCtx(makeUI(["Yes"])))).rejects.toThrow();
 
 		expect(peekPendingApproval()).toBeUndefined(); // capability not installed
 		expect(getActiveCraft()?.releaseApproval).toBeUndefined(); // in-memory evidence not set (CS3)
@@ -569,28 +550,13 @@ describe("issuance transaction — captured lsc_confirm execute (CS2/CS6)", () =
 	it("does not issue a tagged yes without an active craft", async () => {
 		const result = await captureConfirmExecute()(
 			"tc",
-			{ question: CANON_QUESTION },
+			{ question: LAND_QUESTION },
 			undefined,
 			undefined,
 			uiCtx(makeUI(["Yes"])),
 		);
 		expect(result.isError).toBeFalsy();
 		expect(peekPendingApproval()).toBeUndefined();
-	});
-
-	it("issues Land as Land through the registered confirm wrapper", async () => {
-		const root = tmpProject();
-		setActiveCraft(freshState(root, "gated-feature"));
-		await captureConfirmExecute()(
-			"tc",
-			{ question: LAND_QUESTION },
-			undefined,
-			undefined,
-			uiCtx(makeUI(["Yes"])),
-		);
-		expect(peekPendingApproval()?.tag).toBe("[Land]");
-		const persisted = JSON.parse(readFileSync(craftStatePath(root, "gated-feature"), "utf8"));
-		expect(persisted.releaseApproval.tag).toBe("[Land]");
 	});
 
 	it("(b) still issues when a same-identity active object is spread-replaced during the confirm await (sameCraftIdentity, not reference)", async () => {
@@ -604,7 +570,7 @@ describe("issuance transaction — captured lsc_confirm execute (CS2/CS6)", () =
 		});
 		const ui: SelectUI = { select: () => gate, editor: async () => undefined };
 
-		const pending = execute("tc", { question: CANON_QUESTION }, undefined, undefined, uiCtx(ui));
+		const pending = execute("tc", { question: LAND_QUESTION }, undefined, undefined, uiCtx(ui));
 		// recordReleaseApproval spreads a NEW active object with the SAME identity, and (unlike
 		// setActiveCraft/markCraftAborted) never calls invalidatePendingApproval itself.
 		recordReleaseApproval({ nonce: "n-identity", tag: "[Land]", question: "q", response: "yes", issuedAt: "2026-01-01T00:00:00.000Z" });
@@ -617,15 +583,15 @@ describe("issuance transaction — captured lsc_confirm execute (CS2/CS6)", () =
 	});
 });
 
-// ── durable evidence ledger — recordReleaseApproval / recordOpenRelease ─────
+// ── durable evidence ledger — recordReleaseApproval ─────────────────────────
 describe("durable evidence ledger (CS3 / F-14)", () => {
 	it("recordReleaseApproval round-trips the evidence to the persisted file and to memory", () => {
 		const root = tmpProject();
 		setActiveCraft(freshState(root, "feat"));
 		const evidence: ReleaseApprovalEvidence = {
 			nonce: "n1",
-			tag: "[Canon Amendment]",
-			question: CANON_QUESTION,
+			tag: "[Land]",
+			question: LAND_QUESTION,
 			response: "yes",
 			issuedAt: "2026-04-04T00:00:00.000Z",
 		};
@@ -636,15 +602,15 @@ describe("durable evidence ledger (CS3 / F-14)", () => {
 	});
 
 	it("recordReleaseApproval is a no-op when there is no active craft", () => {
-		recordReleaseApproval({ nonce: "n", tag: "[Canon Amendment]", question: CANON_QUESTION, response: "yes", issuedAt: "t" });
+		recordReleaseApproval({ nonce: "n", tag: "[Land]", question: LAND_QUESTION, response: "yes", issuedAt: "t" });
 		expect(getActiveCraft()).toBeUndefined();
 	});
 
 	it("a second recordReleaseApproval overwrites the single evidence slot — last issuance wins (F-14)", () => {
 		const root = tmpProject();
 		setActiveCraft(freshState(root, "feat"));
-		recordReleaseApproval({ nonce: "n1", tag: "[Canon Amendment]", question: "q1", response: "yes", issuedAt: "t1", consumedAt: "old-consumption" });
-		const second: ReleaseApprovalEvidence = { nonce: "n2", tag: "[Canon Amendment]", question: "q2", response: "yes", issuedAt: "t2" };
+		recordReleaseApproval({ nonce: "n1", tag: "[Land]", question: "q1", response: "yes", issuedAt: "t1", consumedAt: "old-consumption" });
+		const second: ReleaseApprovalEvidence = { nonce: "n2", tag: "[Land]", question: "q2", response: "yes", issuedAt: "t2" };
 		recordReleaseApproval(second);
 		// replacement, not merge: the stale consumedAt must not survive into the new issuance.
 		expect(getActiveCraft()?.releaseApproval).toEqual(second);
@@ -658,142 +624,8 @@ describe("durable evidence ledger (CS3 / F-14)", () => {
 		const root = tmpProject();
 		setActiveCraft(freshState(root, "feat"));
 		breakPersistPath(root);
-		const evidence: ReleaseApprovalEvidence = { nonce: "n", tag: "[Canon Amendment]", question: "q", response: "yes", issuedAt: "t" };
+		const evidence: ReleaseApprovalEvidence = { nonce: "n", tag: "[Land]", question: "q", response: "yes", issuedAt: "t" };
 		expect(() => recordReleaseApproval(evidence)).toThrow();
 		expect(getActiveCraft()?.releaseApproval).toBeUndefined(); // publish-after-persist: nothing published
-	});
-
-	it("recordOpenRelease stores the open evidence and stamps consumedAt onto the release approval", () => {
-		const root = tmpProject();
-		setActiveCraft(freshState(root, "feat"));
-		recordReleaseApproval({
-			nonce: "n1",
-			tag: "[Canon Amendment]",
-			question: CANON_QUESTION,
-			response: "yes",
-			issuedAt: "2026-05-05T00:00:00.000Z",
-		});
-		const open: OpenReleaseEvidence = {
-			nonce: "n1",
-			tag: "[Canon Amendment]",
-			question: CANON_QUESTION,
-			response: "yes",
-			reason: "fix the canon",
-			openedAt: "2026-06-06T00:00:00.000Z",
-		};
-		recordOpenRelease(open);
-		const persisted = JSON.parse(readFileSync(craftStatePath(root, "feat"), "utf8"));
-		expect(persisted.openRelease).toEqual(open);
-		expect(persisted.releaseApproval.consumedAt).toBe("2026-06-06T00:00:00.000Z"); // stamped with openedAt
-	});
-
-	it("recordOpenRelease round-trips a manifestFingerprint when present", () => {
-		const root = tmpProject();
-		setActiveCraft(freshState(root, "feat"));
-		const open: OpenReleaseEvidence = {
-			nonce: "n",
-			tag: "[Canon Amendment]",
-			question: CANON_QUESTION,
-			response: "yes",
-			reason: "r",
-			openedAt: "t",
-			manifestFingerprint: "deadbeefcafe",
-		};
-		recordOpenRelease(open);
-		const persisted = JSON.parse(readFileSync(craftStatePath(root, "feat"), "utf8"));
-		expect(persisted.openRelease.manifestFingerprint).toBe("deadbeefcafe");
-	});
-
-	it("does not mutate in-memory state and leaves the approval unstamped when the open-release persist write fails (CS4)", () => {
-		const root = tmpProject();
-		setActiveCraft(freshState(root, "feat"));
-		recordReleaseApproval({
-			nonce: "n1",
-			tag: "[Canon Amendment]",
-			question: CANON_QUESTION,
-			response: "yes",
-			issuedAt: "2026-05-05T00:00:00.000Z",
-		});
-		breakPersistPath(root);
-		const open: OpenReleaseEvidence = {
-			nonce: "n1",
-			tag: "[Canon Amendment]",
-			question: CANON_QUESTION,
-			response: "yes",
-			reason: "fix the canon",
-			openedAt: "2026-06-06T00:00:00.000Z",
-		};
-		expect(() => recordOpenRelease(open)).toThrow();
-		expect(getActiveCraft()?.openRelease).toBeUndefined(); // publish-after-persist: nothing published
-		expect(getActiveCraft()?.releaseApproval?.consumedAt).toBeUndefined(); // approval not stamped consumed
-	});
-});
-
-// ── pure reducers ───────────────────────────────────────────────────────────
-describe("pure reducers — hasOpenRelease / closeOpenRelease / openReleaseGuidance / fingerprintManifestFile", () => {
-	const openEvidence: OpenReleaseEvidence = {
-		nonce: "n",
-		tag: "[Canon Amendment]",
-		question: CANON_QUESTION,
-		response: "yes",
-		reason: "r",
-		openedAt: "2026-07-07T00:00:00.000Z",
-	};
-
-	it("hasOpenRelease is true only for an unclosed open-release", () => {
-		const base: CraftState = { feature: "f", projectRoot: "/p", aborted: false };
-		expect(hasOpenRelease(undefined)).toBe(false);
-		expect(hasOpenRelease(base)).toBe(false);
-		expect(hasOpenRelease({ ...base, openRelease: openEvidence })).toBe(true);
-		expect(hasOpenRelease({ ...base, openRelease: { ...openEvidence, closedAt: "2026-07-08T00:00:00.000Z" } })).toBe(false);
-	});
-
-	it("openReleaseGuidance includes the lsc_craft_init rebaseline instruction (AC4)", () => {
-		expect(openReleaseGuidance("feat", openEvidence)).toContain("lsc_craft_init");
-	});
-
-	it("closeOpenRelease returns undefined when there is no open-release", () => {
-		const newManifest: HashManifest = { feature: "f", recordedAt: "t", files: { "a.ts": "h" } };
-		expect(closeOpenRelease(undefined, undefined, newManifest, "T")).toBeUndefined();
-	});
-
-	it("closeOpenRelease returns an already-closed evidence unchanged (CS4 succession)", () => {
-		const newManifest: HashManifest = { feature: "f", recordedAt: "t", files: { "a.ts": "h" } };
-		const closed: OpenReleaseEvidence = {
-			...openEvidence,
-			closedAt: "2026-07-09T00:00:00.000Z",
-			rebaselineDiff: { added: [], removed: [], modified: ["x.ts"] },
-		};
-		expect(closeOpenRelease(closed, undefined, newManifest, "LATER")).toEqual(closed);
-	});
-
-	it("closeOpenRelease stamps closedAt and a kind-grouped rebaselineDiff when an old manifest exists", () => {
-		const oldManifest: HashManifest = { feature: "f", recordedAt: "t0", files: { "keep.ts": "h1", "mod.ts": "h2", "gone.ts": "h3" } };
-		const newManifest: HashManifest = { feature: "f", recordedAt: "t1", files: { "keep.ts": "h1", "mod.ts": "h2b", "new.ts": "h4" } };
-		const result = closeOpenRelease(openEvidence, oldManifest, newManifest, "CLOSED-AT");
-		expect(result?.closedAt).toBe("CLOSED-AT");
-		expect(result?.rebaselineDiff).toEqual({ added: ["new.ts"], removed: ["gone.ts"], modified: ["mod.ts"] });
-		expect(result?.nonce).toBe(openEvidence.nonce); // original fields carried through
-		expect(result?.reason).toBe(openEvidence.reason);
-	});
-
-	it("closeOpenRelease stamps closedAt but omits rebaselineDiff when no old manifest exists", () => {
-		const newManifest: HashManifest = { feature: "f", recordedAt: "t1", files: { "a.ts": "h" } };
-		const result = closeOpenRelease(openEvidence, undefined, newManifest, "CLOSED-AT");
-		expect(result?.closedAt).toBe("CLOSED-AT");
-		expect(result?.rebaselineDiff).toBeUndefined();
-	});
-
-	it("fingerprintManifestFile returns the sha256 hex of the raw file bytes", () => {
-		const root = tmpProject();
-		const path = join(root, ".hash-manifest.json");
-		writeFileSync(path, '{"feature":"f","recordedAt":"t","files":{"a.ts":"abc"}}');
-		const expected = createHash("sha256").update(readFileSync(path)).digest("hex");
-		expect(fingerprintManifestFile(path)).toBe(expected);
-	});
-
-	it("fingerprintManifestFile returns undefined for a missing file", () => {
-		const root = tmpProject();
-		expect(fingerprintManifestFile(join(root, "nonexistent.json"))).toBeUndefined();
 	});
 });

@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
 	craftAuditPath,
 	craftDir,
-	craftHashManifestPath,
 	craftRunTestScriptPath,
 	craftStatePath,
 	craftTestDir,
@@ -22,11 +21,10 @@ describe("path composition", () => {
 		expect(craftDir(CWD, "my-feature")).toBe(join(CWD, ".lsc", "crafts", "my-feature"));
 	});
 
-	it("derives test/, logs/, manifest, and state paths from craftDir", () => {
+	it("derives test/, logs/, and state paths from craftDir", () => {
 		expect(craftTestDir(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "test"));
 		expect(craftTestLogsDir(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "test", "logs"));
 		expect(craftRunTestScriptPath(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "test", "run_test.sh"));
-		expect(craftHashManifestPath(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "test", ".hash-manifest.json"));
 		expect(craftStatePath(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "test", ".craft-state.json"));
 	});
 

@@ -12,12 +12,14 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExecOptions, ExecResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftRunTestScriptPath, craftTestLogsDir, resolveFeatureName } from "../artifacts/paths.js";
-import { type CraftState, findPersistedCraftState, getActiveCraft, hasOpenRelease, openReleaseGuidance } from "./state.js";
+import { type CraftState, findPersistedCraftState, getActiveCraft } from "./state.js";
 
-// See hash-manifest.ts for why registerTool's execute() needs an explicit
-// Promise<AgentToolResult<T>> return type: without it, TSchema/TParams inference
-// from `parameters` and TDetails inference from the body collide and TypeScript
-// hits TS2589 (excessively deep type instantiation) against zod/v4's schema types.
+// registerTool's execute() needs an explicit Promise<AgentToolResult<T>> return type: without
+// it, TSchema/TParams inference from `parameters` and TDetails inference from the body collide
+// and TypeScript hits TS2589 (excessively deep type instantiation) against zod/v4's schema
+// types. Supplying both type arguments explicitly on registerTool itself (`registerTool<typeof
+// parameters, TDetails>({...})`, see below) turns inference into a much cheaper checking pass —
+// every registerTool call in this plugin follows both conventions together.
 
 const FAILURE_LINE_RE = /fail|error|✗|✘|not ok/i;
 const MAX_FAILURE_LINES = 40;
@@ -132,25 +134,18 @@ export type RunTestsTarget =
  * `activeCraft.worktreeRoot ?? activeCraft.projectRoot` — and only when there is none (or it's a
  * DIFFERENT feature's craft) does the persisted state's root (`persisted.worktreeRoot ?? persisted.projectRoot`)
  * apply. This order must never invert: flipping it would make a run right after `craft` finishes
- * in the same session use a stale on-disk root instead of the live in-memory one. An unclosed
- * open-release, or no persisted state at all, still refuses exactly as before (verbatim messages
- * — C8 compatibility).
+ * in the same session use a stale on-disk root instead of the live in-memory one. No persisted
+ * state at all still refuses exactly as before (verbatim message — C8 compatibility).
  *
- * Safety of relaxing the former "must be the active craft" gate: the only things that gate
- * protected are (a) knowing SOME root to execute against — persisted state supplies the exact
- * same root an active craft would have; and (b) the open-release block — preserved
- * unconditionally below. It does NOT gate hash-protection (that is `lsc_verify_hash`'s job,
- * entirely unaffected here) or the trusted-exec channel (both cases still run through the same
- * `pi.exec`, never the LLM's own bash tool, and only ever touch `test/logs/`, which is itself
- * excluded from hash protection — hash-manifest.ts's `EXCLUDED_TOP_LEVEL_DIRS`) — so
- * `auditEvidenceOnly` introduces no new bypass of either.
+ * Safety of relaxing the former "must be the active craft" gate: the only thing that gate
+ * protected was knowing SOME root to execute against — persisted state supplies the exact same
+ * root an active craft would have. It does NOT gate the trusted-exec channel (both cases still
+ * run through the same `pi.exec`, never the LLM's own bash tool) — so `auditEvidenceOnly`
+ * introduces no new bypass there.
  */
 export function resolveRunTestsTarget(feature: string, activeCraft: CraftState | undefined, persisted: CraftState | undefined): RunTestsTarget {
 	if (activeCraft && activeCraft.feature === feature) {
 		return { mode: "run", root: activeCraft.worktreeRoot ?? activeCraft.projectRoot, auditEvidenceOnly: false };
-	}
-	if (hasOpenRelease(persisted)) {
-		return { mode: "refuse", text: openReleaseGuidance(feature, persisted.openRelease) };
 	}
 	if (persisted) {
 		return { mode: "run", root: persisted.worktreeRoot ?? persisted.projectRoot, auditEvidenceOnly: true };
@@ -228,7 +223,7 @@ export function registerRunTestsTool(pi: ExtensionAPI): void {
 	});
 
 	// Explicit type arguments (not left to inference) avoid a TS2589 "excessively
-	// deep" instantiation against this SDK's TSchema union — see hash-manifest.ts.
+	// deep" instantiation against this SDK's TSchema union — see the module doc comment above.
 	pi.registerTool<typeof parameters, RunTestsDetails>({
 		name: "lsc_run_tests",
 		loadMode: "discoverable",

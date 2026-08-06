@@ -3,40 +3,19 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { craftAuditDir, craftStatePath, worktreePath } from "../src/artifacts/paths";
-import {
-	clearActiveCraft,
-	type CraftState,
-	craftStateCandidates,
-	findPersistedCraftState,
-	hasOpenRelease,
-	type OpenReleaseEvidence,
-	readPersistedCraftState,
-} from "../src/craft/state";
+import { clearActiveCraft, type CraftState, craftStateCandidates, findPersistedCraftState, readPersistedCraftState } from "../src/craft/state";
 import { performAuditBegin } from "../src/craft/verdict";
 
 // ===========================================================================
 // deferred-pool E (root-해석 seam 공유) — AC10. plan Step 1b + D5. The two root
-// consumers keep their DIFFERENT authority policies (spec §제약 8) and share only
-// a DESCRIPTOR-ONLY candidate seam:
+// consumers share a DESCRIPTOR-ONLY candidate seam:
 //   craftStateCandidates(cwd, feature) -> [cwd, worktree] descriptors
 //     { root, statePath, rootExists, stateFileExists } — it STATS existence and
 //     never reads/parses JSON (lazy). decode is the caller's own call, so a
 //     malformed state can never leak into a consumer that never decodes.
-//   findPersistedCraftState  — open-release arbitration (decodes; open wins).
-//   resolveAuditRoot         — directory-existence only (rootExists), decode-independent.
-//
-// PRE-CRAFT RED (test-first): `craftStateCandidates` does not exist in state.ts
-// yet — a missing named export resolves to `undefined`, so every DIRECT-seam test
-// is RED at the call site ("is not a function"). The findPersistedCraftState and
-// performAuditBegin blocks below use only EXISTING exports: they are GREEN now and
-// MUST stay green — they lock the named-policy behavior the seam refactor must
-// preserve (spec AC10 "무수정 green"). The both-root open-release edge and the
-// malformed-cwd decode-independence edge are NOT covered by the untouched
-// craft-state.test.ts:481-533 / craft-verdict.test.ts, so they are added here.
-// (Boundary with TestRegression: its §1 re-verifies arbitration via a
-// craftStateCandidates+decodeCraftState seed reconstruction — NOT findPersistedCraftState
-// — and its §3 uses performAuditValidate; both are different functions than the
-// findPersistedCraftState / performAuditBegin used here, so no char-duplication.)
+//   findPersistedCraftState — worktree-first simple fallback (R9, C2: the former
+//     open-release arbitration retired along with openRelease itself).
+//   resolveAuditRoot        — directory-existence only (rootExists), decode-independent.
 // ===========================================================================
 
 const tempDirs: string[] = [];
@@ -77,18 +56,6 @@ function writeAuditDoc(root: string, feature: string, n: number, verdict: string
 	const dir = craftAuditDir(root, feature);
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(join(dir, `audit-${n}.md`), `# Audit\n\n**AUDIT VERDICT: ${verdict}**\n`);
-}
-
-function openEvidence(overrides: Partial<OpenReleaseEvidence> = {}): OpenReleaseEvidence {
-	return {
-		nonce: "nonce-1111-2222-3333",
-		tag: "[Canon Amendment]",
-		question: "[Canon Amendment] Protected test canon needs an approved, intentional modification. Proceed?",
-		response: "yes",
-		reason: "fix the off-by-one in the boundary assertion",
-		openedAt: "2026-07-17T10:01:00.000Z",
-		...overrides,
-	};
 }
 
 describe("craftStateCandidates (descriptor-only shared seam)", () => {
@@ -142,19 +109,17 @@ describe("craftStateCandidates (descriptor-only shared seam)", () => {
 	});
 });
 
-describe("findPersistedCraftState — both-root open-release arbitration (positive edge, decode owner)", () => {
-	it("prefers the cwd candidate when BOTH candidates carry an unclosed open-release", () => {
+describe("findPersistedCraftState — both-root fallback (positive edge, decode owner)", () => {
+	it("prefers the worktree candidate when BOTH candidates carry persisted state", () => {
 		const cwd = tmpProject();
 		const feature = "my-feature";
-		writePersistedState(cwd, feature, { ...freshState(cwd), openRelease: openEvidence() });
+		writePersistedState(cwd, feature, freshState(cwd));
 		const wt = worktreePath(cwd, feature);
-		writePersistedState(wt, feature, { ...freshState(cwd), worktreeRoot: wt, openRelease: openEvidence() });
+		writePersistedState(wt, feature, { ...freshState(cwd), worktreeRoot: wt });
 
 		const found = findPersistedCraftState(cwd, feature);
 
-		expect(hasOpenRelease(found)).toBe(true);
-		// the cwd candidate (which carries no worktreeRoot) won the tie of two open windows:
-		expect(found?.worktreeRoot).toBeUndefined();
+		expect(found?.worktreeRoot).toBe(wt);
 	});
 });
 

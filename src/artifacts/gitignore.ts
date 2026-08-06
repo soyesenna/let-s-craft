@@ -1,14 +1,8 @@
 // Auto-registers throwaway build products in the project `.gitignore` — idempotent, creates
-// the file if it doesn't exist yet. Two independent entries:
-//   - `.lsc/worktrees/`: worktree checkouts from `--worktree` craft runs. `.lsc/crafts/`
-//     (trace/spec/plan/audit) is the opposite — a git-tracked deliverable (C6). pre-craft
-//     (Phase 4) calls ensureWorktreesGitignored() before every `git worktree add`.
-//   - `.lsc/crafts/*/test/.snapshots/`: per-feature file-content snapshots lsc_craft_init
-//     writes for lsc_restore_tests to restore from (C23b) — a full byte-for-byte duplicate of
-//     the protected test tree, regenerated on every craft run, with no reason to live in git
-//     history (the tree it's a copy of is already committed there once, by pre-craft).
-//     lsc_craft_init calls ensureSnapshotsGitignored() itself, once, right after writing the
-//     first snapshot.
+// the file if it doesn't exist yet. `.lsc/worktrees/`: worktree checkouts from `--worktree`
+// craft runs. `.lsc/crafts/` (trace/spec/plan/audit) is the opposite — a git-tracked
+// deliverable (C6). pre-craft (Phase 4) calls ensureWorktreesGitignored() before every
+// `git worktree add`.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomicSync } from "../utils/atomic-write.js";
@@ -50,12 +44,4 @@ export function ensureWorktreesGitignored(cwd: string): GitignoreResult {
  */
 export function hasWorktreesGitignoreEntry(content: string): boolean {
 	return content.split(/\r?\n/).some(line => WORKTREES_ENTRY_RE.test(line.trim()));
-}
-
-const SNAPSHOTS_ENTRY = ".lsc/crafts/*/test/.snapshots/";
-const SNAPSHOTS_ENTRY_RE = /^\/?\.lsc\/crafts\/\*\/test\/\.snapshots\/?$/;
-
-/** Ensure `<cwd>/.gitignore` ignores every feature's `.snapshots/` restore-source directory (C23b). Safe to call on every lsc_craft_init call. */
-export function ensureSnapshotsGitignored(cwd: string): GitignoreResult {
-	return ensureGitignored(cwd, SNAPSHOTS_ENTRY, SNAPSHOTS_ENTRY_RE);
 }

@@ -1,15 +1,15 @@
-// Generic destructive-approval authority for the craft loop's most dangerous gates
-// ([Canon Amendment] / [Land] / [Hash Violation]). This module owns THREE things and nothing else:
-// the gate-tag SSOT; the single in-process "pending approval" slot that is the SOLE source of
-// consume-ability (the 권위, spec CORE); and a tag-keyed "prepared-operation" slot that is a
-// TRUSTED but NON-AUTHORITATIVE issuance context — a prepared envelope is installed WITHOUT a human
-// "yes" (lsc_land installs it on a consume miss), so it can never itself grant consume-ability; only
-// a human-confirmed pending slot can. It has ZERO repo-internal runtime imports
-// (only node:crypto for the nonce) — no state.ts, no fs — so the휘발성 권위 can never be
-// accidentally serialized into the durable CraftState: that boundary is physical, not just a
-// convention (plan Option A / CS1). The durable evidence ledger (releaseApproval / openRelease)
-// lives in state.ts; consumer-specific tag allowlists (RELEASE_CONSUMABLE_TAGS) live in the
-// consumer module (release.ts) — the issuance infrastructure does not know its consumers.
+// Generic destructive-approval authority for the craft loop's most dangerous gates ([Land] —
+// R9: the former [Canon Amendment]/[Hash Violation] tags retired with their sole consumers,
+// release.ts/the hash-manifest tamper-evidence layer, C2). This module owns THREE things and
+// nothing else: the gate-tag SSOT; the single in-process "pending approval" slot that is the
+// SOLE source of consume-ability (the 권위, spec CORE); and a tag-keyed "prepared-operation"
+// slot that is a TRUSTED but NON-AUTHORITATIVE issuance context — a prepared envelope is
+// installed WITHOUT a human "yes" (lsc_land installs it on a consume miss), so it can never
+// itself grant consume-ability; only a human-confirmed pending slot can. It has ZERO
+// repo-internal runtime imports (only node:crypto for the nonce) — no state.ts, no fs — so the
+// 휘발성 권위 can never be accidentally serialized into the durable CraftState: that boundary is
+// physical, not just a convention (plan Option A / CS1). The durable evidence ledger
+// (releaseApproval) lives in state.ts — the issuance infrastructure does not know its consumers.
 //
 // Layering (CS8): matchDestructiveGateTag / sameCraftIdentity / createPendingApproval are pure;
 // the slot mutators (install / consume / invalidate) are the SDK-independent effectful core
@@ -17,19 +17,24 @@
 import { randomUUID } from "node:crypto";
 
 /**
- * The three destructive gate tags, in canonical order — the single source of truth (C10). A
+ * The destructive gate tag(s), in canonical order — the single source of truth (C10). A
  * question is "tagged" iff it starts with exactly one of these bracketed prefixes; the tagging
  * convention itself (skills/craft/SKILL.md) is unchanged, this module only recognizes it (C11).
  * Aliases are forbidden: the legacy `[Release]` prefix is deliberately absent.
+ *
+ * R9 (C2): the former `[Canon Amendment]` and `[Hash Violation]` tags are retired along with
+ * their sole consumers — release.ts (deleted) and the hash-manifest tamper-evidence layer
+ * (deleted) — leaving `[Land]` as the only destructive gate.
  */
-export const DESTRUCTIVE_GATE_TAGS = ["[Canon Amendment]", "[Land]", "[Hash Violation]"] as const;
+export const DESTRUCTIVE_GATE_TAGS = ["[Land]"] as const;
 
 export type DestructiveGateTag = (typeof DESTRUCTIVE_GATE_TAGS)[number];
 
 /**
  * The craft a pending approval is bound to. Compared by FIELD equality (sameCraftIdentity),
- * never by reference: recordTestResult/recordReleaseApproval spread-replace the active-craft
- * object, so a reference captured at prompt time is not trustworthy across an await (F-12).
+ * never by reference: recordReleaseApproval (and every other durable-evidence writer in state.ts)
+ * spread-replaces the active-craft object, so a reference captured at prompt time is not
+ * trustworthy across an await (F-12).
  */
 export interface ApprovalCraftIdentity {
 	feature: string;
@@ -52,9 +57,9 @@ export interface PendingDestructiveApproval {
 	identity: ApprovalCraftIdentity;
 	/**
 	 * The concrete destructive operation this approval is scoped to (A land: a LandOperation), an
-	 * opaque JSON value the issuance infra never interprets. Optional — release.ts's [Canon Amendment]
-	 * path installs none (unscoped). consumePendingApproval compares it against expectedScope by
-	 * canonical JSON equality; a one-sided presence is a scope-mismatch (fail-closed).
+	 * opaque JSON value the issuance infra never interprets. Optional — an unscoped confirm (one
+	 * that never binds a scope) installs none. consumePendingApproval compares it against
+	 * expectedScope by canonical JSON equality; a one-sided presence is a scope-mismatch (fail-closed).
 	 */
 	operationScope?: unknown;
 }
@@ -142,9 +147,9 @@ export function consumePendingApproval(input: {
 	if (!pending) return { ok: false, reason: "no-pending-approval" };
 	if (!input.acceptedTags.includes(pending.tag)) return { ok: false, reason: "tag-mismatch", pendingTag: pending.tag };
 	if (!sameCraftIdentity(pending.identity, input.identity)) return { ok: false, reason: "identity-mismatch", pendingTag: pending.tag };
-	// Scope comparison (conditional NON-BURN on mismatch, CS11): both undefined = match (release.ts's
-	// unscoped path); exactly one side present = scope-mismatch; both present = canonical JSON equality
-	// (recursive key-sort — key order is irrelevant, values are strict).
+	// Scope comparison (conditional NON-BURN on mismatch, CS11): both undefined = match (an
+	// unscoped confirm's path); exactly one side present = scope-mismatch; both present =
+	// canonical JSON equality (recursive key-sort — key order is irrelevant, values are strict).
 	const pendingScope = pending.operationScope;
 	const expectedScope = input.expectedScope;
 	const scopeMatches =

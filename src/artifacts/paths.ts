@@ -56,16 +56,6 @@ export function craftTestLogsDir(cwd: string, feature: string): string {
 	return join(craftTestDir(cwd, feature), "logs");
 }
 
-/** `.lsc/crafts/{feature}/test/.hash-manifest.json` — recorded SHA-256 fingerprint of test/ (C20). */
-export function craftHashManifestPath(cwd: string, feature: string): string {
-	return join(craftTestDir(cwd, feature), ".hash-manifest.json");
-}
-
-/** `.lsc/crafts/{feature}/test/.snapshots/` — byte-for-byte copies of every protected test asset as of the last `lsc_craft_init`, for `lsc_restore_tests` to restore from (C23b). Excluded from hash protection itself and gitignored (`ensureSnapshotsGitignored`). */
-export function craftSnapshotDir(cwd: string, feature: string): string {
-	return join(craftTestDir(cwd, feature), ".snapshots");
-}
-
 /** `.lsc/crafts/{feature}/test/.craft-state.json` — restart-durable active-craft state. */
 export function craftStatePath(cwd: string, feature: string): string {
 	return join(craftTestDir(cwd, feature), ".craft-state.json");

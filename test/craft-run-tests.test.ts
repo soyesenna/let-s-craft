@@ -167,16 +167,6 @@ describe("resolveRunTestsTarget (B-1)", () => {
 		expect(resolveRunTestsTarget("my-feature", active, persisted)).toEqual({ mode: "run", root: "/persisted-root", auditEvidenceOnly: true });
 	});
 
-	it("refuses with the open-release re-baseline guidance when persisted state carries an unclosed open-release", () => {
-		const persisted: CraftState = {
-			...freshCraftState("/persisted-root", "my-feature"),
-			openRelease: { nonce: "n", tag: "[Canon Amendment]", question: "q", response: "yes", reason: "r", openedAt: "2026-01-01T00:00:00.000Z" },
-		};
-		const result = resolveRunTestsTarget("my-feature", undefined, persisted);
-		expect(result.mode).toBe("refuse");
-		expect(result.mode === "refuse" && result.text).toContain("OPEN release window");
-	});
-
 	it("refuses with the legacy no-active-craft message when there is no persisted state at all", () => {
 		expect(resolveRunTestsTarget("my-feature", undefined, undefined)).toEqual({
 			mode: "refuse",
