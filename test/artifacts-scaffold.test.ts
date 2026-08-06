@@ -232,7 +232,42 @@ describe("lsc_scaffold — AC5 deterministic Stage 0 wiring", () => {
 		expect(git(wt, ["rev-parse", "--abbrev-ref", "HEAD"]), "the branch arg must reach addWorktree options.branch").toBe("release/custom");
 	});
 
-	it("is a genuine no-op on re-run: content unchanged, no duplicate gitignore line, hand-added artifacts preserved", async () => {
+	// C4: base_ref exposes addWorktree's existing baseRef (worktree.ts:47, 76) through
+	// performScaffold/lsc_scaffold — needed so a parallel executor lane (C6 §3.3) can fork from the
+	// feature branch's forkPoint rather than whatever HEAD happens to be at scaffold time.
+	it("base_ref: a newly created branch forks from the explicit ref, not from current HEAD", async () => {
+		const cwd = tmpGitRepo();
+		const forkPoint = git(cwd, ["rev-parse", "HEAD"]);
+		// Advance main PAST the fork point so "current HEAD" and "base_ref" are provably different.
+		writeFileSync(join(cwd, "later.txt"), "later\n");
+		git(cwd, ["add", "later.txt"]);
+		git(cwd, ["commit", "-q", "-m", "later commit"]);
+		expect(git(cwd, ["rev-parse", "HEAD"])).not.toBe(forkPoint);
+
+		const execute = captureScaffoldExecute();
+		const result = await execute("tc", { feature: "lane-a", base_ref: forkPoint }, undefined, undefined, ctxFor(cwd));
+		expect(result.isError, textOf(result)).toBeFalsy();
+
+		const wt = worktreePath(cwd, "lane-a");
+		expect(git(wt, ["rev-parse", "HEAD"]), "an explicit base_ref must be honored for a newly created branch").toBe(forkPoint);
+	});
+
+	it("base_ref omitted: a newly created branch forks from current HEAD (addWorktree's own default)", async () => {
+		const cwd = tmpGitRepo();
+		const currentHead = git(cwd, ["rev-parse", "HEAD"]);
+
+		const execute = captureScaffoldExecute();
+		const result = await execute("tc", { feature: "lane-b" }, undefined, undefined, ctxFor(cwd));
+		expect(result.isError, textOf(result)).toBeFalsy();
+
+		const wt = worktreePath(cwd, "lane-b");
+		expect(git(wt, ["rev-parse", "HEAD"]), "an omitted base_ref must default to HEAD").toBe(currentHead);
+	});
+
+	// C4/BL3: reuse is an intentional contract, not a defect merely captured as expected behavior —
+	// an existing worktree/branch is reused as-is on a re-run, and a DIFFERENT base_ref passed on
+	// that re-run must be silently ignored rather than silently rebasing an in-progress lane.
+	it("contract: reusing an existing worktree/branch ignores base_ref (C7 resume, not a defect) — content unchanged, no duplicate gitignore line, hand-added artifacts preserved, branch tip stays put", async () => {
 		const cwd = tmpGitRepo();
 		const execute = captureScaffoldExecute();
 		await execute("tc1", { feature: "resume" }, undefined, undefined, ctxFor(cwd));
@@ -241,15 +276,28 @@ describe("lsc_scaffold — AC5 deterministic Stage 0 wiring", () => {
 		const handArtifact = join(craftDir(worktreePath(cwd, "resume"), "resume"), "trace.md");
 		writeFileSync(handArtifact, "hand-authored trace\n");
 		const gitignoreBefore = readFileSync(join(cwd, ".gitignore"), "utf8");
+		const wt = worktreePath(cwd, "resume");
+		const tipBefore = git(wt, ["rev-parse", "HEAD"]);
 
-		const second = await execute("tc2", { feature: "resume" }, undefined, undefined, ctxFor(cwd));
+		// Advance main past the original fork point AFTER the first scaffold call, so passing it as
+		// base_ref on the re-run would be a DETECTABLE (and wrong) rebase if it were ever honored.
+		writeFileSync(join(cwd, "extra.txt"), "more\n");
+		git(cwd, ["add", "extra.txt"]);
+		git(cwd, ["commit", "-q", "-m", "extra"]);
+		expect(git(cwd, ["rev-parse", "main"])).not.toBe(tipBefore);
+
+		const second = await execute("tc2", { feature: "resume", base_ref: "main" }, undefined, undefined, ctxFor(cwd));
 		expect(second.isError, textOf(second)).toBeFalsy();
+		expect((second.details as { reused?: boolean } | undefined)?.reused).toBe(true);
 
 		// Content comparison (NOT mtime — appendix W2-b): every observable is byte-identical.
 		expect(readFileSync(join(cwd, ".gitignore"), "utf8")).toBe(gitignoreBefore);
 		expect(gitignoreLineCount(cwd, ".lsc/worktrees/")).toBe(1);
 		expect(readFileSync(handArtifact, "utf8"), "a resume re-run must not clobber existing artifacts").toBe("hand-authored trace\n");
-		expect(existsSync(worktreePath(cwd, "resume"))).toBe(true);
+		expect(existsSync(wt)).toBe(true);
+		// The contract itself: base_ref="main" was passed but must be ignored — the branch tip is
+		// exactly what it was before, never rebased onto the newly-advanced main.
+		expect(git(wt, ["rev-parse", "HEAD"]), "base_ref must be ignored when an existing worktree/branch is reused").toBe(tipBefore);
 	});
 
 	// Traversal feature names must be rejected before ANY write escapes the capability boundary

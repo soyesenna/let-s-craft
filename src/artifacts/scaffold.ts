@@ -57,8 +57,19 @@ function isContainedNonSymlink(candidate: string, containRoot: string): boolean 
 /**
  * Core scaffold orchestrator: validate first (zero side effects on any rejection — no branch, no
  * worktree registration, no file), then wire Stage 0 through the existing TS seams.
+ *
+ * `baseRef` is forwarded to `addWorktree` for a NEWLY created branch only (defaults to `HEAD` when
+ * omitted, addWorktree's own default) — reuse semantics own the rest: when the worktree directory
+ * or the local branch already exists, `addWorktree` reuses it and `baseRef` is silently ignored
+ * (C7 resume). This is intentional (C4 BL3), not a defect — a resumed/re-run scaffold must never
+ * rebase an existing lane onto a possibly-different fork point out from under an in-progress craft.
  */
-export async function performScaffold(feature: string, branch: string | undefined, cwd: string): Promise<AgentToolResult<ScaffoldDetails>> {
+export async function performScaffold(
+	feature: string,
+	branch: string | undefined,
+	cwd: string,
+	baseRef?: string,
+): Promise<AgentToolResult<ScaffoldDetails>> {
 	// ── Validation — before ANY write or git effect ────────────────────────────────────────────────
 	if (!FEATURE_SLUG_RE.test(feature) || feature.includes("\0")) {
 		return scaffoldError(
@@ -89,9 +100,12 @@ export async function performScaffold(feature: string, branch: string | undefine
 
 	// ── Effects — existing TS seams only (behavioral equivalence, never a re-implementation) ──────
 	const gitignore = ensureWorktreesGitignored(cwd);
-	const worktree = await addWorktree(cwd, feature, branch ? { branch } : {});
+	const worktree = await addWorktree(cwd, feature, { ...(branch ? { branch } : {}), ...(baseRef ? { baseRef } : {}) });
 	// crafts dir INSIDE the worktree (all-in-worktree, C6/R5) — mkdir -p semantics keep a resume
-	// re-run a no-op and never clobber hand-authored artifacts already under it.
+	// re-run a no-op and never clobber hand-authored artifacts already under it. For a parallel
+	// executor lane (feature = "{feature}-c{C}-lane-{K}", C6 §3.3), this leaves an EMPTY
+	// .lsc/crafts/{lane-slug}/ dir inside the lane worktree — git does not track empty directories,
+	// so it has no effect on that lane's cherry-pick or the eventual land onto the feature branch.
 	mkdirSync(craftDir(worktree.path, feature), { recursive: true });
 
 	return {
@@ -117,6 +131,14 @@ export function registerScaffoldTool(pi: ExtensionAPI): void {
 			.string()
 			.optional()
 			.describe("Branch to create or reuse for the worktree, as detected by pre-craft's prose (its branch-prefix detection stays in the skill). Omitted → addWorktree's default lets-craft/{feature}."),
+		base_ref: z
+			.string()
+			.optional()
+			.describe(
+				"Base ref for a NEWLY created branch (e.g. a parallel executor lane's fork point). Omitted → HEAD. " +
+					"Ignored when an existing worktree directory or local branch is reused — reuse is intentional resume " +
+					"semantics (C7), not a defect, so a resumed lane never gets silently rebased out from under it.",
+			),
 	});
 
 	pi.registerTool<typeof parameters, ScaffoldDetails>({
@@ -133,7 +155,7 @@ export function registerScaffoldTool(pi: ExtensionAPI): void {
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<ScaffoldDetails>> {
 			try {
-				return await performScaffold(params.feature, params.branch, ctx.cwd);
+				return await performScaffold(params.feature, params.branch, ctx.cwd, params.base_ref);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return { isError: true, content: [{ type: "text", text: `lsc_scaffold: unexpected failure — ${message}` }] };
