@@ -5,7 +5,7 @@
 이 플러그인은 `pre-craft` / `craft` / `post-craft`라는 3단계 철학으로 구성됩니다.
 
 1. **pre-craft** — 아무 코드도 작성하지 않고, `trace(조사) → interview(요구사항 인터뷰) → plan(계획 합의)` 순서로 진행해 `.lsc/crafts/{feature}/` 아래에 `trace.md`, `spec.md`, `plan.md`를 만듭니다. 이 산출물이 다음 단계의 유일한 입력입니다.
-2. **craft** — pre-craft 산출물(또는 post-craft가 남긴 감사 결과)을 입력받아, `실행 서브에이전트 실행 → 테스트 자산 해시 검증 → run_test.sh 실행 → 반복` 루프를 `run_test.sh`가 통과할 때까지(또는 사용자가 명시적으로 중단할 때까지) 강제로 반복합니다. 이 단계에서는 테스트 코드 자체를 절대 수정하지 않습니다.
+2. **craft** — pre-craft 산출물(또는 post-craft가 남긴 감사 결과)을 입력받아 **단발로** 구현합니다. plan.md의 작업이 서로소 단위로 나뉘면 병렬 `lsc-executor` 레인을, 아니면 단일 `lsc-executor`를 스폰하고 스스로 통합·정리한 뒤 종료합니다 — 반복 루프도 보호된 테스트 트리도 없습니다. 테스트는 이제 post-craft가 구현 완료 후에 저작합니다.
 3. **post-craft** — craft가 만든 구현물을 `trace.md`/`spec.md`/`plan.md`에 대해 적대적으로 재검증하고, 4단계 판정(`APPROVE` / `APPROVE-WITH-COMMENT` / `APPROVE-WITH-CHANGE` / `REJECT`)을 `.lsc/crafts/{feature}/audit/audit-N.md`에 기록합니다. 판정에 따라 craft를 다시 호출하거나(수정 필요), 사용자의 명시적 승인 후 병합·워크트리 정리(land)까지 진행합니다.
 
 모든 산출물은 기본적으로 프로젝트 디렉터리 안의 `.lsc/`에 저장되고, 전역 설정(모델 프리셋 등)은 `~/.omp/.lsc/`에 저장됩니다.
@@ -64,7 +64,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 `skills/{pre-craft,craft,post-craft}/SKILL.md`로 정의됩니다.
 
 - **pre-craft**: `trace → interview → plan` 3단계를 고정 순서로 실행해 `.lsc/crafts/{feature}/`에 `trace.md`/`spec.md`/`plan.md`를 생성합니다. 구현 코드는 절대 작성하지 않고, 마지막에 `craft` 실행을 안내하는 핸드오프 메시지로 끝납니다.
-- **craft**: pre-craft 산출물(또는 post-craft의 `audit/audit-N.md`)을 입력으로, `lsc-executor` 스폰 → 해시 검증 → 테스트 실행을 `run_test.sh`가 통과할 때까지 반복하는 루프를 직접 소유합니다. `.lsc/crafts/{feature}/test/`는 절대 직접 수정하지 않습니다.
+- **craft**: pre-craft 산출물(또는 post-craft의 `audit/audit-N.md`)을 입력으로, plan.md가 서로소 작업으로 분해되면 병렬 executor 레인을, 아니면 단일 `lsc-executor`를 스폰하는 **단발 실행**입니다. 루프를 소유하지 않으며, 병렬 레인은 `cherry-pick`으로 직접 통합합니다 — `git merge`는 이 스킬에서 절대 호출되지 않고, 병합은 post-craft의 `lsc_land` 전용입니다.
 - **post-craft**: 완성된 구현을 `trace.md`/`spec.md`/`plan.md`에 대해 적대적으로 검증하고 4단계 판정을 `.lsc/crafts/{feature}/audit/audit-N.md`에 기록한 뒤, 판정에 따라 craft 재호출을 제안하거나(사용자 승인 시) 병합·워크트리 정리를 진행합니다.
 
 ### `/lsc-preset` 커맨드
@@ -161,7 +161,7 @@ presets:
 
 ### 2. craft 실행
 
-`"craft"` / `/craft`라고 말하거나 `.lsc/crafts/{feature}/`(혹은 `audit/audit-N.md`) 경로를 전달하면 트리거됩니다. pre-craft가 만든 워크트리를 자동으로 감지해 그 안에서 구현을 진행합니다. `lsc_craft_init` 한 번 호출 후, `lsc-executor` 스폰 → `lsc_verify_hash` → `lsc_run_tests` 순서를 `run_test.sh`가 통과할 때까지(또는 사용자가 `lsc_craft_abort`로 중단할 때까지) 반복합니다. 완료하면 사용자 승인 시 같은 세션에서 곧바로 `post-craft`로 이어집니다(자동 체이닝, pre-craft와 동일 규칙).
+`"craft"` / `/craft`라고 말하거나 `.lsc/crafts/{feature}/`(혹은 `audit/audit-N.md`) 경로를 전달하면 트리거됩니다. pre-craft가 만든 워크트리를 자동으로 감지해 그 안에서 구현을 진행합니다. `lsc_craft_init` 한 번 호출 후, plan.md의 Detailed TODOs가 서로소 작업 단위로 나뉘면 `[Parallel Lanes]`로 확인받아 `lsc_scaffold`가 만든 형제 worktree에서 병렬 `lsc-executor` 레인을, 그렇지 않으면 단일 `lsc-executor`를 스폰합니다 — 반복 루프가 아니라 단발 실행입니다. 병렬 레인은 `forkPoint` 기준 `cherry-pick`으로 feature 브랜치에 통합한 뒤 레인 worktree·브랜치를 정리합니다(`git merge`는 이 단계에서 절대 호출되지 않습니다). 빌드/타입체크 실패가 보고되면 `[Craft Incomplete]`로 1회 재실행 여부를 묻습니다. 완료하면 사용자 승인 시 같은 세션에서 곧바로 `post-craft`로 이어집니다(자동 체이닝, pre-craft와 동일 규칙).
 
 ### 3. post-craft 실행
 
@@ -212,23 +212,19 @@ land(병합 승인) 후:
 
 ## 강제 규칙 설명
 
-craft 루프가 활성화되어 있는 동안, 아래 세 가지는 LLM의 협조 여부와 무관하게 플랫폼 레벨에서 강제됩니다(`src/craft/enforcement.ts`).
+craft는 더 이상 플랫폼 레벨의 강제 메커니즘을 갖지 않습니다 — 해시 보호·테스트 트리 수정 차단·중단 방지 백스톱은 구현-전 테스트 고정 설계와 함께 제거되었습니다(테스트는 이제 post-craft가 구현 완료 후에 저작합니다, 아래 참고). 대신 아래는 `skills/craft/SKILL.md` 자체가 명시하는 스킬-프로즈 계약입니다 — 강제하는 별도의 TypeScript 훅 없이, 오케스트레이팅 세션이 직접 지킵니다.
 
-### 1. 테스트 수정 차단
+### 1. 단발 실행 — 루프가 아니다
 
-`write`/`edit`/`ast_edit` 도구가 활성 craft의 보호된 `.lsc/crafts/{feature}/test/` 경로(또는 그 아래 경로)를 대상으로 호출되면 `tool_call` 훅이 `{block: true, reason: ...}`를 반환해 즉시 차단됩니다. `bash` 도구는 임의의 셸 명령을 완전히 파싱할 수 없으므로, 명령 문자열이나 지정된 작업 디렉터리에 보호된 테스트 경로 문자열이 포함되어 있으면 보수적으로(fail-closed) 차단합니다. 사용자가 이 동작을 마주치는 이유: craft가 "테스트를 고쳐서 통과시키는" 지름길을 원천적으로 막기 위함입니다.
+craft는 plan.md의 Detailed TODOs를 읽고, 서로소 작업 단위 2개 이상이 있을 때만 사용자에게 `[Parallel Lanes]`로 확인받아 병렬 `lsc-executor` 레인을 스폰합니다. 그 외에는 단일 `lsc-executor`를 정확히 한 번 스폰합니다. 빌드/타입체크 실패가 보고되면 `[Craft Incomplete]`로 딱 한 번만 재실행 여부를 사용자에게 묻고, 그 결과와 무관하게 두 번째 재실행은 없습니다 — 반복은 자동이 아니라 사용자 판단 1회로 상한이 걸려 있습니다.
 
-### 2. 해시 불변성
+### 2. 병렬 레인 통합 — cherry-pick, 절대 merge 아님
 
-`lsc_craft_init`이 `test/`(단, `logs/`와 두 상태 파일 제외) 전체 파일의 SHA-256 해시를 기록해 두고, 매 실행 반복 후 `lsc_verify_hash`가 다시 해시를 계산해 비교합니다. 위반(추가/삭제/수정)이 발견되면 craft는 그 반복에서 테스트를 실행하지 않고 즉시 멈춘 뒤, `lsc_confirm`으로 `[Hash Violation] ... Proceed?` 질문을 통해 사용자에게 diff를 보여주고 복구 여부를 묻습니다. 승인 시 `git checkout`/`git clean`으로 테스트 디렉터리만 복구하고 재검증 후 계속 진행하며, 거부 시 `lsc_craft_abort`가 호출되어 루프가 종료됩니다.
+병렬 레인은 감사 사이클 번호가 포함된 슬러그(`{feature}-c{C}-lane-{K}`)로 만든 형제 worktree에서 실행됩니다. craft 시작 시점에 기록한 `forkPoint`(그 시점의 `HEAD`)를 기준으로 각 레인이 실제로 그 지점에서 분기했는지 `git merge-base --is-ancestor`로 가드한 뒤 `git cherry-pick`으로 feature 브랜치에 순차 통합합니다. **craft는 어떤 경우에도 `git merge`를 실행하지 않습니다** — 병합은 post-craft의 `lsc_land`가 사용자의 명시적 승인을 거쳐 단독으로 수행합니다. 통합 성공 후 레인 worktree와 브랜치(`branch -D`)를 정리해, 다음 감사 사이클이 낡은 레인 브랜치를 재사용하지 않도록 합니다.
 
-이와 별개로, post-craft의 감사가 보호된 test 캐논 자체의 의도적 수정을 요구하는 경우를 위한 승인 경로가 따로 있습니다: `lsc_confirm` 승인 → `lsc_craft_release`(해시 보호 해제) → 캐논 수정 → `lsc_craft_init` 재호출(매니페스트 재기록, 보호 재활성화). 이 경로 없이는 보호된 test 트리를 의도적으로 고칠 방법이 없습니다.
+### 3. 중단 경로
 
-### 3. 중단 방지 백스톱
-
-`session_stop` 훅이 활성 craft가 있고(`testsPassed`가 아직 `false`이고 `aborted`도 아닌 상태) 세션이 스스로 멈추려 할 때마다 `{continue: true, additionalContext: ...}`를 반환해 강제로 한 턴을 더 진행시킵니다. 이 강제는 `lsc_run_tests`가 `testsPassed: true`를 기록하거나, 사용자가 명시적으로 거부해 `lsc_craft_abort`가 호출되어야만 해제됩니다. 사용자가 이 동작을 마주치는 이유: "테스트가 통과할 때까지 반복하고, 사용자 중단 외에는 멈추지 않는다"는 craft 루프의 핵심 계약을 세션 자체가 스스로 포기하지 못하게 하기 위함입니다.
-
-> **참고**: 이 백스톱은 **인터랙티브 세션에서 발동**합니다. 비인터랙티브 `-p`(print/1회성) 실행에서는 플랫폼이 텍스트-only 정지 턴에 `session_stop` 훅을 호출하지 않으므로 백스톱이 발동하지 않습니다. craft 루프 자체는 스킬이 소유하므로(`skills/craft/SKILL.md`) 백스톱 없이도 정상 동작하며, 백스톱은 세션이 스스로 조기 중단하는 것을 막는 보조장치입니다.
+사용자가 명시적으로 중단을 요청하면 `lsc_craft_abort`가 활성 craft를 중단 상태로 기록합니다. 이전 설계에 있던 해시 위반·테스트 실행 불가·무진전(no-progress) 자동 에스컬레이션 게이트는 모두 제거되었습니다 — 남은 유일한 중단 경로는 사용자의 명시적 지시뿐입니다.
 
 ## 테스트/검증
 
@@ -302,7 +298,7 @@ pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`ls
 
 1. 이 저장소에서 `omp plugin link .`로 플러그인이 로드된 상태를 유지합니다(설치 절차와 동일).
 2. 다음 기능/개선 아이디어를 `"pre-craft"`로 시작해, `.lsc/crafts/{feature}/`에 `trace.md → spec.md → plan.md`를 생성합니다. 이때 조사·계획 대상은 `lets-craft` 자기 자신의 `src/`, `agents/`, `skills/`, `rules/`입니다.
-3. `"craft"`로 구현 루프를 돌려 `run_test.sh`(즉 `npm test`, 그리고 필요시 `npm run e2e`)가 통과할 때까지 반복합니다. 이 과정에서도 해시 불변성·중단 방지 백스톱 등 강제 규칙이 동일하게 적용됩니다.
+3. `"craft"`로 단발 구현을 진행합니다 — plan.md가 서로소 작업으로 분해되면 병렬 executor 레인을, 아니면 단일 executor를 스폰합니다. 더 이상 해시 불변성·중단 방지 백스톱 같은 강제 규칙은 적용되지 않습니다(테스트는 다음 단계인 post-craft가 구현 완료 후에 저작·실행합니다).
 4. `"post-craft"`로 적대적 감사를 거쳐 판정을 기록하고, 승인 시 병합합니다.
 
 이 저장소에는 위 절차를 거쳐 생성된 `.lsc/crafts/` 산출물이 아직 커밋되어 있지 않습니다(v1 자체는 이 파이프라인이 완성되기 전에 별도로 구현되었습니다) — 다음 기능부터 이 절차를 실제로 적용하는 것이 dogfooding의 첫걸음입니다.

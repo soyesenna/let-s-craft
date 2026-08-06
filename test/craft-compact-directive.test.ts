@@ -46,11 +46,18 @@ describe("buildCompactionDirective", () => {
 		expect(buildCompactionDirective(CRAFT)).toMatch(/do not trust.*compaction summary.*memory/i);
 	});
 
-	it("restates the protected test/ tree cannot be modified while the craft is active (C20)", () => {
+	it("restates that craft is single-shot — its only valid exits are completion or an explicit lsc_craft_abort", () => {
 		const directive = buildCompactionDirective(CRAFT) ?? "";
-		expect(directive).toMatch(/test\/ tree/);
-		expect(directive).toMatch(/must never.*be modified/i);
-		expect(directive).toContain("C20");
+		expect(directive).toMatch(/single-shot/i);
+		expect(directive).toContain("lsc_craft_abort");
+		expect(directive).toMatch(/never an automatic repeat/i);
+	});
+
+	it("restates the forkPoint recovery rule for a parallel-lane run whose forkPoint didn't survive compaction", () => {
+		const directive = buildCompactionDirective(CRAFT) ?? "";
+		expect(directive).toContain("forkPoint");
+		expect(directive).toMatch(/do not restore it from memory|substitute the feature branch/i);
+		expect(directive).toMatch(/merge-base/i);
 	});
 
 	it("restates that human-facing questions must go through lsc_ask/lsc_select/lsc_confirm", () => {
