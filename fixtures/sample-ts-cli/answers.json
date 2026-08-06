@@ -1,5 +1,5 @@
 {
-  "_note": "Interview fixture answers for lets-craft's ask seam (src/ask.ts, src/fixtures.ts), migrated to fixture schema v2 and aligned with the pre-craft skill's question-tagging convention (skills/pre-craft/SKILL.md §1.2): every pre-craft question starts with a bracketed English tag ([Feature Name], [Goal], [Constraints], [Success Criteria], [Context]), and every consensus/escalation/handoff gate ends in an approval suffix such as 'Proceed?'. The five interview-tag rules intentionally use kind 'free-text', which all three ask tools can consume, so runtime choice between lsc_ask and lsc_select does not affect these scripted answers. Select gates use kind 'selection' with canonical labels, while yes/no gates use kind 'confirmation'. Select-gate rules precede the generic proceed-suffix rule because fixture matching is first-hit. R5's always-worktree topology removed the old [Worktree] question entirely. Tag-prefix anchoring avoids loose keyword matches against unrelated prose; the confirmation default remains a fallback for unanticipated yes/no gates in disposable E2E repositories only.",
+  "_note": "Interview fixture answers for lets-craft's ask seam (src/ask.ts, src/fixtures.ts), migrated to fixture schema v2 and aligned with the pre-craft skill's question-tagging convention (skills/pre-craft/SKILL.md §1.2): every pre-craft question starts with a bracketed English tag ([Feature Name], [Goal], [Constraints], [Success Criteria], [Context]), and every consensus/escalation/handoff gate ends in an approval suffix such as 'Proceed?'. The five interview-tag rules intentionally use kind 'free-text', which all three ask tools can consume, so runtime choice between lsc_ask and lsc_select does not affect these scripted answers. Select gates use kind 'selection' with canonical labels, while yes/no gates use kind 'confirmation'. Select-gate rules precede the generic proceed-suffix rule because fixture matching is first-hit. R5's always-worktree topology removed the old [Worktree] question entirely. [Parallel Lanes] and [Craft Incomplete] (craft/SKILL.md §3.2/§5, C6) are answered confirm:false ahead of the catch-all so E2E stays on the deterministic single-executor path and never spends a re-entry attempt. Tag-prefix anchoring avoids loose keyword matches against unrelated prose; the confirmation default remains a fallback for unanticipated yes/no gates in disposable E2E repositories only.",
   "_warning": "Do NOT set LSC_FIXTURE to this file (or point it at a copy of it) against a real repository. The catch-all default ({\"kind\":\"confirmation\",\"confirm\":true}) affirmatively answers EVERY unmatched lsc_confirm question, including post-craft's [Land] merge approval and its force-remove-worktree escalation. It deliberately errors rather than guessing if an unmatched lsc_ask or lsc_select reaches the confirmation default. This file is only for disposable git repositories created and deleted by test/e2e-helpers.ts.",
   "version": 2,
   "answers": [
@@ -21,7 +21,7 @@
     {
       "match": "^\\[Success Criteria\\]",
       "kind": "free-text",
-      "freeText": "All tests under test/ pass via run_test.sh, including the currently-failing 'collapses consecutive separators' case in test/slugify.test.ts."
+      "freeText": "A regression test authored by post-craft (after the implementation exists) verifies that slugify collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, and check/run_check.sh must pass."
     },
     {
       "match": "^\\[Context\\]",
@@ -37,6 +37,16 @@
       "match": "^\\[Spec Change\\]|^\\[Plan Change\\]",
       "kind": "selection",
       "selections": ["Accept — apply to spec.md/plan.md"]
+    },
+    {
+      "match": "^\\[Parallel Lanes\\]",
+      "kind": "confirmation",
+      "confirm": false
+    },
+    {
+      "match": "^\\[Craft Incomplete\\]",
+      "kind": "confirmation",
+      "confirm": false
     },
     {
       "match": "proceed\\??$",

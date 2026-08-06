@@ -386,7 +386,7 @@ export function listWorktreeFeatures(projectDir: string): string[] {
  * `session_stop` backstop for the turn that ends a headless run, so nothing stops the model from
  * stopping itself early (a plain text turn, `exitCode: 0`, no timeout) partway through a
  * multi-stage skill. Observed for real on pre-craft in a worktree E2E run: the session ended
- * cleanly after producing trace.md/spec.md/plan.md but before test/run_test.sh (Stage 4) — not a
+ * cleanly after producing trace.md but before spec.md and plan.md existed — not a
  * hang, not a crash, just an ordinary `-p` stop with work left undone. `isComplete` is checked
  * after the initial run and after every resume; each resume re-invokes the SAME session via
  * `--continue` (verified empirically against a real run: paired with the same `--session-dir`,
@@ -474,25 +474,21 @@ export function runToCompletion(args: RunToCompletionArgs): Promise<RunToComplet
 }
 
 /**
- * Whether pre-craft's four Stage 1-4 artifacts all exist under the (LLM-derived) single
+ * Whether pre-craft's three Stage 1-3 artifacts all exist under the (LLM-derived) single
  * `.lsc/worktrees/{feature}/.lsc/crafts/{feature}/` directory — the `isComplete` predicate
  * `runToCompletion` callers use for the pre-craft stage. Worktree-internal per R5's always-worktree
  * topology (pre-craft always creates `.lsc/worktrees/{feature}/` and writes every artifact inside
  * it — see `listWorktreeFeatures`). False (never a throw) when no worktree exists yet, or when more
  * than one does (ambiguous — not "complete" either way, mirroring the pre-existing
- * `listWorktreeFeatures` length-1 assertions in e2e-full-cycle.test.ts).
+ * `listWorktreeFeatures` length-1 assertions in e2e-full-cycle.test.ts). No `test/` check anymore
+ * (C5/C8) — pre-craft no longer authors tests; that is now post-craft's own §3.0 stage.
  */
 export function preCraftArtifactsComplete(projectDir: string): boolean {
 	const features = listWorktreeFeatures(projectDir);
 	if (features.length !== 1) return false;
 	const worktreeDir = join(projectDir, ".lsc", "worktrees", features[0]);
 	const craftDir = join(worktreeDir, ".lsc", "crafts", features[0]);
-	return (
-		existsSync(join(craftDir, "trace.md")) &&
-		existsSync(join(craftDir, "spec.md")) &&
-		existsSync(join(craftDir, "plan.md")) &&
-		existsSync(join(craftDir, "test", "run_test.sh"))
-	);
+	return existsSync(join(craftDir, "trace.md")) && existsSync(join(craftDir, "spec.md")) && existsSync(join(craftDir, "plan.md"));
 }
 
 export function readTextIfExists(path: string): string | undefined {

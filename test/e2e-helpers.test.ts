@@ -325,17 +325,13 @@ describe("preCraftArtifactsComplete", () => {
 
 	// R5 always-worktree: pre-craft writes every artifact inside `.lsc/worktrees/{feature}/.lsc/crafts/{feature}/`,
 	// never directly under the project root's `.lsc/crafts/` (that stays empty until land — AC5 base-purity).
-	function seedCraftDir(projectDir: string, feature: string, files: { trace?: boolean; spec?: boolean; plan?: boolean; runTest?: boolean }): void {
+	// No `test/` seeding anymore (C5/C8) — pre-craft's three artifacts are trace/spec/plan only.
+	function seedCraftDir(projectDir: string, feature: string, files: { trace?: boolean; spec?: boolean; plan?: boolean }): void {
 		const craftDir = join(projectDir, ".lsc", "worktrees", feature, ".lsc", "crafts", feature);
 		mkdirSync(craftDir, { recursive: true });
 		if (files.trace) writeFileSync(join(craftDir, "trace.md"), "");
 		if (files.spec) writeFileSync(join(craftDir, "spec.md"), "");
 		if (files.plan) writeFileSync(join(craftDir, "plan.md"), "");
-		if (files.runTest) {
-			const testDir = join(craftDir, "test");
-			mkdirSync(testDir, { recursive: true });
-			writeFileSync(join(testDir, "run_test.sh"), "");
-		}
 	}
 
 	it("is false when no .lsc/worktrees/{feature} directory exists yet", () => {
@@ -344,26 +340,20 @@ describe("preCraftArtifactsComplete", () => {
 
 	it("is false when more than one .lsc/worktrees/{feature} directory exists (ambiguous, never treated as complete)", () => {
 		const projectDir = tmpProjectDir();
-		seedCraftDir(projectDir, "feature-a", { trace: true, spec: true, plan: true, runTest: true });
-		seedCraftDir(projectDir, "feature-b", { trace: true, spec: true, plan: true, runTest: true });
+		seedCraftDir(projectDir, "feature-a", { trace: true, spec: true, plan: true });
+		seedCraftDir(projectDir, "feature-b", { trace: true, spec: true, plan: true });
 		expect(preCraftArtifactsComplete(projectDir)).toBe(false);
 	});
 
-	it("is false when the craft dir exists but test/run_test.sh is missing (the actually observed real-run failure)", () => {
+	it("is false when any single one of trace.md/spec.md/plan.md is missing", () => {
 		const projectDir = tmpProjectDir();
-		seedCraftDir(projectDir, "demo", { trace: true, spec: true, plan: true, runTest: false });
+		seedCraftDir(projectDir, "demo", { trace: true, spec: false, plan: true });
 		expect(preCraftArtifactsComplete(projectDir)).toBe(false);
 	});
 
-	it("is false when any single one of trace.md/spec.md/plan.md is missing, even with run_test.sh present", () => {
+	it("is true once trace.md, spec.md, and plan.md all exist", () => {
 		const projectDir = tmpProjectDir();
-		seedCraftDir(projectDir, "demo", { trace: true, spec: false, plan: true, runTest: true });
-		expect(preCraftArtifactsComplete(projectDir)).toBe(false);
-	});
-
-	it("is true once trace.md, spec.md, plan.md, and test/run_test.sh all exist", () => {
-		const projectDir = tmpProjectDir();
-		seedCraftDir(projectDir, "demo", { trace: true, spec: true, plan: true, runTest: true });
+		seedCraftDir(projectDir, "demo", { trace: true, spec: true, plan: true });
 		expect(preCraftArtifactsComplete(projectDir)).toBe(true);
 	});
 });

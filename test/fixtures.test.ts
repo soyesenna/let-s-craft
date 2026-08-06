@@ -585,7 +585,8 @@ describe("canonical sample fixture snapshot", () => {
 		{
 			tag: "Success Criteria",
 			question: "[Success Criteria] How will success be verified?",
-			freeText: "All tests under test/ pass via run_test.sh, including the currently-failing 'collapses consecutive separators' case in test/slugify.test.ts.",
+			freeText:
+				"A regression test authored by post-craft (after the implementation exists) verifies that slugify collapses consecutive non-alphanumeric separators into a single hyphen and trims leading/trailing hyphens, and check/run_check.sh must pass.",
 		},
 		{
 			tag: "Context",
@@ -627,6 +628,24 @@ describe("canonical sample fixture snapshot", () => {
 			});
 		},
 	);
+
+	// C8: craft's [Parallel Lanes] gate is answered confirm:false ahead of the catch-all, so E2E
+	// stays deterministically on the single-executor path.
+	it("matches Parallel Lanes as confirmation false, ahead of the generic Proceed default", () => {
+		expect(canonicalAnswerSet().match("[Parallel Lanes] plan.md에서 서로소인 구현 유닛 2개를 병렬 executor로 실행한다. Proceed?")).toEqual({
+			kind: "confirmation",
+			confirm: false,
+		});
+	});
+
+	// C8: craft's [Craft Incomplete] one-shot re-entry gate is answered confirm:false ahead of the
+	// catch-all, so E2E never spends the single allowed re-entry attempt.
+	it("matches Craft Incomplete as confirmation false, ahead of the generic Proceed default", () => {
+		expect(canonicalAnswerSet().match("[Craft Incomplete] executor가 빌드/타입체크 실패를 보고했다. Proceed?")).toEqual({
+			kind: "confirmation",
+			confirm: false,
+		});
+	});
 
 	// plan §1-F/§2 Step 2: 대문자 Proceed?도 case-insensitive generic confirmation 규칙으로 매칭한다.
 	it("matches a generic capitalized Proceed question as confirmation true", () => {
