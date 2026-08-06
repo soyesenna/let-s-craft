@@ -225,7 +225,7 @@ describe("evaluateCheckScriptShape (AC11 — non-degeneracy pre-lint)", () => {
 		expect(evaluateCheckScriptShape(scriptText, [])).toEqual({ verdict: "ok", warnings: [] });
 	});
 
-	it("⑥ regression: a script isomorphic to fixtures/sample-ts-cli/run_test.sh (set -uo pipefail + cd + node --test + status-branch echo + exit \"$status\") passes without rejection", () => {
+	it("⑥ regression: a script isomorphic to sample-ts-cli's historical single-entrypoint shape (set -uo pipefail + cd + node --test + status-branch echo + exit \"$status\") passes without rejection", () => {
 		const scriptText = [
 			"#!/usr/bin/env bash",
 			"set -uo pipefail",

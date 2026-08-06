@@ -1,7 +1,7 @@
-// `lsc_craft_init` — register a pre-craft feature as the active craft for its craft loop.
-// Slimmed from the former hash-manifest-backed version (C2): with tests authored post-craft
-// rather than fixed before craft, there is no protected test/ canon left to fingerprint or
-// snapshot at init time — this tool's only remaining job is verifying pre-craft's three
+// `lsc_craft_init` — register a pre-craft feature as the active craft for its (single-shot,
+// C6) craft run. Slimmed from the former hash-fingerprinting version (C2): with tests authored
+// post-craft rather than fixed before craft, there is no protected test canon left to fingerprint
+// or snapshot at init time — this tool's only remaining job is verifying pre-craft's three
 // artifacts exist and registering the active-craft singleton.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

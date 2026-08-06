@@ -1,6 +1,6 @@
-// Generic destructive-approval authority for the craft loop's most dangerous gates ([Land] —
-// R9: the former [Canon Amendment]/[Hash Violation] tags retired with their sole consumers,
-// release.ts/the hash-manifest tamper-evidence layer, C2). This module owns THREE things and
+// Generic destructive-approval authority for the pipeline's most dangerous gates ([Land] —
+// R9: the two other retired destructive-gate tags (a canon-modification approval and a
+// tamper-evidence escalation) were retired along with their sole consumers, C2). This module owns THREE things and
 // nothing else: the gate-tag SSOT; the single in-process "pending approval" slot that is the
 // SOLE source of consume-ability (the 권위, spec CORE); and a tag-keyed "prepared-operation"
 // slot that is a TRUSTED but NON-AUTHORITATIVE issuance context — a prepared envelope is
@@ -22,9 +22,9 @@ import { randomUUID } from "node:crypto";
  * convention itself (skills/craft/SKILL.md) is unchanged, this module only recognizes it (C11).
  * Aliases are forbidden: the legacy `[Release]` prefix is deliberately absent.
  *
- * R9 (C2): the former `[Canon Amendment]` and `[Hash Violation]` tags are retired along with
- * their sole consumers — release.ts (deleted) and the hash-manifest tamper-evidence layer
- * (deleted) — leaving `[Land]` as the only destructive gate.
+ * R9 (C2): the two other former destructive-gate tags (a canon-modification approval and a
+ * tamper-evidence escalation) are retired along with their sole consumers — both now deleted —
+ * leaving `[Land]` as the only destructive gate.
  */
 export const DESTRUCTIVE_GATE_TAGS = ["[Land]"] as const;
 

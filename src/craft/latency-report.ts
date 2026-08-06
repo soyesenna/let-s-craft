@@ -641,7 +641,7 @@ export function performLatencyReport(session: LatencyReportSessionAccess, overri
 /** Register `lsc_latency_report`. */
 export function registerLatencyReportTool(pi: ExtensionAPI): void {
 	const z = pi.zod;
-	// Explicit type arguments (not left to inference) avoid TS2589 — see hash-manifest.ts.
+	// Explicit type arguments (not left to inference) avoid TS2589 — see run-check.ts.
 	const parameters = z.object({
 		session_dir: z
 			.string()

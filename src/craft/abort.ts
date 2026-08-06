@@ -1,10 +1,11 @@
-// `lsc_craft_abort` — the escalation exit for the craft loop (C23). The craft skill
-// calls this once the user has explicitly declined to continue past a hash-violation
-// restore prompt (C23b) or a run_test.sh-unrunnable escalation (C23c) — both surfaced
-// through lsc_confirm (ask.ts). Marking the craft aborted flips
-// shouldContinueCraftLoop() to false (enforcement.ts), so the session_stop backstop
-// stops forcing "one more turn" once the user has, in fact, asked to stop (R1's
-// "don't fight a user who already asked to stop").
+// `lsc_craft_abort` — the escalation exit for an in-flight craft run. craft is single-shot now
+// (C6): there is no forced continue-until-tests-pass loop left to break out of, and no gate in
+// craft's own contract whose decline branch calls this automatically anymore (the hash-violation
+// restore prompt and the run-unavailable escalation that used to trigger it were both removed
+// along with the loop they guarded). The only remaining call site is an explicit user instruction
+// to stop mid-run. Marking the craft aborted is a durable record (`CraftState.aborted`) that
+// watchdog.ts's own explicit-stop check and destructive-approval invalidation both key off
+// directly.
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { getActiveCraft, markCraftAborted } from "./state.js";
 
@@ -34,26 +35,19 @@ export function performCraftAbort(reason: string): AgentToolResult<CraftAbortDet
 /** Register `lsc_craft_abort`. */
 export function registerCraftAbortTool(pi: ExtensionAPI): void {
 	const z = pi.zod;
-	// Explicit type arguments avoid TS2589 (see hash-manifest.ts).
+	// Explicit type arguments avoid TS2589 (see run-check.ts).
 	const parameters = z.object({
-		reason: z
-			.string()
-			.describe(
-				"Why the craft loop is being aborted — must follow an explicit user decline via lsc_confirm (a hash-violation " +
-					"restore prompt, C23b, or a run_test.sh-unrunnable escalation, C23c). Never call this on the skill's own initiative.",
-			),
+		reason: z.string().describe("Why this craft run is being aborted — must follow an explicit user instruction to stop. Never call this on the skill's own initiative."),
 	});
 
 	pi.registerTool<typeof parameters, CraftAbortDetails>({
 		name: "lsc_craft_abort",
 		loadMode: "discoverable",
-		label: "Craft: abort loop",
+		label: "Craft: abort run",
 		description:
-			"Mark the active craft as user-aborted so the session_stop backstop stops forcing continuation (C23). Only call " +
-			"this after the user has explicitly declined to continue via lsc_confirm — a hash-violation restore prompt " +
-			"(C23b) or a run_test.sh-unrunnable escalation (C23c). In lsc_confirm terms a decline is the No selection " +
-			"(content exactly `no`); a free answer (content starting `User provided free answer:`) is neither approve nor " +
-			"reject — reflect it as an instruction and re-ask, never abort on it.",
+			"Mark the active craft as user-aborted. Only call this after the user has explicitly asked to stop this craft " +
+			"run — craft is single-shot now, so there is no gate in its own contract whose decline branch calls this " +
+			"automatically.",
 		approval: "read",
 		parameters,
 		async execute(_toolCallId, params): Promise<AgentToolResult<CraftAbortDetails>> {

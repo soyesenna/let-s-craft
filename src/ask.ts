@@ -749,8 +749,8 @@ export function registerAskTools(pi: ExtensionAPI, binder?: AskRuntimeBinder): v
 				}
 			} else if (tag && craftAtPrompt && confirmedYes && sameCraftIdentity(craftAtPrompt, getActiveCraft())) {
 				// Craft-bound issuance path — a same-identity active craft, no prepared envelope (R9:
-				// formerly also this branch's route for release-gate [Canon Amendment]; [Land] is now
-				// the sole tag that can ever reach it).
+				// formerly also this branch's route for the now-retired canon-modification approval
+				// gate; [Land] is now the sole tag that can ever reach it).
 				const record = createPendingApproval({
 					tag,
 					question: params.question,

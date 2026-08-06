@@ -5,10 +5,10 @@ import { describe, expect, it } from "vitest";
 
 // ---------------------------------------------------------------------------
 // deferred-pool: contract-conformance assertions for the skill-prose changes
-// this feature lands (spec R5: prose items — B co-evolution, F SKILL section, G
-// D-3 exception — are verified as skill-contract *string* checks, not fixture
+// this feature lands (spec R5: prose items — B co-evolution, F SKILL section —
+// are verified as skill-contract *string* checks, not fixture
 // E2E). Companion to the existing test/skill-contract.test.ts; a separate file so
-// parallel pre-craft testers never collide on one file. Every asserted phrase is
+// concurrently-run test files never collide on one file. Every asserted phrase is
 // quoted from a confirmed decision, never invented:
 //   - spec.md  AC6 / AC11, components A / B / F / G, Constraints 2/3/6/11/12
 //   - plan.md  Step 3b (post-craft land co-evolution), Step 4 (scaffold

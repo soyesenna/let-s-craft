@@ -33,7 +33,7 @@
 
 ### test-engineer
 
-- 완성된 trace, spec, plan 을 보고 test 코드 또는 test 스크립트를 생성하는 역할.
+- post-craft 단계에서, 이미 완성된 구현을 보고 회귀 test 코드와 결정적 체크 진입점(`check/run_check.sh`)을 저작하는 역할.
 - oh-my-claudecode test-engineer 와 비슷
 
 ## Agent 별 모델 할당
@@ -57,7 +57,7 @@
   - eg. .lsc/crafts/tool-multitanent-byok/
 - 이 skill 이 시작되면 git branch 를 만든다. 브랜치 이름은 자유롭게 설정하되, 브랜치 네이밍 규칙이 존재하면 철저히 따른다.
   - "--worktree" 라는 텍스트, 옵션이 프롬프트에 포함되어있으면 worktree 를 만들어서 작업한다. 이 worktree 는 프로젝트 내부 .lsc/worktrees/ 디렉터리에 생성한다.
-- 이 스킬은 trace -> interview -> plan -> test 순서대로 실행한다.
+- 이 스킬은 trace -> interview -> plan 순서대로 실행하는 3단계 스킬이다. 테스트는 이 단계에서 저작되지 않는다 — 구현이 완료된 뒤 post-craft 가 회귀 테스트와 결정적 체크 진입점을 저작한다.
 - trace : 사용자 프롬프트에 대한 코드베이스, 인프라 등 관련된 정보(eg. 유저가 dev 환경의 db 접근 권한을 준 상태에서, db 상태를 확인해야하는 프롬프트라고 판단되면 db 도 탐색한다.) 탐색. trace lane 개수 제한 없음 -> trace 문서 생성. trace 문서의 크기(길이) 제한 없음. 최대한 상세하게 적는다.
   - trace lane 생성 공식은 oh-my-claudecode deep-dive, trace skill에 따른다.
   - trace lane 을 생성하기 위한 사전 코드 베이스 탐색을 수행하여 trace lane 을 확정한다. ( oh-my-claudecode deep-dive skill 참고 )
@@ -72,32 +72,19 @@
   - oh-my-claudecode 처럼 planner, critic, architect 합의 루프를 거친다. iteration 횟수 제한은 10번.
   - 생성된 문서는 .lsc/crafts/{feature-name}/plan.md 에 저장한다.
   - 생성된 plan 은 최대한 상세하고 명확하게 작성한다. plan 문서의 크기(길이) 제한 없음.
-- test : 완성된 spec, plan 을 전부 구현했을 때 통과해야하는 테스트 생성. 테스트 종류의 제한 없음.(eg. unit test, full e2e test, integration test, etc...)
-  - 테스트는 최대한 많이, 모든 성공, 실패 시나리오를 검증할 수 있어야한다.
-  - 기본적으로 unit test, full e2e test, integration test, 회귀 test 총 4개의 tester agent 를 spawn 하여 테스트 코드 또는 스크립트를 만든다.
-    - 하지만, 메인 오케스트레이터 판단으로 더 테스트가 필요하다고 판단되는 지점이 있으면 그 지점에 대한 tester agent 를 추가로 spawn 해도 된다. 추가되는 agent 개수 제한 없음.
-  - 테스트 관련 산출물은 프로젝트 디렉터리 내부 .lsc/crafts/{feature-name}/test/ 디렉터리에 전부 만든다.
-  - pytest, gradle test task 등 코드베이스 자체와 관련이 있는 테스트는, 기존 관례대로 테스트 코드를 만들고(eg. JVM gradle 프로젝트의 경우 com.example.src.test 디렉터리에 테스트를 만들고, run_test.sh 이 그 테스트를 실행할 수 있도록 한다.)
-  - 만들어진 테스트 코드들을 실행하는 진입점은 .lsc/crafts/{feature-name}/test/run_test.sh 단일 진입점으로 한다.
-    - test 는 당연히 gradle task 로 돌리는 unit 테스트나 full e2e 테스트처럼 형태가 고정되어있지 않은(python, shell script 등등으로 만들 수 있으니) 테스트들이 동시에 존재할 것임. 이 테스트들을 한번에 run_test.sh 로 전부 실행해서 결과와 테스트 세부 디테일을 반환할 수 있어야함. 실패한 테스트는 실패 이유(로그)까지.
-  - 이 생성된 테스트도 plan 과 마찬가지로 critic, architect 합의 루프를 가진다. iteration 횟수 제한 10번.
-
 ### craft
 
 - 실제 구현을 작업을 실행하는 skill
 - pre-craft skill 로 만들어진 산출물 디렉터리 경로(.lsc/crafts/{feature-name})를 전달해주면 그 디렉터리 내부 문서들을 철저히 분석 후 체계적이고 단계적인 구현을 시작한다. 또는, post-craft skill 의 산출물인 감사 문서 경로(.lsc/crafts/{feature-name}/audit/audit-N.md) 를 전달해주면 그 감사 문서를 철저히 분석해서 감사에 따른 구현, 수정을 한다.
-- 구현은 run_test.sh 로 실행되는 테스트가 모두 통과할 때 까지 수정, 개선을 반복한다. run_test.sh 로 실행되는 테스트들이 전부 통과하지 않았는데 구현을 멈추면 안된다.(hook 으로 강제)
-- 절대 run_test.sh 과 테스트 코드를 수정하지 않는다. (hook 으로 강제)
-- craft 명령이 다음 루프를 직접 소유해야 합니다.
-  - executor 서브에이전트 실행
-  - Extension이 신뢰된 run_test.sh 실행
-  - 테스트 파일 hash 불변성 검증
-  - 실패 로그를 다음 executor 실행에 전달
-  - 사용자 중단을 제외하고 통과할 때까지 반복
+- craft 는 반복 루프를 소유하지 않는 단발 실행이다. plan.md 의 작업이 서로소 단위로 분해되면 사용자 확인 후 병렬 executor 레인을, 아니면 단일 executor 서브에이전트를 정확히 한 번 스폰한다.
+  - 병렬 레인은 forkPoint 기준 cherry-pick 으로 feature 브랜치에 직접 통합한다. craft 는 어떤 경우에도 git merge 를 실행하지 않는다 — 병합은 post-craft 의 land 단계 전용이다.
+  - executor 는 구현 후 프로젝트의 빌드/타입체크를 스스로 1회 실행하고 결과를 보고서에 포함한다. 실패가 보고되면 사용자에게 1회 재실행 여부를 묻고, 그 결과와 무관하게 두 번째 재실행은 없다.
+- 테스트는 이 단계에서 저작되지 않는다 — 구현이 완료된 뒤 post-craft 가 회귀 테스트와 결정적 체크 진입점을 저작한다.
 
 ### post-craft
 
 - craft 단계에서 구현이 완료된 구현 내용을 철저히 적대적 검증하는 skill
+- 적대적 검증에 앞서, test-engineer 를 스폰해 구현 diff 를 커버하는 회귀 테스트와 결정적 체크 진입점(.lsc/crafts/{feature-name}/check/run_check.sh)을 저작시키고, 그 스크립트를 실행해 결정적 체크 결과를 확보한다. 결정적 체크가 실패하면(또는 형해화된 스크립트로 판정되어 재저작 상한을 넘기면) 최종 판정은 REJECT 또는 APPROVE-WITH-CHANGE 만 가능하다.
 - pre-craft skill 로 만들어진 산출물 디렉터리 경로(.lsc/crafts/{feature-name})와 구현 branch or worktree 에 구현된 내용을 철저히 적대적 검증한다. spec 과 정합한지, plan 대로 만들었는지 등등 철저히 적대적 리뷰어 입장에서 검증, 리뷰한다.
 - 실제 구현된 코드 베이스를 직접 전부 탐색, 분석한다. 추측 금지.
 - 이 단계에서 모든 적대적 검증과 감사를 진행한 후 .lsc/crafts/{feature-name}/audit/audit-N.md(N은 정수, 0부터 시작) 에 작성한다.

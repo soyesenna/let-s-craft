@@ -127,7 +127,7 @@ describe("classifyRetrySignal", () => {
 
 describe("shouldSetStickyForToolExecution (DR-2)", () => {
 	it("is true for any lsc_ tool", () => {
-		expect(shouldSetStickyForToolExecution({ toolName: "lsc_run_tests" })).toBe(true);
+		expect(shouldSetStickyForToolExecution({ toolName: "lsc_run_check" })).toBe(true);
 		expect(shouldSetStickyForToolExecution({ toolName: "lsc_ask" })).toBe(true);
 	});
 
@@ -234,7 +234,7 @@ describe("shouldSetStickyForToolExecution (DR-2)", () => {
 	});
 
 	it("short-circuits to true for lsc_ prefixed tool names regardless of args", () => {
-		expect(shouldSetStickyForToolExecution({ toolName: "lsc_run_tests", args: { tasks: "not-an-array" } })).toBe(true);
+		expect(shouldSetStickyForToolExecution({ toolName: "lsc_run_check", args: { tasks: "not-an-array" } })).toBe(true);
 	});
 });
 
@@ -497,7 +497,7 @@ describe("registerWatchdog (end-to-end wiring)", () => {
 		registerWatchdog(fakePi as unknown as Parameters<typeof registerWatchdog>[0]);
 
 		expect(isWatchdogActive()).toBe(false);
-		await fire(handlers, "tool_execution_start", { toolName: "lsc_run_tests" }, makeCtx());
+		await fire(handlers, "tool_execution_start", { toolName: "lsc_run_check" }, makeCtx());
 		expect(isWatchdogActive()).toBe(true);
 	});
 
@@ -505,7 +505,7 @@ describe("registerWatchdog (end-to-end wiring)", () => {
 		const { fakePi, handlers, execCalls } = makeFakePi();
 		registerWatchdog(fakePi as unknown as Parameters<typeof registerWatchdog>[0]);
 
-		await fire(handlers, "tool_execution_start", { toolName: "lsc_run_tests" }, makeCtx({ hasUI: false }));
+		await fire(handlers, "tool_execution_start", { toolName: "lsc_run_check" }, makeCtx({ hasUI: false }));
 		expect(isWatchdogActive()).toBe(false);
 
 		markWatchdogActive();
