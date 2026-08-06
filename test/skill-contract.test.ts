@@ -28,6 +28,7 @@ const lscPlanner = read("agents/lsc-planner.md");
 const lscArchitect = read("agents/lsc-architect.md");
 const lscCritic = read("agents/lsc-critic.md");
 const lscCriticRecheck = read("agents/lsc-critic-recheck.md");
+const lscTestEngineer = read("agents/lsc-test-engineer.md");
 const readme = read("README.md");
 
 describe("U3 — lightweight lsc-critic-recheck agent", () => {
@@ -386,4 +387,79 @@ describe("craft — 단발 실행 + 병렬 레인 계약", () => {
 			expect(craft).not.toContain(literal);
 		});
 	}
+});
+
+// ---------------------------------------------------------------------------
+// C7 — post-craft now authors the regression tests and the deterministic
+// check/run_check.sh entrypoint itself (§3.0) before running the check (§3.1)
+// and the adversarial review (§3.2), in that fixed order. A failed/unexecutable
+// check is a hard gate on the verdict, and the re-authoring escape has its own
+// 1-shot cap that routes through a verdict, never an automatic loop.
+// ---------------------------------------------------------------------------
+describe("post-craft — 테스트 저작 + 결정적 체크 하이브리드 게이트", () => {
+	it("runs test authoring, the deterministic check, and the adversarial review in that fixed order (§3.0 → §3.1 → §3.2)", () => {
+		const i0 = postCraft.indexOf("§3.0");
+		const i1 = postCraft.indexOf("§3.1");
+		const i2 = postCraft.indexOf("§3.2");
+		expect(i0).toBeGreaterThan(-1);
+		expect(i1).toBeGreaterThan(-1);
+		expect(i2).toBeGreaterThan(-1);
+		expect(i0).toBeLessThan(i1);
+		expect(i1).toBeLessThan(i2);
+	});
+
+	it("spawns lsc-test-engineer to author tests and check/run_check.sh, then calls lsc_run_check with a bounded timeout_ms", () => {
+		expect(postCraft).toContain("lsc-test-engineer");
+		expect(postCraft).toContain("check/run_check.sh");
+		expect(postCraft).toContain("lsc_run_check");
+		expect(postCraft).toContain("timeout_ms");
+	});
+
+	it("treats a failed deterministic check as a hard gate on the verdict", () => {
+		expect(postCraft).toContain("결정적 체크 실패");
+	});
+
+	it("caps the deterministic-check re-authoring escape at exactly one retry, routed through a verdict — never an automatic loop", () => {
+		expect(postCraft).toContain("재저작은 1회로 제한한다");
+		expect(postCraft).toContain("두 번째 isError");
+	});
+
+	it("names 결정적 체크의 형해화 (deterministic-check formalization) as its own Adversarial Class", () => {
+		expect(postCraft).toContain("결정적 체크의 형해화");
+	});
+
+	it("carries none of the removed hash-protection / pre-test-authoring vocabulary", () => {
+		for (const literal of ["pre-craft tester", "lsc_verify_hash", "lsc_restore_tests", "testsPassed", "run_test.sh", "Canon Amendment"]) {
+			expect(postCraft, `postCraft must no longer contain "${literal}"`).not.toContain(literal);
+		}
+	});
+});
+
+describe("post-craft — land의 check-log 신선도 증거", () => {
+	it("requires a fresh passing check-N.log as land's cycle-freshness evidence", () => {
+		expect(postCraft).toContain("fresh passing check log");
+		expect(postCraft).toContain("check-N.log");
+	});
+
+	it("no longer references the retired run-N.log naming", () => {
+		expect(postCraft).not.toContain("run-N.log");
+	});
+});
+
+describe("lsc-test-engineer — 구현-후 저작자 역할 (AC7)", () => {
+	it("agents/lsc-test-engineer.md exists", () => {
+		expect(existsSync(join(repoRoot, "agents/lsc-test-engineer.md"))).toBe(true);
+	});
+
+	it("is redefined as post-craft's post-implementation test + check/run_check.sh author, not a pre-craft tester", () => {
+		expect(lscTestEngineer).not.toContain("pre-craft tester");
+		expect(lscTestEngineer).toContain("post-craft");
+		expect(lscTestEngineer).toContain("run_check.sh");
+	});
+
+	it("drops the pre-implementation TDD iron law in favor of post-implementation authoring against spec.md's Acceptance Criteria", () => {
+		expect(lscTestEngineer).not.toContain("THE IRON LAW");
+		expect(lscTestEngineer).toContain("Post_Implementation_Authoring");
+		expect(lscTestEngineer).toContain("tautology");
+	});
 });
