@@ -62,7 +62,7 @@ function tmpProject(): string {
 }
 
 function freshState(projectRoot: string, feature = "my-feature"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 /** Write an arbitrary on-disk shape straight to a feature's .craft-state.json, bypassing the

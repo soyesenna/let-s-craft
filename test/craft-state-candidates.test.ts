@@ -56,7 +56,7 @@ function tmpProject(): string {
 }
 
 function freshState(projectRoot: string, feature = "my-feature"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 function writePersistedState(root: string, feature: string, state: object): void {

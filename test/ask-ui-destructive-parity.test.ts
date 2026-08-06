@@ -71,7 +71,7 @@ function tmpProject(): string {
 }
 
 function freshState(projectRoot: string, feature = "gated-feature"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 function identityOf(state: CraftState): ApprovalCraftIdentity {

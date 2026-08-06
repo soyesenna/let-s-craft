@@ -170,7 +170,7 @@ function tmpProject(): string {
 }
 
 function freshState(projectRoot: string, feature = "my-feature"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 /** Persist a craft state to disk with no active-craft singleton left set — mirrors post-craft's real scenario (craft ran in an earlier/different session). */

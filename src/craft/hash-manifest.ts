@@ -314,8 +314,6 @@ function registerCraftInitTool(pi: ExtensionAPI): void {
 					feature,
 					projectRoot: ctx.cwd,
 					worktreeRoot,
-					testsPassed: false,
-					lastFailureSummary: undefined,
 					aborted: false,
 					releaseApproval: previousState?.releaseApproval,
 					openRelease: closeOpenRelease(previousState?.openRelease, previousManifest, manifest, new Date().toISOString()),

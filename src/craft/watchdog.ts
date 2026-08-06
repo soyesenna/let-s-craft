@@ -16,15 +16,12 @@
 // resume from an earlier give-up is moot (same rationale as the turn_start/success:true debounce
 // below) — it carries no other behavior.
 //
-// Axis vs. enforcement.ts's session_stop backstop (enforcement.ts:9-20's canon note): that
-// backstop forces "one more turn" whenever a craft is active and its tests haven't passed, for
-// ANY reason the session stopped. This watchdog instead reacts to WHY the session stopped
-// (provider rate-limit specifically) and is the only thing that can ever nudge a stalled PRE-craft
-// session (no craft, no backstop, nothing else watching). Where both would apply — an active,
-// not-yet-passing craft hits a provider-wait stall — the backstop already owns "keep going"
-// unconditionally, so this module still detects and notifies (visibility, C3) but deliberately
-// never schedules its OWN resume action for that case (shouldSuppressResumeForCraftBackstop) —
-// a single entry point, not a duplicate one (Risks table: "워치독-백스톱 이중 주입").
+// This watchdog is now the sole resume driver (C1 — craft no longer has its own session_stop
+// backstop to coordinate with, since craft is a single-shot executor run rather than a repeating
+// test-pass loop). It reacts to WHY the session stopped (provider rate-limit specifically) and is
+// the only thing that can ever nudge a stalled session, craft-active or not — detection and
+// notification (visibility, C3) and the resume action itself are both this module's alone, gated
+// only by the craft-scoped explicit-stop check (`craft?.aborted`) below.
 //
 // DR-2 (activation): craft is durable (state.ts's CraftState); pre-craft has no durable state, so
 // activation there is a session-lifetime "sticky" flag set the first time a `lsc_*` tool or an
@@ -46,7 +43,6 @@
 // to notify-only instead of scheduling, independently of the CS-7 flag.
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { notifyAutoResumed, notifyAutoResumeSkippedCutoff, notifyMainStalled, notifyResumeLimitExceeded } from "../notify.js";
-import { shouldContinueCraftLoop } from "./enforcement.js";
 import { type CraftState, getActiveCraft } from "./state.js";
 
 // ---------------------------------------------------------------------------
@@ -287,11 +283,6 @@ export function decideScheduleResume(input: ScheduleResumeInput): ScheduleResume
 	return { action: "schedule" };
 }
 
-/** Pure "single entry point" gate (see module doc comment): true iff an active craft's OWN session_stop backstop (enforcement.ts) already forces continuation unconditionally, so this module's resume action must stand down to avoid a duplicate turn-injection. Reuses enforcement.ts's own shouldContinueCraftLoop rather than re-deriving the condition. */
-export function shouldSuppressResumeForCraftBackstop(craft: CraftState | undefined): boolean {
-	return craft !== undefined && shouldContinueCraftLoop(craft);
-}
-
 /** The exact CS-2 resume nudge text — deliberately states it is NOT a new instruction, so the resumed turn doesn't misread it as a fresh user request. */
 export function buildResumeMessage(retryAfterSeconds: number, attempt: number): string {
 	return (
@@ -318,8 +309,7 @@ export interface ResumeTimerContext {
  * functions, no real setTimeout/vi.useFakeTimers required (mirrors run-tests.ts's ExecFn
  * injection). Order of checks: (1) freshness — a superseded/cleared pending means some other
  * debounce already handled this stall, so this stale firing does nothing; (2) craft-side
- * suppression — an aborted craft (explicit user stop, craft-scoped only per CS-3) or one whose
- * own backstop already forces continuation (single entry point, see module doc) both stand down;
+ * suppression — an aborted craft (explicit user stop, craft-scoped only per CS-3) stands down;
  * (3) idle — only ever nudge a session that is actually idle (a live/streaming session already
  * recovered on its own, so the stale pending is cleared and dropped, never queued as a steer).
  *
@@ -336,7 +326,7 @@ export function runResumeTimerCallback(ctx: ResumeTimerContext): void {
 		if (!pending || pending.at !== ctx.expectedAt) return;
 
 		const craft = ctx.getActiveCraftState();
-		if (craft?.aborted || shouldSuppressResumeForCraftBackstop(craft)) {
+		if (craft?.aborted) {
 			ctx.clearPending();
 			return;
 		}
@@ -453,8 +443,6 @@ export function registerWatchdog(pi: ExtensionAPI): void {
 		await notifyMainStalled(signal.kind === "provider-wait" ? signal.retryAfterMs : undefined, pi.exec);
 
 		if (signal.kind !== "provider-wait") return; // null-yield/generic: notify-only (CS-8)
-
-		if (shouldSuppressResumeForCraftBackstop(craft)) return; // single entry point — the craft backstop already owns continuation
 
 		const decision = decideScheduleResume({
 			resumeCount: getWatchdogResumeCount(),

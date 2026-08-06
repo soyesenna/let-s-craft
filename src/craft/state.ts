@@ -3,8 +3,8 @@
 // per-session concept, and session_stop only fires for the main session,
 // agent-session.ts:5341) with restart-durable persistence to
 // `test/.craft-state.json` — a process restart mid craft-loop (crash, `omp`
-// upgrade) must not silently disable the tool_call block or the session_stop
-// backstop until the next lsc_craft_init call.
+// upgrade) must not silently disable the tool_call block until the next
+// lsc_craft_init call.
 //
 // Every mutation goes through the functions below rather than the module-scope
 // variable directly, so persistence and every reader (enforcement.ts,
@@ -42,31 +42,12 @@ export interface CraftState {
 	projectRoot: string;
 	/** Absolute path of the worktree source root, when `--worktree` was used. */
 	worktreeRoot?: string;
-	/** Whether the most recent lsc_run_tests call passed every test. */
-	testsPassed: boolean;
-	/** Structured summary of the last failure, re-injected into the next executor call (C21). */
-	lastFailureSummary?: string;
 	/**
-	 * Structured signature of the last failure (C-1 no-progress detection) — recordTestResult's
-	 * own comparison key, derived by computeFailureSignature (src/craft/run-tests.ts) from the
-	 * same failure-summary text as lastFailureSummary above. Optional so older persisted state
-	 * files (written before this field existed) still parse: JSON.parse in loadActiveCraft never
-	 * validates shape, so an absent field simply reads as undefined, not a parse error.
-	 */
-	failureSignature?: string;
-	/**
-	 * Consecutive `lsc_run_tests` failures whose failureSignature matched the immediately
-	 * preceding one — i.e. no forward movement, not merely "failed again" (C-1). Reset to 1 when
-	 * the signature changes (a different failure IS progress, even though the suite still fails),
-	 * cleared on a pass. Same backward-compat rationale as failureSignature above.
-	 */
-	consecutiveFailures?: number;
-	/**
-	 * Set once the user has explicitly declined to continue (a hash-violation
-	 * restore decline, a run_test.sh-unrunnable escalation decline — C23; Phase
-	 * 3.5/5 wire the actual confirmation prompt). The session_stop backstop must
-	 * not force continuation once this is true, or it would fight a user who
-	 * already asked to stop.
+	 * Set once the user has explicitly declined to continue, or explicitly aborted via
+	 * `lsc_craft_abort`. Durable stop record: it invalidates any pending destructive approval
+	 * (invalidatePendingApproval, called wherever this is set) and is watchdog.ts's own explicit-stop
+	 * check (`craft?.aborted`, a full no-op trigger there) — craft no longer has a session_stop
+	 * backstop of its own to suppress (C1).
 	 */
 	aborted: boolean;
 	/**
@@ -86,7 +67,7 @@ export interface CraftState {
 	 * recorded (B-1, cycle-freshness) — informational cross-check alongside `runLogAtCycleStart`
 	 * below. Optional so older persisted state files (written before this field existed) still
 	 * parse: `validateAuditFreshness` (verdict.ts) treats an absent value as "cycle tracking
-	 * unavailable," never a violation, same backward-compat rationale as `failureSignature` above.
+	 * unavailable," never a violation — same backward-compat rationale as every other optional field.
 	 */
 	auditCycle?: number;
 	/**
@@ -221,8 +202,7 @@ export interface SetActiveCraftOptions {
  *    recordAuditValidated / recordReleaseApprovalAt — auditCycle, runLogAtCycleStart,
  *    auditValidated, releaseApproval, a CLOSED openRelease) survive a re-registration whose caller
  *    does not itself provide them — activating a craft must never erase audit/approval evidence it
- *    did not produce. Loop-owned fields (testsPassed, lastFailureSummary, consecutiveFailures, …)
- *    are NOT preserved: the caller's state wins there — a re-init genuinely resets the loop.
+ *    did not produce.
  * 2. DURABILITY POLICY: see SetActiveCraftOptions — strict persist-or-throw for the lsc_craft_init
  *    transaction, best-effort (default) everywhere else.
  *
@@ -281,43 +261,7 @@ export function loadActiveCraft(projectRoot: string, feature: string): CraftStat
 	return restored;
 }
 
-/** Consecutive same-signature test failures at which the loop is considered stuck, not merely retrying (C-1). */
-export const NO_PROGRESS_THRESHOLD = 3;
-
-/** What recordTestResult reports back, so callers (the lsc_run_tests tool wrapper) know whether to escalate. */
-export interface RecordTestResultOutcome {
-	consecutiveFailures: number;
-	noProgress: boolean;
-}
-
-/**
- * Update pass/fail status after an lsc_run_tests call, and own the no-progress counting/reset
- * semantics (C-1): on failure, compare `failureSignature` against the one already recorded — an
- * unchanged signature increments `consecutiveFailures` (same failure, no forward movement); a
- * changed one resets it to 1 (a different failure IS progress, even though the suite still
- * fails). A pass clears both fields. `failureSignature` is caller-supplied rather than computed
- * here — computeFailureSignature lives in run-tests.ts, which already imports this module, so
- * computing it here too would create a cycle; the caller (run-tests.ts) derives it once from the
- * same failure-summary text as `failureSummary` and threads it through. No-op when there is no
- * active craft.
- */
-export function recordTestResult(passed: boolean, failureSummary?: string, failureSignature?: string): RecordTestResultOutcome {
-	if (!activeCraft) return { consecutiveFailures: 0, noProgress: false };
-
-	if (passed) {
-		activeCraft = persist({ ...activeCraft, testsPassed: true, lastFailureSummary: undefined, failureSignature: undefined, consecutiveFailures: undefined });
-		return { consecutiveFailures: 0, noProgress: false };
-	}
-
-	const progressed = failureSignature === undefined || failureSignature !== activeCraft.failureSignature;
-	const consecutiveFailures = progressed ? 1 : (activeCraft.consecutiveFailures ?? 0) + 1;
-	const noProgress = consecutiveFailures >= NO_PROGRESS_THRESHOLD;
-
-	activeCraft = persist({ ...activeCraft, testsPassed: false, lastFailureSummary: failureSummary, failureSignature, consecutiveFailures });
-	return { consecutiveFailures, noProgress };
-}
-
-/** Mark the active craft as user-aborted. Stops the session_stop backstop (see CraftState.aborted). */
+/** Mark the active craft as user-aborted (see CraftState.aborted). */
 export function markCraftAborted(): void {
 	if (!activeCraft) return;
 	const next = { ...activeCraft, aborted: true };

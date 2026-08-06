@@ -431,10 +431,7 @@ describe("release-gate production wiring (actual registered tool execution)", ()
 		const ctx = makeCtx(root);
 
 		// A legacy state file: no releaseApproval / openRelease keys, and no active craft in memory.
-		writeFileSync(
-			craftStatePath(root, feature),
-			JSON.stringify({ feature, projectRoot: root, testsPassed: false, aborted: false }),
-		);
+		writeFileSync(craftStatePath(root, feature), JSON.stringify({ feature, projectRoot: root, aborted: false }));
 
 		const run = await callTool(tools, "lsc_run_tests", { feature_dir: feature }, ctx);
 		expect(run.isError, textOf(run)).toBeFalsy();

@@ -43,10 +43,8 @@ export function buildCompactionDirective(craft: CraftState | undefined): string 
 		"contract or progress — re-read the actual files below before acting on anything past this point. " +
 		"1) read skill://craft (skills/craft/SKILL.md) again in full; its loop contract is not safely summarizable. " +
 		`2) Read ${specPath} and ${planPath} — the real acceptance criteria and plan for this feature, not a paraphrase of them. ` +
-		"3) Re-confirm the invariants this loop enforces: the protected test/ tree (run_test.sh and test assets) must never " +
-		"be modified while this craft is active (C20); a pass is only real when backed by an actual lsc_verify_hash/" +
-		"lsc_run_tests result, never assumed from a summary; the loop's only two valid exits are run_test.sh passing or an " +
-		"explicit lsc_craft_abort — never a silent stop; and any question that needs a human goes through lsc_ask/" +
+		"3) Re-confirm the invariants this craft enforces: the protected test/ tree (run_test.sh and test assets) must never " +
+		"be modified while this craft is active (C20); and any question that needs a human goes through lsc_ask/" +
 		"lsc_select/lsc_confirm, never a bare prose question."
 	);
 }
