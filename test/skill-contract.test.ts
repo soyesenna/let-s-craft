@@ -361,9 +361,19 @@ describe("craft — 단발 실행 + 병렬 레인 계약", () => {
 		"[Craft Incomplete]",
 		"branch -D",
 		"merge-base",
+		"disjoint",
 	] as const;
 
-	const ABSENT_LITERALS = ["[Hash Violation]", "[Canon Amendment]", "[No Progress]", "[Run Unavailable]", "lsc_verify_hash", "lsc_restore_tests", "lsc_run_tests"] as const;
+	const ABSENT_LITERALS = [
+		"[Hash Violation]",
+		"[Canon Amendment]",
+		"[No Progress]",
+		"[Run Unavailable]",
+		"lsc_verify_hash",
+		"lsc_restore_tests",
+		"lsc_run_tests",
+		"repeat until",
+	] as const;
 
 	for (const literal of PRESENT_LITERALS) {
 		it(`states "${literal}"`, () => {
