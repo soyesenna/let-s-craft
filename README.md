@@ -4,7 +4,7 @@
 
 이 플러그인은 `pre-craft` / `craft` / `post-craft`라는 3단계 철학으로 구성됩니다.
 
-1. **pre-craft** — 아무 코드도 작성하지 않고, `trace(조사) → interview(요구사항 인터뷰) → plan(계획 합의) → test(테스트 작성)` 순서로 진행해 `.lsc/crafts/{feature}/` 아래에 `trace.md`, `spec.md`, `plan.md`, `test/`를 만듭니다. 이 산출물이 다음 단계의 유일한 입력입니다.
+1. **pre-craft** — 아무 코드도 작성하지 않고, `trace(조사) → interview(요구사항 인터뷰) → plan(계획 합의)` 순서로 진행해 `.lsc/crafts/{feature}/` 아래에 `trace.md`, `spec.md`, `plan.md`를 만듭니다. 이 산출물이 다음 단계의 유일한 입력입니다.
 2. **craft** — pre-craft 산출물(또는 post-craft가 남긴 감사 결과)을 입력받아, `실행 서브에이전트 실행 → 테스트 자산 해시 검증 → run_test.sh 실행 → 반복` 루프를 `run_test.sh`가 통과할 때까지(또는 사용자가 명시적으로 중단할 때까지) 강제로 반복합니다. 이 단계에서는 테스트 코드 자체를 절대 수정하지 않습니다.
 3. **post-craft** — craft가 만든 구현물을 `trace.md`/`spec.md`/`plan.md`에 대해 적대적으로 재검증하고, 4단계 판정(`APPROVE` / `APPROVE-WITH-COMMENT` / `APPROVE-WITH-CHANGE` / `REJECT`)을 `.lsc/crafts/{feature}/audit/audit-N.md`에 기록합니다. 판정에 따라 craft를 다시 호출하거나(수정 필요), 사용자의 명시적 승인 후 병합·워크트리 정리(land)까지 진행합니다.
 
@@ -63,7 +63,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 
 `skills/{pre-craft,craft,post-craft}/SKILL.md`로 정의됩니다.
 
-- **pre-craft**: `trace → interview → plan → test` 4단계를 고정 순서로 실행해 `.lsc/crafts/{feature}/`에 `trace.md`/`spec.md`/`plan.md`/`test/`를 생성합니다. 구현 코드는 절대 작성하지 않고, 마지막에 `craft` 실행을 안내하는 핸드오프 메시지로 끝납니다.
+- **pre-craft**: `trace → interview → plan` 3단계를 고정 순서로 실행해 `.lsc/crafts/{feature}/`에 `trace.md`/`spec.md`/`plan.md`를 생성합니다. 구현 코드는 절대 작성하지 않고, 마지막에 `craft` 실행을 안내하는 핸드오프 메시지로 끝납니다.
 - **craft**: pre-craft 산출물(또는 post-craft의 `audit/audit-N.md`)을 입력으로, `lsc-executor` 스폰 → 해시 검증 → 테스트 실행을 `run_test.sh`가 통과할 때까지 반복하는 루프를 직접 소유합니다. `.lsc/crafts/{feature}/test/`는 절대 직접 수정하지 않습니다.
 - **post-craft**: 완성된 구현을 `trace.md`/`spec.md`/`plan.md`에 대해 적대적으로 검증하고 4단계 판정을 `.lsc/crafts/{feature}/audit/audit-N.md`에 기록한 뒤, 판정에 따라 craft 재호출을 제안하거나(사용자 승인 시) 병합·워크트리 정리를 진행합니다.
 
@@ -157,8 +157,7 @@ presets:
 2. **Stage 1 trace**: 코드 경로/설정·환경/측정-아티팩트 3개 레인(이상)으로 `lsc-tracer`를 병렬 스폰하고, 외부 리서치(라이브 모드에서는 `lsc-librarian` 등을 동원한 실제 웹 조사, 픽스처 모드에서는 스텁)를 함께 진행해 `trace.md`를 씁니다. 완료 시 워크트리의 feature 브랜치에 커밋합니다.
 3. **Stage 2 interview**: `trace.md`의 3개 항목(초기 아이디어 보강/코드베이스 컨텍스트/첫 질문)을 주입받아 시작하고, 모호도(ambiguity) 점수가 5% 미만으로 떨어질 때까지 한 라운드에 한 질문씩 진행해 `spec.md`를 씁니다. 완료 시 커밋합니다.
 4. **Stage 3 plan**: `lsc-planner`가 작성한 `plan.md`를 `lsc-architect`와 `lsc-critic`이 **두 리뷰 레인**으로 함께 스폰되어 동일한 `sha256` 앵커 기준으로 검토하는 합의 루프(최대 10회 반복)를 거쳐 ADR을 포함해 확정합니다. critic은 기본적으로 **plan-only 레인**으로 architect 리뷰 없이 독립 판정하며, **리뷰 join gate**가 두 레인의 보고·앵커·반복 회차 일치를 확인한 뒤에만 합의 판정이 내려집니다. architect가 `AWC-EQUIVALENT`를 반환할 때만 **순차 fallback**으로 critic이 Change Spec을 한 번 더 감사합니다. 완료 시 커밋합니다.
-5. **Stage 4 test**: `unit`/`integration`/`full-e2e`/`regression` 4종 이상의 `lsc-test-engineer`를 스폰해 `.lsc/crafts/{feature}/test/`(단일 진입점 `run_test.sh`)를 만들고, plan과 동일한(매 반복 architect+critic 상시 실행) 합의 루프를 거칩니다. 완료 시 커밋합니다.
-6. 이렇게 각 단계(research/trace/spec/plan/test) 완료마다 feature 브랜치에 개별 커밋이 쌓입니다(총 5개 이상). 마지막으로 `craft` 실행을 안내하는 핸드오프 질문으로 끝나며, 사용자가 승인하면 같은 세션에서 곧바로 `craft` 스킬로 이어서 진행합니다(자동 체이닝 — `LSC_FIXTURE` 픽스처 모드에서는 이중 실행 방지를 위해 비활성화되고, 거부 시 `craft`를 수동으로 다시 호출하라는 안내만 표시됩니다).
+5. 이렇게 각 단계(research/trace/spec/plan) 완료마다 feature 브랜치에 개별 커밋이 쌓입니다(총 4개 이상). 마지막으로 `craft` 실행을 안내하는 핸드오프 질문으로 끝나며, 사용자가 승인하면 같은 세션에서 곧바로 `craft` 스킬로 이어서 진행합니다(자동 체이닝 — `LSC_FIXTURE` 픽스처 모드에서는 이중 실행 방지를 위해 비활성화되고, 거부 시 `craft`를 수동으로 다시 호출하라는 안내만 표시됩니다).
 
 ### 2. craft 실행
 
@@ -302,7 +301,7 @@ pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`ls
 `lets-craft`는 임의의 git 저장소를 대상으로 동작하도록 설계되어 있으므로, 이 저장소 자신에도 동일하게 적용할 수 있습니다. v1 완성 이후 이어지는 기능 개발은, 다른 프로젝트에 `lets-craft`를 적용할 때와 동일한 절차를 이 저장소 자체에 대해 수행하는 것으로 진행합니다.
 
 1. 이 저장소에서 `omp plugin link .`로 플러그인이 로드된 상태를 유지합니다(설치 절차와 동일).
-2. 다음 기능/개선 아이디어를 `"pre-craft"`로 시작해, `.lsc/crafts/{feature}/`에 `trace.md → spec.md → plan.md → test/`를 생성합니다. 이때 조사·계획·테스트 작성 대상은 `lets-craft` 자기 자신의 `src/`, `agents/`, `skills/`, `rules/`입니다.
+2. 다음 기능/개선 아이디어를 `"pre-craft"`로 시작해, `.lsc/crafts/{feature}/`에 `trace.md → spec.md → plan.md`를 생성합니다. 이때 조사·계획 대상은 `lets-craft` 자기 자신의 `src/`, `agents/`, `skills/`, `rules/`입니다.
 3. `"craft"`로 구현 루프를 돌려 `run_test.sh`(즉 `npm test`, 그리고 필요시 `npm run e2e`)가 통과할 때까지 반복합니다. 이 과정에서도 해시 불변성·중단 방지 백스톱 등 강제 규칙이 동일하게 적용됩니다.
 4. `"post-craft"`로 적대적 감사를 거쳐 판정을 기록하고, 승인 시 병합합니다.
 

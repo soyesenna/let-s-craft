@@ -12,10 +12,7 @@ import { describe, expect, it } from "vitest";
 // quoted from a confirmed decision, never invented:
 //   - spec.md  AC6 / AC11, components A / B / F / G, Constraints 2/3/6/11/12
 //   - plan.md  Step 3b (post-craft land co-evolution), Step 4 (scaffold
-//              co-evolution), Step 5a (F research contract, claims-tool.ts),
-//              Step 5b (G §0 exception + Stage 4 D-3 probe)
-//   - plan/appendix-test-plan.md §계층 3 (skill-contract) — the verbatim spec
-//              Stage 4 test authors execute.
+//              co-evolution), Step 5a (F research contract, claims-tool.ts)
 //
 // SECTION-SCOPED, NOT GLOBAL-TOKEN SMOKE (critic C5 CRITICAL + architect rec 5).
 // Iteration 1 asserted `.toContain` over the *whole* preCraft/postCraft strings,
@@ -28,17 +25,11 @@ import { describe, expect, it } from "vitest";
 // satisfy a section-scoped positive, and a re-quoted bash block cannot evade a
 // section-scoped semantic-token negative.
 //
-// IMMUTABLE-RED AVOIDANCE (positive framing preferred). Two appendix clauses read
+// IMMUTABLE-RED AVOIDANCE (positive framing preferred). One appendix clause reads
 // as `.not.toContain` but the *correct* revised prose contains the very phrase, in
 // a negating clause — so a literal `.not.toContain` would be RED forever, un-
 // satisfiable by any correct craft revision (fatal once these assets are hash-
 // protected):
-//   - spec G §0: `"일회성 임시 변이 + 즉시 원자 복구"(구현 작성 허용이 아님)` — the
-//     correct §0 CONTAINS "구현 작성 허용". Verified instead by the positive
-//     exception phrases + §0's own "never writes implementation code" invariant.
-//   - spec G Stage 4: 문구는 `"테스트 스위트 변별력 검증"이 아니라 "변이 seam 한정
-//     tautology 스모크"` — the correct probe CONTAINS "변별력 검증". Verified
-//     instead by the positive `tautology` / mutation-seam framing.
 //   - post-craft §7.4 keeps the base checkout instruction (SKILL.md:228) and the
 //     manual escape hatch keeps a manual `git merge` on purpose (spec Constraint
 //     3), so `git checkout`/`switch` and a BARE `git merge` are NOT asserted absent;
@@ -95,10 +86,8 @@ function sectionOf(doc: string, anchor: RegExp): string {
 }
 
 // pre-craft sections (heading numbers are stable pipeline-stage names).
-const preRole = sectionOf(preCraft, /^#{2,3}\s.*Role in the pipeline/);
 const preStage0 = sectionOf(preCraft, /^#{2,3}\s+\d+\.\s+Stage 0\b/);
 const preTrace = sectionOf(preCraft, /^#{2,3}\s+\d+\.\s+Stage 1\b/); // research lives here
-const preStage4 = sectionOf(preCraft, /^#{2,3}\s+\d+\.\s+Stage 4\b/);
 
 // post-craft land sections.
 const postLand = sectionOf(postCraft, /^##\s+7\.\s+Land\b/); // §7.1–§7.4 + any escape subsection
@@ -145,52 +134,6 @@ describe("deferred-pool AC11[F] — pre-craft research canon/projection contract
 		// sit in ONE clause (≤160 chars), not merely both-somewhere-in-the-section (critic B4.2).
 		expect(preTrace).toMatch(/(?:각 wave|wave별|each wave)[\s\S]{0,160}lsc_claims|lsc_claims[\s\S]{0,160}(?:각 wave|wave별|each wave)/i);
 		expect(preTrace).toMatch(/비적대.{0,3}부주의|non-adversarial.{0,20}careless/i);
-	});
-});
-
-describe("deferred-pool AC6[G] — §0 D-3 exception + Stage 4 mutation-proof probe (section-scoped)", () => {
-	// spec.md G (line 51), Constraint 12 (line 66), plan.md Step 5b, appendix
-	// §계층3 lines 52-53.
-	it("§0 carves the one-time-mutation / immediate-atomic-revert exception into the never-writes-implementation invariant", () => {
-		// The "(구현 작성 허용이 아님)" contrast is embodied by §0's own invariant, NOT
-		// a `.not.toContain("구현 작성 허용")` (which the correct §0 prose contains).
-		expect(preRole).toContain("never writes implementation code");
-		expect(preRole).toContain("일회성 임시 변이");
-		expect(preRole).toContain("즉시 원자 복구");
-	});
-
-	it("Stage 4 carries a D-3 probe scoped to a baseline-green differential (brownfield-only, single mutation)", () => {
-		expect(preStage4).toContain("D-3");
-		expect(preStage4).toContain("baseline-green");
-		expect(preStage4).toContain("failure delta");
-		expect(preStage4).toMatch(/brownfield|브라운필드/i);
-		expect(preStage4).toMatch(/단일 변이|single[ -]?mutation/i);
-	});
-
-	it("frames the probe as a mutation-seam tautology smoke, not a full-suite discriminator, avoiding oracle-mirroring subsets", () => {
-		// The "테스트 스위트 변별력 검증이 아니라 …" contrast is embodied by the positive
-		// tautology framing, NOT a `.not.toContain("변별력 검증")` (which the correct
-		// N5-locked 문구 contains verbatim).
-		expect(preStage4).toContain("tautology");
-		expect(preStage4).toContain("oracle-mirroring");
-		expect(preStage4).toMatch(/변이 seam|mutation.{0,4}seam/i);
-		// plan.md:186 — the differential is a baseline-green failure delta; a FULL-RUN RED must never be
-		// the discriminator (full-run-RED-ban), so no oracle-mirroring subset is passed off as coverage.
-		expect(preStage4).toMatch(/(?:full[- ]?run|전체\s*실행|full[- ]?suite)[\s\S]{0,60}RED[\s\S]{0,40}(?:금지|판정하지\s*않|삼지\s*않|아니|not\b)/i);
-	});
-
-	it("requires an atomic revert verified by a clean git diff, with greenfield/inseparable recorded as D-3: N/A", () => {
-		expect(preStage4).toContain("git diff");
-		expect(preStage4).toContain("D-3: N/A");
-	});
-
-	it("confines the D-3 mutation to a non-committed, orchestrator-owned probe that stops + hands off on recovery failure (Constraint 12)", () => {
-		expect(preStage4).toMatch(/변이|mutation/i);
-		expect(preStage4).toMatch(/복구\s*실패|recovery[^.\n]{0,25}fail|revert[^.\n]{0,25}fail/i);
-		expect(preStage4).toMatch(/비승인|non-approval|handoff/i);
-		expect(preStage4).toMatch(/오케스트레이터|orchestrator/i);
-		// plan.md:187 — the D-3 mutation must NEVER be committed (mutation-commit-ban).
-		expect(preStage4).toMatch(/(?:변이|mutation)[\s\S]{0,60}(?:커밋 금지|커밋하지\s*않|커밋 않|never\s*commit|not\s*commit|no[- ]?commit)|(?:never\s*commit|커밋 금지|non-?committed)[\s\S]{0,60}(?:변이|mutation)/i);
 	});
 });
 
