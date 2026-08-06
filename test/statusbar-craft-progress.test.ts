@@ -8,14 +8,14 @@ import { rowText } from "../src/statusbar/render.js";
 import {
 	gatherCraftProgress,
 	latestAuditNumber,
-	latestRunNumber,
+	latestCheckNumber,
 	parseAuditVerdict,
 	renderCraftProgressRow,
 	type CraftProgressInput,
 } from "../src/statusbar/craft-progress.js";
 
 // ---------------------------------------------------------------------------
-// QW7: craft-progress statusbar card. Covers the pure derivations (run-N /
+// QW7: craft-progress statusbar card. Covers the pure derivations (check-N /
 // audit-N max, VERDICT-line parsing, one-line render) plus the thin gather's
 // active/inactive/lane-count behavior against real temp directories (mirrors
 // test/craft-state.test.ts's setActiveCraft/clearActiveCraft usage). The
@@ -23,17 +23,17 @@ import {
 // own gatherCraftProgress doc comment for why.
 // ---------------------------------------------------------------------------
 
-describe("latestRunNumber", () => {
+describe("latestCheckNumber", () => {
 	it("returns 0 for an empty directory listing", () => {
-		expect(latestRunNumber([])).toBe(0);
+		expect(latestCheckNumber([])).toBe(0);
 	});
 
-	it("returns the highest run-N.log index, ignoring unrelated filenames", () => {
-		expect(latestRunNumber(["run-1.log", "run-3.log", "run-2.log", "notes.txt", ".hash-manifest.json"])).toBe(3);
+	it("returns the highest check-N.log index, ignoring unrelated filenames", () => {
+		expect(latestCheckNumber(["check-1.log", "check-3.log", "check-2.log", "notes.txt", ".craft-state.json"])).toBe(3);
 	});
 
 	it("ignores irregular / non-numeric filenames that merely resemble the pattern", () => {
-		expect(latestRunNumber(["run-abc.log", "run-.log", "run-1x.log", "run-2.log"])).toBe(2);
+		expect(latestCheckNumber(["check-abc.log", "check-.log", "check-1x.log", "check-2.log"])).toBe(2);
 	});
 });
 

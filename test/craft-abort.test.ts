@@ -49,7 +49,7 @@ describe("performCraftAbort", () => {
 		const releaseApproval = { nonce: "n", tag: "[Land]", question: "q", response: "yes", issuedAt: "2026-01-01T00:00:00.000Z" };
 		setActiveCraft({ ...freshState(projectRoot), releaseApproval });
 
-		performCraftAbort("run_test.sh is unrunnable and the user declined to continue");
+		performCraftAbort("run_check.sh is unrunnable and the user declined to continue");
 
 		const craft = getActiveCraft();
 		expect(craft?.aborted).toBe(true);

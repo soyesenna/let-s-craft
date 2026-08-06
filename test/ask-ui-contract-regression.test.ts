@@ -27,7 +27,7 @@ import { registerCraftAbortTool } from "../src/craft/abort";
 import { registerCraftInitTool } from "../src/craft/init";
 import { registerLandTool } from "../src/craft/land";
 import { registerLatencyReportTool } from "../src/craft/latency-report";
-import { registerRunTestsTool } from "../src/craft/run-tests";
+import { registerRunCheckTool } from "../src/craft/run-check";
 import { registerAuditValidateTools } from "../src/craft/verdict";
 import { registerDoctorTool } from "../src/doctor";
 import { registerClaimsTool } from "../src/research/claims-tool";
@@ -602,7 +602,7 @@ function capturedTools(): Map<string, RegisteredToolDef> {
 	const pi = mockPi as unknown as never;
 	(registerAskTools as unknown as LooseRegister)(pi, inertBinder);
 	(registerCraftInitTool as unknown as LooseRegister)(pi);
-	(registerRunTestsTool as unknown as LooseRegister)(pi);
+	(registerRunCheckTool as unknown as LooseRegister)(pi);
 	(registerCraftAbortTool as unknown as LooseRegister)(pi);
 	(registerAuditValidateTools as unknown as LooseRegister)(pi);
 	(registerLandTool as unknown as LooseRegister)(pi);
@@ -619,7 +619,7 @@ function capturedTools(): Map<string, RegisteredToolDef> {
 const ESSENTIAL_TOOLS = ["lsc_ask", "lsc_select", "lsc_confirm"];
 const DISCOVERABLE_TOOLS = [
 	"lsc_craft_init",
-	"lsc_run_tests",
+	"lsc_run_check",
 	"lsc_craft_abort",
 	"lsc_audit_begin",
 	"lsc_audit_validate",

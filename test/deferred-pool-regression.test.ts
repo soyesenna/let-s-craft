@@ -200,7 +200,7 @@ describe("§4 recordAuditCycleBegin clears a prior auditValidated, and the begin
 		writePersistedState(root, feature, {
 			...freshState(root, feature),
 			auditCycle: 0,
-			runLogAtCycleStart: 1,
+			checkLogAtCycleStart: 1,
 			auditValidated: { cycle: 0, verdict: "APPROVE", at: "2026-07-17T09:00:00.000Z" },
 		});
 
@@ -224,7 +224,7 @@ describe("§4 recordAuditCycleBegin clears a prior auditValidated, and the begin
 		const begun = recordAuditCycleBegin(root, feature, 1, 5);
 		// The begin mechanics are unchanged — the new cycle is recorded exactly.
 		expect(begun.auditCycle).toBe(1);
-		expect(begun.runLogAtCycleStart).toBe(5);
+		expect(begun.checkLogAtCycleStart).toBe(5);
 
 		// Re-validating the new cycle re-establishes a fresh marker (round-trip preserved).
 		const revalidated = recordAuditValidated(root, feature, 1, "APPROVE-WITH-COMMENT", "2026-07-17T11:00:00.000Z");

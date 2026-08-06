@@ -2,14 +2,14 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { craftAuditDir, worktreesRootDir } from "../artifacts/paths.js";
 import { getActiveCraft } from "../craft/state.js";
-import { type AuditVerdict, latestAuditNumber, latestRunNumber, parseAuditVerdict } from "../craft/verdict.js";
+import { type AuditVerdict, latestAuditNumber, latestCheckNumber, parseAuditVerdict } from "../craft/verdict.js";
 import type { RenderRow, RowSegment } from "./render.js";
 
 // Re-exported for backward compatibility: these three were originally implemented here (QW7) and
 // have since been promoted to craft/verdict.ts as the canonical location (B-1) — verdict.ts is
 // shared with lsc_audit_validate's cycle-freshness check, so a duplicate implementation here would
 // drift. Existing imports of these names from this module (incl. test/statusbar-craft-progress.test.ts) keep working unchanged.
-export { type AuditVerdict, latestAuditNumber, latestRunNumber, parseAuditVerdict };
+export { type AuditVerdict, latestAuditNumber, latestCheckNumber, parseAuditVerdict };
 
 // ---------------------------------------------------------------------------
 // QW7: a second statusbar source layered above the provider-usage table,

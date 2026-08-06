@@ -48,7 +48,7 @@ export function registerCraftInitTool(pi: ExtensionAPI): void {
 	});
 
 	// Explicit type arguments (not left to inference) avoid a TS2589 "excessively deep" type
-	// instantiation against this SDK's TSchema union — see run-tests.ts for the same note.
+	// instantiation against this SDK's TSchema union — see run-check.ts for the same note.
 	pi.registerTool<typeof parameters, CraftInitDetails>({
 		name: "lsc_craft_init",
 		loadMode: "discoverable",

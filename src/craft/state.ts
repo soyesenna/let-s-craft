@@ -1,12 +1,13 @@
 // Active craft: the single in-flight craft loop the extension enforces against.
 // Modeled as a main-session module-scope singleton (C1 — active craft is a
 // per-session concept) with restart-durable persistence to
-// `test/.craft-state.json` — a process restart mid craft-loop (crash, `omp`
+// `.craft-state.json` (moved out of test/ in C3 — that tree is no longer a
+// pipeline-owned canon) — a process restart mid craft-loop (crash, `omp`
 // upgrade) must not silently lose track of the active craft until the next
 // lsc_craft_init call.
 //
 // Every mutation goes through the functions below rather than the module-scope
-// variable directly, so persistence and every reader (run-tests.ts,
+// variable directly, so persistence and every reader (run-check.ts,
 // watchdog.ts, statusbar/craft-progress.ts) always see the same state.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -19,8 +20,13 @@ import { type ApprovalCraftIdentity, invalidatePendingApproval } from "./destruc
  * The current on-disk `.craft-state.json` schema generation (D, AC9). A hard pin: bumping it is a
  * deliberate, reviewed act — it changes what `decodeCraftState` rejects as "too new" and what every
  * durable write stamps. Cargo first-class-error precedent (N6).
+ *
+ * 1 → 2 (C3): the schema genuinely changed — `runLogAtCycleStart` was renamed to
+ * `checkLogAtCycleStart` and the file itself moved out of `test/`. No-migration policy holds (an
+ * old file is read tolerantly, per every optional field's own backward-compat rationale below),
+ * but a NEW build's stateVersion stamp must reflect that the shape actually moved.
  */
-export const CRAFT_STATE_VERSION = 1;
+export const CRAFT_STATE_VERSION = 2;
 
 export interface CraftState {
 	/**
@@ -34,8 +40,8 @@ export interface CraftState {
 	/**
 	 * Absolute path of the main project root — this field itself is always the main checkout,
 	 * never the worktree (§3.3). It is no longer the sole artifact/state root, though: the
-	 * persisted state file below and run_test.sh both resolve against `worktreeRoot ?? projectRoot`
-	 * (see `persist` below, and the matching root resolution in run-tests.ts).
+	 * persisted state file below and check/run_check.sh both resolve against `worktreeRoot ?? projectRoot`
+	 * (see `persist` below, and the matching root resolution in run-check.ts).
 	 */
 	projectRoot: string;
 	/** Absolute path of the worktree source root, when `--worktree` was used. */
@@ -56,20 +62,27 @@ export interface CraftState {
 	releaseApproval?: ReleaseApprovalEvidence;
 	/**
 	 * The post-craft audit cycle number (`audit-N.md`'s N) that `lsc_audit_begin` most recently
-	 * recorded (B-1, cycle-freshness) — informational cross-check alongside `runLogAtCycleStart`
+	 * recorded (B-1, cycle-freshness) — informational cross-check alongside `checkLogAtCycleStart`
 	 * below. Optional so older persisted state files (written before this field existed) still
 	 * parse: `validateAuditFreshness` (verdict.ts) treats an absent value as "cycle tracking
 	 * unavailable," never a violation — same backward-compat rationale as every other optional field.
 	 */
 	auditCycle?: number;
 	/**
-	 * The highest `test/logs/run-N.log` index that existed at THIS audit cycle's start (set
+	 * The highest `check/logs/check-N.log` index that existed at THIS audit cycle's start (set
 	 * alongside `auditCycle` by `lsc_audit_begin`) — the actual freshness threshold `verdict.ts`'s
 	 * `validateAuditFreshness` compares against: an APPROVE-family verdict for this cycle must be
-	 * backed by a passing run-N.log whose N is STRICTLY GREATER than this value, never a log
+	 * backed by a passing check-N.log whose N is STRICTLY GREATER than this value, never a log
 	 * carried over from before the cycle began.
+	 *
+	 * Renamed from `runLogAtCycleStart` (C3, CRAFT_STATE_VERSION 1 → 2). An older persisted file has
+	 * `runLogAtCycleStart` but not this field, so it reads as undefined here — `validateAuditFreshness`
+	 * tolerates that leniently, but `validateLandAuditEvidence`'s undefined-INTOLERANT land gate does
+	 * NOT, so the combination "`lsc_audit_validate` passes, `lsc_land` refuses with `no-audit-cycle`"
+	 * is the expected symptom of hitting an old file after this rename. Recovery: re-run
+	 * `lsc_audit_begin` to record the threshold under the current field name (m1).
 	 */
-	runLogAtCycleStart?: number;
+	checkLogAtCycleStart?: number;
 	/**
 	 * Durable machine-trace evidence that `lsc_audit_validate` (verdict.ts, B-1) succeeded for a
 	 * specific audit cycle — recorded so (a) a validated verdict leaves a durable trace independent
@@ -167,7 +180,7 @@ export interface SetActiveCraftOptions {
  * publish. Two properties matter (A/D4):
  *
  * 1. PRESERVATION: durable evidence fields owned by the exact-root writers (recordAuditCycleBegin /
- *    recordAuditValidated / recordReleaseApprovalAt — auditCycle, runLogAtCycleStart,
+ *    recordAuditValidated / recordReleaseApprovalAt — auditCycle, checkLogAtCycleStart,
  *    auditValidated, releaseApproval) survive a re-registration whose caller does not itself
  *    provide them — activating a craft must never erase audit/approval evidence it did not produce.
  * 2. DURABILITY POLICY: see SetActiveCraftOptions — strict persist-or-throw for the lsc_craft_init
@@ -184,7 +197,7 @@ export function setActiveCraft(state: CraftState, options: SetActiveCraftOptions
 		if (existing) {
 			const preserved: Partial<CraftState> = {};
 			if (state.auditCycle === undefined && existing.auditCycle !== undefined) preserved.auditCycle = existing.auditCycle;
-			if (state.runLogAtCycleStart === undefined && existing.runLogAtCycleStart !== undefined) preserved.runLogAtCycleStart = existing.runLogAtCycleStart;
+			if (state.checkLogAtCycleStart === undefined && existing.checkLogAtCycleStart !== undefined) preserved.checkLogAtCycleStart = existing.checkLogAtCycleStart;
 			if (state.auditValidated === undefined && existing.auditValidated !== undefined) preserved.auditValidated = existing.auditValidated;
 			if (state.releaseApproval === undefined && existing.releaseApproval !== undefined) preserved.releaseApproval = existing.releaseApproval;
 			if (Object.keys(preserved).length > 0) next = { ...state, ...preserved };
@@ -254,7 +267,7 @@ export function recordReleaseApproval(evidence: ReleaseApprovalEvidence): void {
  * — there is no craft to begin an audit cycle against. Keeps the in-memory singleton in sync when
  * it happens to already be this exact craft (harmless either way, never required for correctness).
  */
-export function recordAuditCycleBegin(root: string, feature: string, auditCycle: number, runLogAtCycleStart: number): CraftState {
+export function recordAuditCycleBegin(root: string, feature: string, auditCycle: number, checkLogAtCycleStart: number): CraftState {
 	const existing = readPersistedCraftState(root, feature);
 	if (!existing) {
 		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — run craft before starting a post-craft audit cycle.`);
@@ -262,7 +275,7 @@ export function recordAuditCycleBegin(root: string, feature: string, auditCycle:
 	// D4: a new cycle atomically clears any prior cycle's auditValidated marker (JSON.stringify drops
 	// the undefined), so a stale marker can never remain re-citable across cycles — land's cycle-aware
 	// evidence check (validateLandAuditEvidence) relies on this.
-	const next: CraftState = { ...existing, auditCycle, runLogAtCycleStart, auditValidated: undefined };
+	const next: CraftState = { ...existing, auditCycle, checkLogAtCycleStart, auditValidated: undefined };
 	const stamped = persist(next);
 	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
 		activeCraft = stamped;
@@ -360,7 +373,7 @@ export function craftStateCandidates(cwd: string, feature: string): CraftStateCa
 }
 
 /**
- * Inactive-lookup reader for run_tests' audit-evidence mode (CS4). Worktree-first simple
+ * Inactive-lookup reader for lsc_run_check's audit-evidence mode (CS4). Worktree-first simple
  * fallback: the worktree file wins when both candidates exist, otherwise the cwd file. Never
  * touches the active-craft singleton.
  */
