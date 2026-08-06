@@ -1,8 +1,14 @@
 // Auto-registers throwaway build products in the project `.gitignore` — idempotent, creates
 // the file if it doesn't exist yet. `.lsc/worktrees/`: worktree checkouts from `--worktree`
-// craft runs. `.lsc/crafts/` (trace/spec/plan/audit) is the opposite — a git-tracked
-// deliverable (C6). pre-craft (Phase 4) calls ensureWorktreesGitignored() before every
-// `git worktree add`.
+// craft runs. `.lsc/crafts/` (trace/spec/plan/audit/check/run_check.sh) is the opposite — a
+// git-tracked deliverable (C6) — EXCEPT its two restart-durable/transcript sidecars,
+// `.craft-state.json` and `check/logs/`, which must stay untracked (C3, plan.md's BL2): staging
+// them would let a feature's craft state or check transcripts land on the base branch through
+// craft's own "commit everything uncommitted" step. pre-craft (Phase 4) calls
+// ensureWorktreesGitignored() before every `git worktree add`; `lsc_craft_init` (F3) calls
+// ensureCheckLogsGitignored()/ensureCraftStateGitignored() so a consumer project that installs
+// this plugin — and so never inherits this repo's OWN hand-written `.gitignore` — still gets
+// these two entries registered automatically, the same way `.lsc/worktrees/` already is.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomicSync } from "../utils/atomic-write.js";
@@ -44,4 +50,27 @@ export function ensureWorktreesGitignored(cwd: string): GitignoreResult {
  */
 export function hasWorktreesGitignoreEntry(content: string): boolean {
 	return content.split(/\r?\n/).some(line => WORKTREES_ENTRY_RE.test(line.trim()));
+}
+
+// F3 — the two per-feature sidecars that must never be tracked (C3): `.craft-state.json` (restart-
+// durable active-craft state) and `check/logs/` (run_check.sh transcripts). Both use a bare `*` for
+// the feature segment (gitignore's own glob syntax, matching this repo's own hand-written entries),
+// so one line covers every feature under `.lsc/crafts/`.
+const CHECK_LOGS_ENTRY = ".lsc/crafts/*/check/logs/";
+const CHECK_LOGS_ENTRY_RE = /^\/?\.lsc\/crafts\/\*\/check\/logs\/?$/;
+const CRAFT_STATE_ENTRY = ".lsc/crafts/*/.craft-state.json";
+const CRAFT_STATE_ENTRY_RE = /^\/?\.lsc\/crafts\/\*\/\.craft-state\.json$/;
+
+// Note: these two doc comments deliberately avoid writing the literal glob inline — a bare `*/`
+// substring (feature-wildcard immediately followed by a path separator) would close the `/** */`
+// comment early and break the parser.
+
+/** Ensure the project `.gitignore` ignores every feature's check-transcript directory, `check/logs/` under `.lsc/crafts/{feature}/` (F3, `CHECK_LOGS_ENTRY` above for the exact glob). Called by `lsc_craft_init`. */
+export function ensureCheckLogsGitignored(cwd: string): GitignoreResult {
+	return ensureGitignored(cwd, CHECK_LOGS_ENTRY, CHECK_LOGS_ENTRY_RE);
+}
+
+/** Ensure the project `.gitignore` ignores every feature's restart-durable state file, `.craft-state.json` under `.lsc/crafts/{feature}/` (F3, `CRAFT_STATE_ENTRY` above for the exact glob). Called by `lsc_craft_init`. */
+export function ensureCraftStateGitignored(cwd: string): GitignoreResult {
+	return ensureGitignored(cwd, CRAFT_STATE_ENTRY, CRAFT_STATE_ENTRY_RE);
 }
