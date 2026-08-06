@@ -15,10 +15,10 @@
 // `User provided free answer:` block), and (ii) a structured `details` object for tests/UI/events.
 //
 // Split into pure `performX` core functions (channel + a minimal ui-method-subset in,
-// AgentToolResult out) plus a thin `registerAskTools(pi)` wrapper, matching the
-// hash-manifest.ts/run-tests.ts pattern: vitest on Node cannot import omp SDK values
-// (Phase 1.5 finding), so the testable logic never touches `pi.zod`/`pi.registerTool`
-// directly — only the wrapper does, and it is exercised by the real omp runtime instead.
+// AgentToolResult out) plus a thin `registerAskTools(pi)` wrapper, matching run-tests.ts's
+// own pattern: vitest on Node cannot import omp SDK values (Phase 1.5 finding), so the
+// testable logic never touches `pi.zod`/`pi.registerTool` directly — only the wrapper does,
+// and it is exercised by the real omp runtime instead.
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { canonicalizeFreeText, detectFixturePath, type FixtureAnswerBody, type FixtureAnswerSet, getFixtureAnswerSet } from "./fixtures.js";
 import { createPendingApproval, installPendingApproval, invalidatePendingApproval, invalidatePreparedOperation, matchDestructiveGateTag, peekPreparedOperation, sameCraftIdentity } from "./craft/destructive-approval.js";
@@ -618,8 +618,8 @@ export function registerAskTools(pi: ExtensionAPI, binder?: AskRuntimeBinder): v
 		channel.kind === "ui" && binder ? binder(ctx) : undefined;
 
 	// Explicit type arguments (`typeof parameters`, not left to inference) avoid TS2589
-	// "excessively deep" instantiation against this SDK's TSchema union — see
-	// hash-manifest.ts. Every registerTool call in this plugin follows this pattern.
+	// "excessively deep" instantiation against this SDK's TSchema union — see run-tests.ts's
+	// own module doc comment. Every registerTool call in this plugin follows this pattern.
 	const askParameters = z.object({
 		question: z.string().describe("The question to ask the user."),
 		prefill: z.string().optional().describe("Optional initial text pre-filled into the multi-line editor (the user can edit or clear it)."),
@@ -721,8 +721,8 @@ export function registerAskTools(pi: ExtensionAPI, binder?: AskRuntimeBinder): v
 			// (d) Prepared-operation issuance branch (A land) — takes PRIORITY over the craft-bound path,
 			//     but only for a prepared envelope captured at prompt time whose approvalQuestion EXACTLY
 			//     matches this confirm (confused-deputy barrier). It carries the operationScope a scoped
-			//     [Land] pending needs. A [Canon Amendment] confirm has no prepared entry, so it falls
-			//     through to the unchanged craft-bound path below.
+			//     [Land] pending needs. A [Land] confirm issued without a prior lsc_land prepare (no
+			//     prepared entry captured) falls through to the craft-bound path below instead.
 			if (tag && preparedAtPrompt && params.question === preparedAtPrompt.approvalQuestion) {
 				// Still the same prepared entry the confirm was raised for? A slot replaced mid-await (a
 				// cross-feature prepare) must neither issue for nor clear the now-current envelope.
@@ -748,7 +748,9 @@ export function registerAskTools(pi: ExtensionAPI, binder?: AskRuntimeBinder): v
 					invalidatePreparedOperation(tag);
 				}
 			} else if (tag && craftAtPrompt && confirmedYes && sameCraftIdentity(craftAtPrompt, getActiveCraft())) {
-				// Craft-bound issuance path (release-gate [Canon Amendment]) — UNCHANGED.
+				// Craft-bound issuance path — a same-identity active craft, no prepared envelope (R9:
+				// formerly also this branch's route for release-gate [Canon Amendment]; [Land] is now
+				// the sole tag that can ever reach it).
 				const record = createPendingApproval({
 					tag,
 					question: params.question,

@@ -39,8 +39,7 @@ import { type CraftState, clearActiveCraft, setActiveCraft } from "../src/craft/
 // Type-only import: erased by esbuild, so this file still COLLECTS before src/ask-ui/ exists.
 import type { AskUiResult, SideChatTurn } from "../src/ask-ui/types";
 
-const CANON_QUESTION =
-	"[Canon Amendment] Protected test canon needs an approved, intentional modification. Release hash protection and proceed? Proceed?";
+const LAND_QUESTION = "[Land] Merge this approved feature into the main branch? Proceed?";
 const UNTAGGED_QUESTION = "Routine confirmation without a destructive tag. Proceed?";
 
 const tempDirs: string[] = [];
@@ -205,12 +204,12 @@ describe("I7 baseline — approval issuance is a pure function of the final conf
 		const state = freshState(root);
 		setActiveCraft(state);
 
-		const result = await captureConfirmExecute()("tc", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: makeLegacyUI(["Yes"]) });
+		const result = await captureConfirmExecute()("tc", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: makeLegacyUI(["Yes"]) });
 
 		expect(result.isError).toBeFalsy();
 		expect(result.details?.confirmed).toBe(true);
 		const pending = peekPendingApproval();
-		expect(pending?.tag).toBe("[Canon Amendment]");
+		expect(pending?.tag).toBe("[Land]");
 		expect(pending?.response).toBe("yes");
 		expect(pending?.identity).toEqual(identityOf(state));
 		const persisted = JSON.parse(readFileSync(craftStatePath(root, "gated-feature"), "utf8"));
@@ -226,7 +225,7 @@ describe("I7 baseline — approval issuance is a pure function of the final conf
 			const root = tmpProject();
 			setActiveCraft(freshState(root));
 
-			const result = await captureConfirmExecute()("tc", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: ui() });
+			const result = await captureConfirmExecute()("tc", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: ui() });
 
 			expect(result.details?.confirmed).not.toBe(true);
 			expect(peekPendingApproval()).toBeUndefined();
@@ -241,10 +240,10 @@ describe("I7 baseline — approval issuance is a pure function of the final conf
 		setActiveCraft(freshState(root));
 		const execute = captureConfirmExecute();
 
-		await execute("tc1", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: makeLegacyUI(["Yes"]) });
+		await execute("tc1", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: makeLegacyUI(["Yes"]) });
 		expect(peekPendingApproval()).not.toBeUndefined();
 
-		await execute("tc2", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: makeLegacyUI(["No"]) });
+		await execute("tc2", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: makeLegacyUI(["No"]) });
 		expect(peekPendingApproval()).toBeUndefined();
 	});
 });
@@ -256,7 +255,7 @@ describe("I7 side-chat parity — a side-chat 'yes' never leaks into the approva
 		setActiveCraft(freshState(root));
 		const { binder, buildConfirmCalls, binderCalls } = makeConfirmFactory({ kind: "answer", confirmed: false, sideChat: [yesSideTurn()] });
 
-		const result = await captureConfirmExecute(binder)("tc", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
+		const result = await captureConfirmExecute(binder)("tc", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
 
 		expect(binderCalls()).toBe(1); // the UI channel bound ctx exactly once (v2 §1)
 		expect(buildConfirmCalls()).toBe(1); // performConfirm routed to the bound runtime
@@ -270,7 +269,7 @@ describe("I7 side-chat parity — a side-chat 'yes' never leaks into the approva
 		setActiveCraft(freshState(root));
 		const { binder, buildConfirmCalls, binderCalls } = makeConfirmFactory({ kind: "answer", confirmed: null, freeText: "let me think about it", sideChat: [yesSideTurn()] });
 
-		const result = await captureConfirmExecute(binder)("tc", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
+		const result = await captureConfirmExecute(binder)("tc", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
 
 		expect(binderCalls()).toBe(1);
 		expect(buildConfirmCalls()).toBe(1);
@@ -283,7 +282,7 @@ describe("I7 side-chat parity — a side-chat 'yes' never leaks into the approva
 		setActiveCraft(freshState(root));
 		const { binder, buildConfirmCalls, binderCalls } = makeConfirmFactory({ kind: "cancel" });
 
-		await captureConfirmExecute(binder)("tc", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
+		await captureConfirmExecute(binder)("tc", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
 
 		expect(binderCalls()).toBe(1);
 		expect(buildConfirmCalls()).toBe(1);
@@ -297,7 +296,7 @@ describe("I7 side-chat parity — a side-chat 'yes' never leaks into the approva
 			const turn = yesSideTurn({ status: failStatus, response: failStatus === "aborted" ? "yes, it me" : "", ...(failStatus === "error" ? { error: "provider 500", response: "" } : {}) });
 			const { binder, buildConfirmCalls, binderCalls } = makeConfirmFactory({ kind: "answer", confirmed: false, sideChat: [turn] });
 
-			const result = await captureConfirmExecute(binder)("tc", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
+			const result = await captureConfirmExecute(binder)("tc", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
 
 			expect(binderCalls()).toBe(1);
 			expect(buildConfirmCalls()).toBe(1);
@@ -313,14 +312,14 @@ describe("I7 side-chat parity — a side-chat 'yes' never leaks into the approva
 		setActiveCraft(state);
 		const { binder, buildConfirmCalls, binderCalls } = makeConfirmFactory({ kind: "answer", confirmed: true, sideChat: [yesSideTurn()] });
 
-		const result = await captureConfirmExecute(binder)("tc", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
+		const result = await captureConfirmExecute(binder)("tc", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
 
 		expect(binderCalls()).toBe(1);
 		expect(buildConfirmCalls()).toBe(1);
 		expect(result.details?.confirmed).toBe(true);
 		expect(result.details?.sideChat?.turns).toHaveLength(1);
 		const pending = peekPendingApproval();
-		expect(pending?.tag).toBe("[Canon Amendment]");
+		expect(pending?.tag).toBe("[Land]");
 		expect(pending?.response).toBe("yes");
 		expect(pending?.identity).toEqual(identityOf(state));
 		const persisted = JSON.parse(readFileSync(craftStatePath(root, "gated-feature"), "utf8"));
@@ -331,11 +330,11 @@ describe("I7 side-chat parity — a side-chat 'yes' never leaks into the approva
 		const root = tmpProject();
 		const state = freshState(root);
 		setActiveCraft(state);
-		installPendingApproval(createPendingApproval({ tag: "[Canon Amendment]", question: CANON_QUESTION, identity: identityOf(state) })); // a prior capability the fresh tagged prompt revokes on entry
+		installPendingApproval(createPendingApproval({ tag: "[Land]", question: LAND_QUESTION, identity: identityOf(state) })); // a prior capability the fresh tagged prompt revokes on entry
 		const first = peekPendingApproval()?.nonce;
 		const { binder, binderCalls } = makeConfirmFactory({ kind: "answer", confirmed: true, sideChat: [yesSideTurn()] });
 
-		await captureConfirmExecute(binder)("tc", { question: CANON_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
+		await captureConfirmExecute(binder)("tc", { question: LAND_QUESTION }, undefined, undefined, { hasUI: true, ui: makeCustomUI() });
 
 		expect(binderCalls()).toBe(1);
 		const pending = peekPendingApproval();

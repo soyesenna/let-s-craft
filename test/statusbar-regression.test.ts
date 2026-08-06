@@ -76,12 +76,11 @@ const INDEX_TS = join(STATUSBAR_DIR, "index.ts");
 const EXISTING_REGISTRARS = [
 	"registerFlag",
 	"registerPresetCommand",
-	"registerHashManifestTools",
+	"registerCraftInitTool",
 	"registerRunTestsTool",
-	"registerCraftEnforcement",
+	"registerCraftStateResets",
 	"registerAskTools",
 	"registerCraftAbortTool",
-	"registerCraftReleaseTool",
 ] as const;
 
 // ── Manifest / I/O structural invariants (M5) ───────────────────────────────

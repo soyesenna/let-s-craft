@@ -48,7 +48,7 @@ function healthy(): DoctorObservations {
 		agents: { files, readmeDocumentedCount: files.length },
 		modelsYaml: { valid: true, errors: [] },
 		worktrees: [{ path: "/srv/proj/.lsc/worktrees/live", head: "abc", branch: "refs/heads/lets-craft/live" }],
-		craftStates: [{ feature: "live", worktreeExists: true, stateParsed: true, unclosedOpenRelease: false }],
+		craftStates: [{ feature: "live", worktreeExists: true, stateParsed: true }],
 		gitignore: { worktreesIgnored: true },
 		skillLiterals: [{ skill: "skills/pre-craft/SKILL.md", literal: ".lsc/worktrees/{feature}", expected: ".lsc/worktrees/{feature}" }],
 	};
@@ -152,19 +152,14 @@ describe("evaluateFindings — orphan worktree (prunable)", () => {
 	});
 });
 
-describe("evaluateFindings — stale craft-state (3 conditions)", () => {
+describe("evaluateFindings — stale craft-state (2 conditions, R9: unclosed-open-release condition retired with openRelease)", () => {
 	it("WARNs when the state's worktree directory is missing", () => {
-		const obs = { ...healthy(), craftStates: [{ feature: "f", worktreeExists: false, stateParsed: true, unclosedOpenRelease: false }] };
+		const obs = { ...healthy(), craftStates: [{ feature: "f", worktreeExists: false, stateParsed: true }] };
 		expect(statusOf(obs, "stale-craft-state")).toBe("WARN");
 	});
 
 	it("WARNs when the state file cannot be parsed", () => {
-		const obs = { ...healthy(), craftStates: [{ feature: "f", worktreeExists: true, stateParsed: false, unclosedOpenRelease: false }] };
-		expect(statusOf(obs, "stale-craft-state")).toBe("WARN");
-	});
-
-	it("WARNs when an open-release window was left unclosed", () => {
-		const obs = { ...healthy(), craftStates: [{ feature: "f", worktreeExists: true, stateParsed: true, unclosedOpenRelease: true }] };
+		const obs = { ...healthy(), craftStates: [{ feature: "f", worktreeExists: true, stateParsed: false }] };
 		expect(statusOf(obs, "stale-craft-state")).toBe("WARN");
 	});
 });

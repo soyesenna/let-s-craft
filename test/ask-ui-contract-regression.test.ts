@@ -24,10 +24,9 @@ import {
 } from "../src/fixtures";
 import { registerScaffoldTool } from "../src/artifacts/scaffold";
 import { registerCraftAbortTool } from "../src/craft/abort";
-import { registerHashManifestTools } from "../src/craft/hash-manifest";
+import { registerCraftInitTool } from "../src/craft/init";
 import { registerLandTool } from "../src/craft/land";
 import { registerLatencyReportTool } from "../src/craft/latency-report";
-import { registerCraftReleaseTool } from "../src/craft/release";
 import { registerRunTestsTool } from "../src/craft/run-tests";
 import { registerAuditValidateTools } from "../src/craft/verdict";
 import { registerDoctorTool } from "../src/doctor";
@@ -602,10 +601,9 @@ function capturedTools(): Map<string, RegisteredToolDef> {
 	};
 	const pi = mockPi as unknown as never;
 	(registerAskTools as unknown as LooseRegister)(pi, inertBinder);
-	(registerHashManifestTools as unknown as LooseRegister)(pi);
+	(registerCraftInitTool as unknown as LooseRegister)(pi);
 	(registerRunTestsTool as unknown as LooseRegister)(pi);
 	(registerCraftAbortTool as unknown as LooseRegister)(pi);
-	(registerCraftReleaseTool as unknown as LooseRegister)(pi);
 	(registerAuditValidateTools as unknown as LooseRegister)(pi);
 	(registerLandTool as unknown as LooseRegister)(pi);
 	(registerScaffoldTool as unknown as LooseRegister)(pi);
@@ -616,15 +614,13 @@ function capturedTools(): Map<string, RegisteredToolDef> {
 	return tools;
 }
 
-// OQ1 표 (plan §OQ1): 3 interactive ask tools = essential, 13 batch tools = discoverable.
+// OQ1 표 (plan §OQ1): 3 interactive ask tools = essential, 10 batch tools = discoverable
+// (C2: lsc_verify_hash/lsc_restore_tests/lsc_craft_release retired with hash-manifest.ts/release.ts).
 const ESSENTIAL_TOOLS = ["lsc_ask", "lsc_select", "lsc_confirm"];
 const DISCOVERABLE_TOOLS = [
 	"lsc_craft_init",
-	"lsc_verify_hash",
-	"lsc_restore_tests",
 	"lsc_run_tests",
 	"lsc_craft_abort",
-	"lsc_craft_release",
 	"lsc_audit_begin",
 	"lsc_audit_validate",
 	"lsc_land",
@@ -635,8 +631,8 @@ const DISCOVERABLE_TOOLS = [
 ];
 
 describe("loadMode assignment (U5 · AC2.4) — EXPECTED RED before PR1 adds loadMode", () => {
-	// This preflight is GREEN today: all 16 tools already register; only their loadMode field is missing.
-	it("registers all 16 pipeline tools (3 essential + 13 discoverable)", () => {
+	// This preflight is GREEN today: all 13 tools already register; only their loadMode field is missing.
+	it("registers all 13 pipeline tools (3 essential + 10 discoverable)", () => {
 		const tools = capturedTools();
 		for (const name of [...ESSENTIAL_TOOLS, ...DISCOVERABLE_TOOLS]) {
 			expect(tools.has(name), `tool ${name} must be registered`).toBe(true);

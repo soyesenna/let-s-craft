@@ -104,7 +104,6 @@ export interface CraftStateObservation {
 	feature: string;
 	worktreeExists: boolean;
 	stateParsed: boolean;
-	unclosedOpenRelease: boolean;
 }
 
 export interface SkillLiteralObservation {
@@ -229,17 +228,17 @@ export function evaluateFindings(observations: DoctorObservations): Finding[] {
 			: { id: "orphan-worktree", status: "PASS", evidence: `no prunable worktree registrations (${observations.worktrees.length} listed)` },
 	);
 
-	// ⑥ stale-craft-state — 3 conditions: worktree missing / state unparseable / unclosed open-release.
-	const stale = observations.craftStates.filter(state => !state.worktreeExists || !state.stateParsed || state.unclosedOpenRelease);
+	// ⑥ stale-craft-state — 2 conditions: worktree missing / state unparseable.
+	const stale = observations.craftStates.filter(state => !state.worktreeExists || !state.stateParsed);
 	findings.push(
 		stale.length > 0
 			? {
 					id: "stale-craft-state",
 					status: "WARN",
 					evidence: stale
-						.map(state => `${state.feature}: ${[!state.worktreeExists ? "worktree missing" : "", !state.stateParsed ? "state unparseable" : "", state.unclosedOpenRelease ? "unclosed open-release" : ""].filter(Boolean).join(", ")}`)
+						.map(state => `${state.feature}: ${[!state.worktreeExists ? "worktree missing" : "", !state.stateParsed ? "state unparseable" : ""].filter(Boolean).join(", ")}`)
 						.join("; "),
-					remediation: "re-run lsc_craft_init (re-baseline) or clean up the listed features' craft state",
+					remediation: "re-run lsc_craft_init or clean up the listed features' craft state",
 				}
 			: { id: "stale-craft-state", status: "PASS", evidence: `no stale craft state (${observations.craftStates.length} state file(s) inspected)` },
 	);
@@ -374,18 +373,13 @@ function observeCraftStates(ports: DoctorPorts, roots: DoctorRoots): CraftStateO
 				: undefined;
 		if (!statePath) continue; // no persisted state → nothing to be stale
 		let stateParsed = false;
-		let unclosedOpenRelease = false;
 		try {
-			const parsed: unknown = JSON.parse(ports.readFile(statePath));
+			JSON.parse(ports.readFile(statePath));
 			stateParsed = true;
-			if (parsed && typeof parsed === "object" && "openRelease" in parsed) {
-				const open = parsed.openRelease;
-				unclosedOpenRelease = !!open && typeof open === "object" && (!("closedAt" in open) || open.closedAt === undefined);
-			}
 		} catch {
 			stateParsed = false;
 		}
-		observations.push({ feature, worktreeExists, stateParsed, unclosedOpenRelease });
+		observations.push({ feature, worktreeExists, stateParsed });
 	}
 	return observations;
 }

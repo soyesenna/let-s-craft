@@ -1,14 +1,13 @@
 // Active craft: the single in-flight craft loop the extension enforces against.
 // Modeled as a main-session module-scope singleton (C1 — active craft is a
-// per-session concept, and session_stop only fires for the main session,
-// agent-session.ts:5341) with restart-durable persistence to
+// per-session concept) with restart-durable persistence to
 // `test/.craft-state.json` — a process restart mid craft-loop (crash, `omp`
-// upgrade) must not silently disable the tool_call block until the next
+// upgrade) must not silently lose track of the active craft until the next
 // lsc_craft_init call.
 //
 // Every mutation goes through the functions below rather than the module-scope
-// variable directly, so persistence and every reader (enforcement.ts,
-// hash-manifest.ts, run-tests.ts) always see the same state.
+// variable directly, so persistence and every reader (run-tests.ts,
+// watchdog.ts, statusbar/craft-progress.ts) always see the same state.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -35,9 +34,8 @@ export interface CraftState {
 	/**
 	 * Absolute path of the main project root — this field itself is always the main checkout,
 	 * never the worktree (§3.3). It is no longer the sole artifact/state root, though: the
-	 * persisted state file below, the hash manifest, snapshots, and run_test.sh all resolve
-	 * against `worktreeRoot ?? projectRoot` (see `persist` below, and the matching root
-	 * resolution in hash-manifest.ts/run-tests.ts/enforcement.ts).
+	 * persisted state file below and run_test.sh both resolve against `worktreeRoot ?? projectRoot`
+	 * (see `persist` below, and the matching root resolution in run-tests.ts).
 	 */
 	projectRoot: string;
 	/** Absolute path of the worktree source root, when `--worktree` was used. */
@@ -56,12 +54,6 @@ export interface CraftState {
 	 * overwrites the previous evidence wholesale (F-14). Optional so older state files parse (C3).
 	 */
 	releaseApproval?: ReleaseApprovalEvidence;
-	/**
-	 * The last release's A-2 open-release state-machine record. `closedAt === undefined` means the
-	 * window is still open — lsc_verify_hash / lsc_run_tests refuse until lsc_craft_init closes it.
-	 * Single slot, succeeded across re-inits until the next release opens a new one (CS4/F-14).
-	 */
-	openRelease?: OpenReleaseEvidence;
 	/**
 	 * The post-craft audit cycle number (`audit-N.md`'s N) that `lsc_audit_begin` most recently
 	 * recorded (B-1, cycle-freshness) — informational cross-check alongside `runLogAtCycleStart`
@@ -113,34 +105,10 @@ export interface ReleaseApprovalEvidence {
 	question: string;
 	response: string;
 	issuedAt: string;
-	/** Stamped by recordOpenRelease when this approval is consumed into an open release. */
+	/** Reserved for a consumer to stamp when this approval is consumed. Nothing currently writes it (its sole writer, the openRelease state machine, was removed in C2) — kept optional so an old persisted file that has it still parses. */
 	consumedAt?: string;
-	/** The concrete operation scope this approval was bound to at issuance (A land — a LandOperation). Optional so release.ts's unscoped [Canon Amendment] path records none. */
+	/** The concrete operation scope this approval was bound to at issuance (A land — a LandOperation). Optional so an unscoped confirm (one that never binds a scope) records none. */
 	operationScope?: unknown;
-}
-
-/** A HashViolation[] summary grouped by kind — post-craft audit input. */
-export interface OpenReleaseDiffSummary {
-	added: string[];
-	removed: string[];
-	modified: string[];
-}
-
-/** A-2 open-release state machine: `closedAt` absent = open. */
-export interface OpenReleaseEvidence {
-	nonce: string;
-	tag: string;
-	question: string;
-	response: string;
-	/** lsc_craft_release's declared scope-of-modification parameter. */
-	reason: string;
-	/** sha256 of the .hash-manifest.json at release time — audit evidence only, not a race lock (omitted when absent). */
-	manifestFingerprint?: string;
-	openedAt: string;
-	/** Stamped by the lsc_craft_init re-baseline that closes the window. */
-	closedAt?: string;
-	/** old→new manifest diff recorded at close (omitted when no old manifest existed). */
-	rebaselineDiff?: OpenReleaseDiffSummary;
 }
 
 let activeCraft: CraftState | undefined;
@@ -200,9 +168,8 @@ export interface SetActiveCraftOptions {
  *
  * 1. PRESERVATION: durable evidence fields owned by the exact-root writers (recordAuditCycleBegin /
  *    recordAuditValidated / recordReleaseApprovalAt — auditCycle, runLogAtCycleStart,
- *    auditValidated, releaseApproval, a CLOSED openRelease) survive a re-registration whose caller
- *    does not itself provide them — activating a craft must never erase audit/approval evidence it
- *    did not produce.
+ *    auditValidated, releaseApproval) survive a re-registration whose caller does not itself
+ *    provide them — activating a craft must never erase audit/approval evidence it did not produce.
  * 2. DURABILITY POLICY: see SetActiveCraftOptions — strict persist-or-throw for the lsc_craft_init
  *    transaction, best-effort (default) everywhere else.
  *
@@ -210,23 +177,16 @@ export interface SetActiveCraftOptions {
  * from the prior context, so a stale "just approved" nonce cannot survive a re-init the user skipped.
  */
 export function setActiveCraft(state: CraftState, options: SetActiveCraftOptions = {}): void {
-	if (hasOpenRelease(state)) {
-		throw new Error(
-			`lets-craft: refusing to activate craft "${state.feature}" while it carries an unclosed open-release — ` +
-				"only lsc_craft_init (which closes it via closeOpenRelease) may re-publish an active craft (active-open invariant).",
-		);
-	}
 	invalidatePendingApproval();
 	let next = state;
 	try {
 		const existing = decodeCraftState(craftStatePath(state.worktreeRoot ?? state.projectRoot, state.feature));
-		if (existing && !hasOpenRelease(existing)) {
+		if (existing) {
 			const preserved: Partial<CraftState> = {};
 			if (state.auditCycle === undefined && existing.auditCycle !== undefined) preserved.auditCycle = existing.auditCycle;
 			if (state.runLogAtCycleStart === undefined && existing.runLogAtCycleStart !== undefined) preserved.runLogAtCycleStart = existing.runLogAtCycleStart;
 			if (state.auditValidated === undefined && existing.auditValidated !== undefined) preserved.auditValidated = existing.auditValidated;
 			if (state.releaseApproval === undefined && existing.releaseApproval !== undefined) preserved.releaseApproval = existing.releaseApproval;
-			if (state.openRelease === undefined && existing.openRelease !== undefined) preserved.openRelease = existing.openRelease;
 			if (Object.keys(preserved).length > 0) next = { ...state, ...preserved };
 		}
 	} catch {
@@ -247,16 +207,13 @@ export function setActiveCraft(state: CraftState, options: SetActiveCraftOptions
  * testing and for callers that want to inspect a feature's last-recorded state without becoming
  * its active-craft owner — not the mechanism that recovers active-craft after a process restart
  * mid-craft-loop. That recovery is skill-driven: `craft/SKILL.md`'s own "Resume note" has the
- * skill re-call `lsc_craft_init` itself, which recomputes the manifest and re-registers the
- * singleton from scratch. Nothing in this extension calls this function automatically.
+ * skill re-call `lsc_craft_init` itself, which re-registers the singleton from scratch. Nothing
+ * in this extension calls this function automatically.
  */
 export function loadActiveCraft(projectRoot: string, feature: string): CraftState | undefined {
 	const restored = decodeCraftState(craftStatePath(projectRoot, feature));
 	if (!restored) return undefined;
 	invalidatePendingApproval();
-	// An unclosed open-release is surfaced for inspection but NOT promoted to the active singleton:
-	// run_tests' `!craft` guard must stay fail-closed over an open-release window (active-open invariant).
-	if (hasOpenRelease(restored)) return restored;
 	activeCraft = restored;
 	return restored;
 }
@@ -287,30 +244,13 @@ export function recordReleaseApproval(evidence: ReleaseApprovalEvidence): void {
 }
 
 /**
- * Open a release window in the durable ledger and, if a release approval is on record, stamp its
- * consumedAt with this window's openedAt (single ledger — CS3, one persist). A persist throw
- * propagates with in-memory unchanged and the approval left unstamped. No-op without active craft.
- */
-export function recordOpenRelease(evidence: OpenReleaseEvidence): void {
-	if (!activeCraft) return;
-	const approval = activeCraft.releaseApproval;
-	const next: CraftState = {
-		...activeCraft,
-		openRelease: evidence,
-		releaseApproval: approval ? { ...approval, consumedAt: evidence.openedAt } : approval,
-	};
-	activeCraft = persist(next);
-}
-
-/**
  * Record the post-craft audit cycle-start marker (B-1, cycle-freshness) directly against a
  * feature's persisted CraftState at an EXACT root (CS4-style, no candidate guessing) — NOT the
  * active-craft singleton. Post-craft deliberately never calls lsc_craft_init
- * (skills/post-craft/SKILL.md §1.5, to avoid re-arming the tool_call block against its own
- * bash-based test re-run, §3.4), so by the time an audit cycle begins there is typically no
+ * (skills/post-craft/SKILL.md §1.5), so by the time an audit cycle begins there is typically no
  * active craft in this session at all — gating this on `activeCraft` the way
- * recordReleaseApproval/recordOpenRelease do would make it a silent no-op for post-craft's actual
- * call pattern. Fails closed (throws) when no persisted state exists yet at `root` for `feature`
+ * recordReleaseApproval does would make it a silent no-op for post-craft's actual call pattern.
+ * Fails closed (throws) when no persisted state exists yet at `root` for `feature`
  * — there is no craft to begin an audit cycle against. Keeps the in-memory singleton in sync when
  * it happens to already be this exact craft (harmless either way, never required for correctness).
  */
@@ -420,39 +360,15 @@ export function craftStateCandidates(cwd: string, feature: string): CraftStateCa
 }
 
 /**
- * Inactive-lookup reader for the verify / run_tests open-release gates (CS4). Named policy:
- * OPEN-RELEASE ARBITRATION — an unclosed-open candidate WINS (a stale closed record cannot mask an
- * open one), else the worktree file is the tie-break. This is a DIFFERENT authority than
- * resolveAuditRoot's directory-existence policy (verdict.ts): findPersistedCraftState is the decode
- * OWNER (it must read the open-release marker to arbitrate), so it collects candidates through the
- * shared descriptor seam but calls decodeCraftState itself. Never touches the active-craft singleton.
+ * Inactive-lookup reader for run_tests' audit-evidence mode (CS4). Worktree-first simple
+ * fallback: the worktree file wins when both candidates exist, otherwise the cwd file. Never
+ * touches the active-craft singleton.
  */
 export function findPersistedCraftState(cwd: string, feature: string): CraftState | undefined {
 	const [cwdCandidate, worktreeCandidate] = craftStateCandidates(cwd, feature);
 	const cwdState = cwdCandidate.stateFileExists ? decodeCraftState(cwdCandidate.statePath) : undefined;
 	const worktreeState = worktreeCandidate.stateFileExists ? decodeCraftState(worktreeCandidate.statePath) : undefined;
-	if (hasOpenRelease(cwdState)) return cwdState;
-	if (hasOpenRelease(worktreeState)) return worktreeState;
 	return worktreeState ?? cwdState;
-}
-
-/** True iff `state` carries an UNCLOSED open-release (pure — type guard narrows `openRelease` for callers). */
-export function hasOpenRelease(state: CraftState | undefined): state is CraftState & { openRelease: OpenReleaseEvidence } {
-	return !!state?.openRelease && state.openRelease.closedAt === undefined;
-}
-
-/**
- * The shared re-baseline guidance verify and run_tests both emit while an open-release blocks them
- * (pure). Names lsc_craft_init (AC4) and is byte-identical across both surfaces (the flow test
- * asserts textOf(verify) === textOf(run_tests)).
- */
-export function openReleaseGuidance(feature: string, evidence: OpenReleaseEvidence): string {
-	return (
-		`lets-craft: craft "${feature}" has an OPEN release window — its protected test/ canon was released for an ` +
-		`approved modification (${evidence.reason}) and has not been re-baselined yet. Call lsc_craft_init to re-baseline ` +
-		"the hash manifest (this closes the open release and records the old→new diff for the post-craft audit); " +
-		"lsc_verify_hash and lsc_run_tests stay refused until then."
-	);
 }
 
 /**
