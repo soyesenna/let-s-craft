@@ -233,21 +233,20 @@ craft는 plan.md의 Detailed TODOs를 읽고, 서로소 작업 단위 2개 이�
 npm test   # vitest run
 ```
 
-`test/**/*.test.ts`를 대상으로 하며, `node_modules/`, `dist/`, 벤더 트리, `fixtures/**`는 명시적으로 제외됩니다(`vitest.config.ts`). E2E 테스트 파일(`e2e-full-cycle.test.ts`, `enforcement-rules.test.ts`, `e2e-preset-default.test.ts`)은 `LSC_E2E` 환경변수가 없으면 `describe.skipIf`로 전부 스킵되므로, `npm test`는 실제 omp 프로세스나 실제 토큰을 전혀 건드리지 않습니다.
+`test/**/*.test.ts`를 대상으로 하며, `node_modules/`, `dist/`, 벤더 트리, `fixtures/**`는 명시적으로 제외됩니다(`vitest.config.ts`). E2E 테스트 파일(`e2e-full-cycle.test.ts`, `e2e-preset-default.test.ts`)은 `LSC_E2E` 환경변수가 없으면 `describe.skipIf`로 전부 스킵되므로, `npm test`는 실제 omp 프로세스나 실제 토큰을 전혀 건드리지 않습니다.
 
 ### `npm run e2e` — 실제 omp 통합 E2E
 
 ```bash
 npm run e2e
 # 내부적으로: npm run build && LSC_E2E=1 vitest run \
-#   test/e2e-full-cycle.test.ts test/enforcement-rules.test.ts test/e2e-preset-default.test.ts \
+#   test/e2e-full-cycle.test.ts test/e2e-preset-default.test.ts \
 #   --no-file-parallelism --testTimeout=10200000 --hookTimeout=120000
 ```
 
-**경고 — 실제 토큰을 소비합니다.** 이 3개 파일은 실제 `omp` 바이너리를 헤드리스(`-p --mode=json`)로 자식 프로세스로 구동하며, 실제로 인증된 provider에 대해 실제 API 호출을 발생시킵니다. `--no-file-parallelism`으로 파일 간 동시 실행을 막고, 테스트당 최대 170분(`testTimeout=10200000`ms), 훅당 최대 2분(`hookTimeout=120000`ms)의 타임아웃이 걸려 있습니다. 각 테스트 파일 내부에도 단계별(pre-craft/craft/post-craft) 독립적인 kill 타임아웃이 별도로 걸려 있어, 멈추거나 반복하는 모델이 하네시 전체를 무한정 붙잡지 못하도록 되어 있습니다.
+**경고 — 실제 토큰을 소비합니다.** 이 2개 파일은 실제 `omp` 바이너리를 헤드리스(`-p --mode=json`)로 자식 프로세스로 구동하며, 실제로 인증된 provider에 대해 실제 API 호출을 발생시킵니다. `--no-file-parallelism`으로 파일 간 동시 실행을 막고, 테스트당 최대 170분(`testTimeout=10200000`ms), 훅당 최대 2분(`hookTimeout=120000`ms)의 타임아웃이 걸려 있습니다. 각 테스트 파일 내부에도 단계별(pre-craft/craft/post-craft) 독립적인 kill 타임아웃이 별도로 걸려 있어, 멈추거나 반복하는 모델이 하네시 전체를 무한정 붙잡지 못하도록 되어 있습니다.
 
-- `test/e2e-full-cycle.test.ts`: 항상-워크트리 토폴로지로 pre-craft → craft → post-craft → land 전체를 픽스처 샘플에 대해 구동합니다. 워크트리 내부에 `trace.md → spec.md → plan.md → test/`가 순서대로 생성되고, base 브랜치가 그 동안 무오염임(산출물 커밋 0건)을 확인하고, pre-craft 단계별 커밋이 5개 이상 쌓였는지, craft 이후 `run_test.sh`가 통과하는지, `audit-0.md`에 판정 라인이 기록되는지, 마지막으로 승인 가능한 판정에서 워크트리가 base 브랜치로 병합·제거되고 산출물·구현·감사가 base에 나타나는지까지 단계별로 확인합니다. 트레이스 추론의 질이나 spec 모호도 계산의 정확성 같은 의미론적 판단은 검증하지 않고, 산출물 존재/작성 순서/커밋 위상/문자 그대로의 감사 판정 라인만 확인합니다.
-- `test/enforcement-rules.test.ts`: `tool_call` 차단, 해시 위반 에스컬레이션, `session_stop` 백스톱, `read` 도구를 통한 보호 트리 조회가 차단되지 않는지, `lsc_craft_release` 승인 경로(해제 → 캐논 수정 → 재init → 재검증 통과)까지 다섯 가지 강제 메커니즘의 실제 omp 연동(순수 판정 함수 자체는 별도 유닛 테스트로 이미 커버됨)을 검증합니다.
+- `test/e2e-full-cycle.test.ts`: 항상-워크트리 토폴로지로 pre-craft → craft(단발 실행) → post-craft(테스트 저작+감사) → land 전체를 픽스처 샘플에 대해 구동합니다. 워크트리 내부에 `trace.md → spec.md → plan.md`가 순서대로 생성되고 `test/` 트리는 만들어지지 않는지, base 브랜치가 그 동안 무오염임(산출물 커밋 0건)을 확인하고, pre-craft 단계별 커밋이 3개 이상 쌓였는지, post-craft가 저작한 회귀 테스트가 diff에 존재하고 `check/run_check.sh`와 통과하는 `check/logs/check-N.log`가 있는지, `audit-0.md`에 판정 라인이 기록되는지, 마지막으로 승인 가능한 판정에서 워크트리가 base 브랜치로 병합·제거되고 산출물·구현·체크·감사가 base에 나타나는지까지 단계별로 확인합니다. 트레이스 추론의 질이나 spec 모호도 계산의 정확성 같은 의미론적 판단은 검증하지 않고, 산출물 존재/작성 순서/커밋 위상/문자 그대로의 감사 판정 라인만 확인합니다.
 - `test/e2e-preset-default.test.ts`: 구조형 프리셋의 세션 default 모델이 세션 시작 시 실제로 적용되는지, 명시적 에이전트 오버라이드가 default보다 우선하는지를 실제 omp 세션으로 검증합니다.
 
 ### `LSC_FIXTURE` 응답 주입 모드
