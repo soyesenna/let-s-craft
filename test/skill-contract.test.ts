@@ -60,10 +60,6 @@ describe("U3 — lightweight lsc-critic-recheck agent", () => {
 		expect(preCraft).toContain("agents/lsc-critic-recheck.md");
 	});
 
-	it("pre-craft SKILL's Stage 4 (test/ loop) inherits the same lsc-critic-recheck AWC path", () => {
-		expect(preCraft).toContain("same AWC path with its single `lsc-critic-recheck` diff-only re-check");
-	});
-
 	it("the unresponsive-spawn non-approval rule covers lsc-critic-recheck's RECHECK: line, not just VERDICT:", () => {
 		expect(preCraft).toContain("`lsc-critic-recheck` spawn ends in death, error, timeout, or a `**RECHECK:**` line that fails to parse");
 	});
@@ -135,6 +131,31 @@ describe("U4 — plan core/appendix split (C9 revision)", () => {
 		for (const content of [craft, postCraft]) {
 			expect(content).toContain("plan/plan-{N}.md");
 			expect(content).toContain("plan/appendix-{topic}.md");
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// C5 — pre-craft's Stage 4 (test authoring + D-3 mutation-proof probe) is
+// removed: implementation-before-tests is the goal this refactor exists to
+// undo (spec Goal, trace H3), and Stage 4 previously consumed a measured
+// 32-36% of pre-craft's own wall-clock. pre-craft now runs exactly three
+// sub-stages (trace → interview → plan) and its consensus loop ("The loop")
+// runs once, over plan.md, never a second time over a test/ tree.
+// ---------------------------------------------------------------------------
+describe("pre-craft — 3단계 계약", () => {
+	it("declares the 3-stage trace → interview → plan pipeline, not a 4-stage one", () => {
+		expect(preCraft).toContain("trace → interview → plan");
+		expect(preCraft).toContain("three sub-stages");
+	});
+
+	it("The loop runs once in pre-craft, over plan.md — never a second time over test/", () => {
+		expect(preCraft).toContain("This loop runs once in pre-craft");
+	});
+
+	it("carries none of the removed Stage 4 / test-authoring / D-3 vocabulary", () => {
+		for (const literal of ["Stage 4", "D-3", "appendix-test-plan", "expanded test plan", "lsc-test-engineer"]) {
+			expect(preCraft, `preCraft must no longer contain "${literal}"`).not.toContain(literal);
 		}
 	});
 });
