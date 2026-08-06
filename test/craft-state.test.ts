@@ -70,18 +70,18 @@ describe("recordAuditCycleBegin (B-1, cycle-freshness marker)", () => {
 		expect(() => recordAuditCycleBegin(projectRoot, "never-crafted", 0, 0)).toThrow();
 	});
 
-	it("persists auditCycle/runLogAtCycleStart onto the existing persisted state without touching other fields", () => {
+	it("persists auditCycle/checkLogAtCycleStart onto the existing persisted state without touching other fields", () => {
 		const projectRoot = tmpProject();
 		setActiveCraft({ ...freshState(projectRoot), aborted: true });
 
 		const next = recordAuditCycleBegin(projectRoot, "my-feature", 1, 3);
 
 		expect(next.auditCycle).toBe(1);
-		expect(next.runLogAtCycleStart).toBe(3);
+		expect(next.checkLogAtCycleStart).toBe(3);
 		expect(next.aborted).toBe(true); // untouched
 		const persisted = JSON.parse(readFileSync(craftStatePath(projectRoot, "my-feature"), "utf8"));
 		expect(persisted.auditCycle).toBe(1);
-		expect(persisted.runLogAtCycleStart).toBe(3);
+		expect(persisted.checkLogAtCycleStart).toBe(3);
 	});
 
 	it("works even when there is no active craft in this session (post-craft never calls lsc_craft_init)", () => {
@@ -103,7 +103,7 @@ describe("recordAuditCycleBegin (B-1, cycle-freshness marker)", () => {
 		recordAuditCycleBegin(projectRoot, "my-feature", 2, 5);
 
 		expect(getActiveCraft()?.auditCycle).toBe(2);
-		expect(getActiveCraft()?.runLogAtCycleStart).toBe(5);
+		expect(getActiveCraft()?.checkLogAtCycleStart).toBe(5);
 	});
 });
 

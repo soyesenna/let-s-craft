@@ -10,7 +10,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { craftAuditDir, craftAuditPath, craftTestLogsDir, resolveFeatureName } from "../artifacts/paths.js";
+import { craftAuditDir, craftAuditPath, craftCheckLogsDir, resolveFeatureName } from "../artifacts/paths.js";
 import { type CraftState, craftStateCandidates, readPersistedCraftState, recordAuditCycleBegin, recordAuditValidated } from "./state.js";
 
 // ---------------------------------------------------------------------------
@@ -72,13 +72,13 @@ export function parseCriticVerdict(markdown: string): CriticVerdict | undefined 
 }
 
 // ---------------------------------------------------------------------------
-// run-N.log / audit-N.md filename numbering (promoted from statusbar/craft-progress.ts, QW7)
+// check-N.log / audit-N.md filename numbering (promoted from statusbar/craft-progress.ts, QW7)
 // ---------------------------------------------------------------------------
 
-/** Highest `run-N.log` index among the given filenames; 0 when none match (no test run yet). */
-export function latestRunNumber(fileNames: readonly string[]): number {
+/** Highest `check-N.log` index among the given filenames; 0 when none match (no check run yet). */
+export function latestCheckNumber(fileNames: readonly string[]): number {
 	const numbers = fileNames
-		.map(name => /^run-(\d+)\.log$/.exec(name)?.[1])
+		.map(name => /^check-(\d+)\.log$/.exec(name)?.[1])
 		.filter((n): n is string => n !== undefined)
 		.map(Number);
 	return numbers.length === 0 ? 0 : Math.max(...numbers);
@@ -97,15 +97,15 @@ export function latestAuditNumber(fileNames: readonly string[]): number | undefi
 // Cycle-freshness (this feature's core value)
 // ---------------------------------------------------------------------------
 
-/** True iff a run-N.log transcript (src/craft/run-tests.ts's `runFeatureTests` format) records a clean pass — a bare `--- exit 0 ---` line, never the `(killed)` variant. */
-export function isPassingRunLog(logContent: string): boolean {
+/** True iff a check-N.log transcript (src/craft/run-check.ts's `runFeatureCheck` format) records a clean pass — a bare `--- exit 0 ---` line, never the `(killed)` variant. */
+export function isPassingCheckLog(logContent: string): boolean {
 	return /^--- exit 0 ---$/m.test(logContent);
 }
 
-export interface RunLogSummary {
-	/** The run-N.log's numeric suffix. */
+export interface CheckLogSummary {
+	/** The check-N.log's numeric suffix. */
 	number: number;
-	/** Whether that specific run recorded a clean pass (isPassingRunLog). */
+	/** Whether that specific run recorded a clean pass (isPassingCheckLog). */
 	passed: boolean;
 }
 
@@ -118,8 +118,8 @@ export interface AuditFreshnessCheck {
 /**
  * Cycle-freshness check (B-1's core value): an APPROVE-family verdict (APPROVE /
  * APPROVE-WITH-COMMENT — the only two verdicts land-eligible per skills/post-craft/SKILL.md
- * §7.1) must be backed by a passing run-N.log whose number is STRICTLY GREATER than
- * `runLogAtCycleStart` (the freshness threshold `lsc_audit_begin` records at cycle start) —
+ * §7.1) must be backed by a passing check-N.log whose number is STRICTLY GREATER than
+ * `checkLogAtCycleStart` (the freshness threshold `lsc_audit_begin` records at cycle start) —
  * never a stale green log left over from before this audit cycle began. This closes exactly the
  * gap an AWC fix-verification cycle could otherwise exploit: citing an old passing run instead of
  * actually re-running tests against the fix.
@@ -129,7 +129,7 @@ export interface AuditFreshnessCheck {
  * first, §7.1), so a freshness violation on either would never actually gate a merge; checking
  * them would just be noise.
  *
- * `runLogAtCycleStart === undefined` (a craft state persisted before this field existed, or a
+ * `checkLogAtCycleStart === undefined` (a craft state persisted before this field existed, or a
  * craft whose post-craft cycle never called `lsc_audit_begin`) is ALSO treated tolerantly — `{
  * ok: true }` — rather than fail-closed: there is no recorded threshold to check freshness
  * against, and refusing every such craft's audit outright would be a hard regression for state
@@ -139,10 +139,10 @@ export interface AuditFreshnessCheck {
  * apply; without it, `lsc_audit_validate` still enforces exact-literal verdict parsing, just not
  * cycle-freshness.
  */
-export function validateAuditFreshness(verdict: AuditVerdict, runLogAtCycleStart: number | undefined, logs: readonly RunLogSummary[]): AuditFreshnessCheck {
+export function validateAuditFreshness(verdict: AuditVerdict, checkLogAtCycleStart: number | undefined, logs: readonly CheckLogSummary[]): AuditFreshnessCheck {
 	if (!APPROVE_FAMILY_VERDICTS.includes(verdict)) return { ok: true };
-	if (runLogAtCycleStart === undefined) return { ok: true };
-	const fresh = logs.filter(log => log.number > runLogAtCycleStart);
+	if (checkLogAtCycleStart === undefined) return { ok: true };
+	const fresh = logs.filter(log => log.number > checkLogAtCycleStart);
 	if (fresh.length === 0) return { ok: false, reason: "stale-log" };
 	return fresh.some(log => log.passed) ? { ok: true } : { ok: false, reason: "no-passing-log" };
 }
@@ -161,8 +161,8 @@ export function validateAuditFreshness(verdict: AuditVerdict, runLogAtCycleStart
  * authority than findPersistedCraftState's open-release arbitration, which is the decode owner).
  * Both consumers share only the descriptor seam (craftStateCandidates); the selection policy is
  * each consumer's own. post-craft never holds an active craft (SKILL.md §1.5, it deliberately never
- * calls lsc_craft_init), so unlike lsc_verify_hash/lsc_run_tests there is no active-craft
- * worktreeRoot available to consult here.
+ * calls lsc_craft_init), so unlike lsc_run_check there is no active-craft worktreeRoot available
+ * to consult here.
  */
 function resolveAuditRoot(cwd: string, feature: string): string {
 	const [, worktreeCandidate] = craftStateCandidates(cwd, feature);
@@ -170,20 +170,20 @@ function resolveAuditRoot(cwd: string, feature: string): string {
 }
 
 /**
- * List every run-N.log's pass/fail summary under `logsDir`. Each individual read is wrapped in
+ * List every check-N.log's pass/fail summary under `logsDir`. Each individual read is wrapped in
  * try/catch (review LOW-1, TOCTOU): a file `readdirSync` just listed can still vanish (or become
  * unreadable) before this loop gets to it — that log is simply dropped from the result (unusable
  * evidence) rather than crashing the whole `lsc_audit_validate` call with an uncaught exception.
  */
-function readRunLogSummaries(logsDir: string): RunLogSummary[] {
+function readCheckLogSummaries(logsDir: string): CheckLogSummary[] {
 	if (!existsSync(logsDir)) return [];
-	const summaries: RunLogSummary[] = [];
+	const summaries: CheckLogSummary[] = [];
 	for (const name of readdirSync(logsDir)) {
-		const numberStr = /^run-(\d+)\.log$/.exec(name)?.[1];
+		const numberStr = /^check-(\d+)\.log$/.exec(name)?.[1];
 		if (numberStr === undefined) continue;
 		try {
 			const content = readFileSync(join(logsDir, name), "utf8");
-			summaries.push({ number: Number(numberStr), passed: isPassingRunLog(content) });
+			summaries.push({ number: Number(numberStr), passed: isPassingCheckLog(content) });
 		} catch {
 			// TOCTOU: dropped, not fatal — see doc comment above.
 		}
@@ -200,7 +200,7 @@ function readRunLogSummaries(logsDir: string): RunLogSummary[] {
 // authority — land re-derives the verdict + freshness from disk on every call.
 // ---------------------------------------------------------------------------
 
-export type LandAuditReason = "no-audit-evidence" | "no-audit-cycle" | "cycle-mismatch" | "verdict-not-approve" | "stale-run-log" | "evidence-tamper";
+export type LandAuditReason = "no-audit-evidence" | "no-audit-cycle" | "cycle-mismatch" | "verdict-not-approve" | "stale-check-log" | "evidence-tamper";
 
 export type LandAuditResult = { ok: true; verdict: AuditVerdict; auditNumber: number } | { ok: false; reason: LandAuditReason };
 
@@ -209,10 +209,10 @@ const LAND_ACCEPTED_VERDICTS: readonly AuditVerdict[] = ["APPROVE", "APPROVE-WIT
 
 /**
  * Strict, read-only land-time audit re-validation (spec AC1). Reads the latest audit-N.md verdict +
- * the persisted cycle markers + the run-N.log freshness under `root`, and folds any failure to a
+ * the persisted cycle markers + the check-N.log freshness under `root`, and folds any failure to a
  * distinct reason code (checked in order): no-audit-evidence → no-audit-cycle (missing/non-integer
  * cycle OR threshold) → cycle-mismatch (auditCycle !== latest audit N) → verdict-not-approve (REJECT
- * or unparseable) → stale-run-log (no passing run-N.log with N strictly > threshold) → evidence-tamper
+ * or unparseable) → stale-check-log (no passing check-N.log with N strictly > threshold) → evidence-tamper
  * (auditValidated marker for the current cycle with a DIFFERENT verdict, or for a FUTURE cycle). An
  * absent or previous-cycle marker is a WARN (pass) — never a block.
  */
@@ -221,9 +221,9 @@ export function validateLandAuditEvidence(root: string, feature: string, state: 
 	const auditNumber = latestAuditNumber(existsSync(auditDir) ? readdirSync(auditDir) : []);
 	if (auditNumber === undefined) return { ok: false, reason: "no-audit-evidence" };
 
-	if (!Number.isInteger(state.auditCycle) || !Number.isInteger(state.runLogAtCycleStart)) return { ok: false, reason: "no-audit-cycle" };
+	if (!Number.isInteger(state.auditCycle) || !Number.isInteger(state.checkLogAtCycleStart)) return { ok: false, reason: "no-audit-cycle" };
 	const auditCycle = state.auditCycle as number;
-	const threshold = state.runLogAtCycleStart as number;
+	const threshold = state.checkLogAtCycleStart as number;
 	if (auditCycle !== auditNumber) return { ok: false, reason: "cycle-mismatch" };
 
 	let verdict: AuditVerdict | undefined;
@@ -234,8 +234,8 @@ export function validateLandAuditEvidence(root: string, feature: string, state: 
 	}
 	if (verdict === undefined || !LAND_ACCEPTED_VERDICTS.includes(verdict)) return { ok: false, reason: "verdict-not-approve" };
 
-	const fresh = readRunLogSummaries(craftTestLogsDir(root, feature)).filter(log => log.number > threshold);
-	if (fresh.length === 0 || !fresh.some(log => log.passed)) return { ok: false, reason: "stale-run-log" };
+	const fresh = readCheckLogSummaries(craftCheckLogsDir(root, feature)).filter(log => log.number > threshold);
+	if (fresh.length === 0 || !fresh.some(log => log.passed)) return { ok: false, reason: "stale-check-log" };
 
 	const marker = state.auditValidated;
 	if (marker && (marker.cycle > auditCycle || (marker.cycle === auditCycle && marker.verdict !== verdict))) {
@@ -248,7 +248,7 @@ export function validateLandAuditEvidence(root: string, feature: string, state: 
 export interface AuditBeginDetails {
 	feature: string;
 	auditCycle: number;
-	runLogAtCycleStart: number;
+	checkLogAtCycleStart: number;
 }
 
 /**
@@ -259,35 +259,43 @@ export interface AuditBeginDetails {
 export function performAuditBegin(feature: string, cwd: string): AgentToolResult<AuditBeginDetails> {
 	const root = resolveAuditRoot(cwd, feature);
 
-	const logsDir = craftTestLogsDir(root, feature);
-	const runLogAtCycleStart = latestRunNumber(existsSync(logsDir) ? readdirSync(logsDir) : []);
+	const logsDir = craftCheckLogsDir(root, feature);
+	const checkLogAtCycleStart = latestCheckNumber(existsSync(logsDir) ? readdirSync(logsDir) : []);
 
 	const auditDir = craftAuditDir(root, feature);
 	const auditCycle = (latestAuditNumber(existsSync(auditDir) ? readdirSync(auditDir) : []) ?? -1) + 1;
 
 	try {
-		recordAuditCycleBegin(root, feature, auditCycle, runLogAtCycleStart);
+		recordAuditCycleBegin(root, feature, auditCycle, checkLogAtCycleStart);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { isError: true, content: [{ type: "text", text: message }] };
 	}
+
+	// S3: a minimal, informational restoration of the retired contract's no-progress observation
+	// at the cycle level — never gates the result (판정 무영향), just flags a feature that keeps
+	// re-entering audit (REJECT/AWC accumulating).
+	const cycleWarn =
+		auditCycle >= 3
+			? `\n\n[WARN] 이 feature는 감사 사이클 ${auditCycle}회차다 (3회 이상) — 반복 REJECT/AWC가 누적되고 있는지 검토하라.`
+			: "";
 
 	return {
 		content: [
 			{
 				type: "text",
 				text:
-					`lets-craft: audit cycle ${auditCycle} begun for "${feature}" — freshness threshold set at run-${runLogAtCycleStart}.log ` +
-					`(a passing run-${runLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict).`,
+					`lets-craft: audit cycle ${auditCycle} begun for "${feature}" — freshness threshold set at check-${checkLogAtCycleStart}.log ` +
+					`(a passing check-${checkLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict).${cycleWarn}`,
 			},
 		],
-		details: { feature, auditCycle, runLogAtCycleStart },
+		details: { feature, auditCycle, checkLogAtCycleStart },
 	};
 }
 
 function registerAuditBeginTool(pi: ExtensionAPI): void {
 	const z = pi.zod;
-	// Explicit type arguments (not left to inference) avoid TS2589 — see hash-manifest.ts.
+	// Explicit type arguments (not left to inference) avoid TS2589 — see run-check.ts's module doc comment.
 	const parameters = z.object({
 		feature_dir: z.string().describe("Feature name or a path under .lsc/crafts/{feature}/, same as lsc_craft_init."),
 	});
@@ -297,10 +305,10 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 		loadMode: "discoverable",
 		label: "Craft: begin a post-craft audit cycle",
 		description:
-			"Record the current max test/logs/run-N.log index as this feature's new post-craft audit cycle's freshness " +
+			"Record the current max check/logs/check-N.log index as this feature's new post-craft audit cycle's freshness " +
 			"threshold (B-1, cycle-freshness). Call this once per audit cycle, right after determining the cycle number N " +
 			"(skills/post-craft/SKILL.md §2.2) — before rendering the audit-N.md verdict. lsc_audit_validate later refuses " +
-			"an APPROVE-family verdict unless a passing run-N.log exists with N strictly greater than this threshold, so a " +
+			"an APPROVE-family verdict unless a passing check-N.log exists with N strictly greater than this threshold, so a " +
 			"stale green log from before this cycle can never back a fresh approval.",
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<AuditBeginDetails>> {
@@ -366,7 +374,7 @@ export function performAuditValidate(feature: string, cwd: string): AgentToolRes
 
 	// auditCycle mismatch (review LOW-3, functionalizing the field): a recorded auditCycle that
 	// doesn't match the audit-N.md actually being validated means the persisted
-	// runLogAtCycleStart threshold was captured for a DIFFERENT cycle (most likely: a newer
+	// checkLogAtCycleStart threshold was captured for a DIFFERENT cycle (most likely: a newer
 	// audit-N.md was written without calling lsc_audit_begin again — a skipped §2.2 step).
 	// Trusting that threshold here would validate freshness against the wrong baseline, so this
 	// refuses (fail-closed) rather than silently degrading to "no threshold" — degrading would be
@@ -388,14 +396,14 @@ export function performAuditValidate(feature: string, cwd: string): AgentToolRes
 		};
 	}
 
-	const logs = readRunLogSummaries(craftTestLogsDir(root, feature));
-	const freshness = validateAuditFreshness(verdict, state?.runLogAtCycleStart, logs);
+	const logs = readCheckLogSummaries(craftCheckLogsDir(root, feature));
+	const freshness = validateAuditFreshness(verdict, state?.checkLogAtCycleStart, logs);
 	if (!freshness.ok) {
 		const reasonText =
 			freshness.reason === "stale-log"
-				? `no test/logs/run-N.log exists after this audit cycle's freshness threshold (run-${state?.runLogAtCycleStart}.log) — ` +
-					`the ${verdict} verdict cannot be backed by a fresh run. Call lsc_run_tests (or re-run run_test.sh) before re-validating.`
-				: `test/logs/ has run-N.log(s) after this audit cycle's threshold, but none record a passing run (exit 0) — the ` +
+				? `no check/logs/check-N.log exists after this audit cycle's freshness threshold (check-${state?.checkLogAtCycleStart}.log) — ` +
+					`the ${verdict} verdict cannot be backed by a fresh run. Call lsc_run_check (or re-run run_check.sh) before re-validating.`
+				: `check/logs/ has check-N.log(s) after this audit cycle's threshold, but none record a passing run (exit 0) — the ` +
 					`${verdict} verdict is not backed by fresh passing evidence.`;
 		return {
 			isError: true,
@@ -446,7 +454,7 @@ function registerAuditValidateTool(pi: ExtensionAPI): void {
 		description:
 			"Machine-verify the latest .lsc/crafts/{feature}/audit/audit-N.md before land: parse its **AUDIT VERDICT: " +
 			"...** line by exact literal match (B-1) and — for an APPROVE-family verdict (APPROVE / APPROVE-WITH-COMMENT) " +
-			"— confirm a passing test/logs/run-N.log exists from AFTER this audit cycle's lsc_audit_begin threshold " +
+			"— confirm a passing check/logs/check-N.log exists from AFTER this audit cycle's lsc_audit_begin threshold " +
 			"(cycle-freshness), so a stale green log can never back a fresh approval. Fails closed (isError) when the " +
 			"verdict line doesn't parse, the audit cycle marker doesn't match this audit doc, or the freshness check " +
 			"fails; skills/post-craft/SKILL.md's land gate must not proceed to git merge on an isError result. On success, " +

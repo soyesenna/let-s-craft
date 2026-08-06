@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as zod from "zod/v4";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { craftAuditDir, craftAuditPath, craftStatePath, craftTestDir, craftTestLogsDir, worktreePath } from "../src/artifacts/paths";
+import { craftAuditDir, craftAuditPath, craftCheckLogsDir, craftDir, craftStatePath, worktreePath } from "../src/artifacts/paths";
 import { OTHER_OPTION, type SelectUI, registerAskTools } from "../src/ask";
 import {
 	type ApprovalCraftIdentity,
@@ -55,7 +55,7 @@ const EXPECTED_REASON_CODES = [
 	"no-audit-cycle",
 	"cycle-mismatch",
 	"verdict-not-approve",
-	"stale-run-log",
+	"stale-check-log",
 	"evidence-tamper",
 	"evidence-mismatch",
 	"approval-required",
@@ -205,7 +205,7 @@ interface PersistedState {
 	aborted: boolean;
 	stateVersion?: number;
 	auditCycle?: number;
-	runLogAtCycleStart?: number;
+	checkLogAtCycleStart?: number;
 	auditValidated?: { cycle: number; verdict: string; at: string };
 }
 
@@ -223,14 +223,14 @@ interface FeatureOpts {
 	auditNumber?: number | null; // null => write no audit-N.md (no-audit-evidence)
 	auditVerdict?: string; // default APPROVE
 	auditCycle?: number | null; // null => omit auditCycle from state (no-audit-cycle)
-	runLogAtCycleStart?: number | null; // null => omit threshold from state
-	freshLogNumber?: number | null; // null => write no fresh passing run-N.log (stale-run-log)
+	checkLogAtCycleStart?: number | null; // null => omit threshold from state
+	freshLogNumber?: number | null; // null => write no fresh passing check-N.log (stale-check-log)
 	auditValidated?: { cycle: number; verdict: string } | null; // marker (default absent = WARN pass)
 	stateProjectRoot?: string; // override for evidence-mismatch anchor test
 	stateWorktreeRoot?: string;
 	stateFeature?: string;
 	makeDirtyWorktree?: boolean; // add an untracked file so `git worktree remove` (no --force) fails
-	freshLogPassing?: boolean; // false => the post-threshold run-N.log is a FAILING transcript (exit 1) → stale-run-log
+	freshLogPassing?: boolean; // false => the post-threshold check-N.log is a FAILING transcript (exit 1) → stale-check-log
 }
 
 interface LandFixture {
@@ -264,8 +264,8 @@ function setupLandableFeature(opts: FeatureOpts = {}): LandFixture {
 	}
 	const freshLog = opts.freshLogNumber === undefined ? 2 : opts.freshLogNumber;
 	if (freshLog !== null) {
-		mkdirSync(craftTestLogsDir(worktreeRoot, feature), { recursive: true });
-		writeFileSync(join(craftTestLogsDir(worktreeRoot, feature), `run-${freshLog}.log`), `$ bash run_test.sh\ncwd: ${worktreeRoot}\n${opts.freshLogPassing === false ? "FAIL\n--- exit 1 ---" : "ok\n--- exit 0 ---"}\n`);
+		mkdirSync(craftCheckLogsDir(worktreeRoot, feature), { recursive: true });
+		writeFileSync(join(craftCheckLogsDir(worktreeRoot, feature), `check-${freshLog}.log`), `$ bash run_check.sh\ncwd: ${worktreeRoot}\n${opts.freshLogPassing === false ? "FAIL\n--- exit 1 ---" : "ok\n--- exit 0 ---"}\n`);
 	}
 
 	// Persisted craft state (anchor evidence + audit cycle markers).
@@ -274,15 +274,15 @@ function setupLandableFeature(opts: FeatureOpts = {}): LandFixture {
 		projectRoot: opts.stateProjectRoot ?? projectRoot,
 		worktreeRoot: opts.stateWorktreeRoot ?? worktreeRoot,
 		aborted: false,
-		stateVersion: 1,
+		stateVersion: 2,
 	};
 	const auditCycle = opts.auditCycle === undefined ? 1 : opts.auditCycle;
 	if (auditCycle !== null) state.auditCycle = auditCycle;
-	const threshold = opts.runLogAtCycleStart === undefined ? 1 : opts.runLogAtCycleStart;
-	if (threshold !== null) state.runLogAtCycleStart = threshold;
+	const threshold = opts.checkLogAtCycleStart === undefined ? 1 : opts.checkLogAtCycleStart;
+	if (threshold !== null) state.checkLogAtCycleStart = threshold;
 	if (opts.auditValidated) state.auditValidated = { ...opts.auditValidated, at: new Date().toISOString() };
 
-	mkdirSync(craftTestDir(worktreeRoot, feature), { recursive: true });
+	mkdirSync(craftDir(worktreeRoot, feature), { recursive: true });
 	const stateFilePath = craftStatePath(worktreeRoot, feature);
 	writeFileSync(stateFilePath, JSON.stringify(state, null, 2));
 
@@ -482,12 +482,12 @@ function setupLandableFeatureIn(projectRoot: string, feature: string): LandFixtu
 	writeFileSync(join(worktreeRoot, `${feature}.txt`), "work\n");
 	mkdirSync(craftAuditDir(worktreeRoot, feature), { recursive: true });
 	writeFileSync(craftAuditPath(worktreeRoot, feature, 1), "# audit-1\n\n**AUDIT VERDICT: APPROVE**\n\nverified.\n");
-	mkdirSync(craftTestLogsDir(worktreeRoot, feature), { recursive: true });
-	writeFileSync(join(craftTestLogsDir(worktreeRoot, feature), "run-2.log"), "$ bash run_test.sh\n--- exit 0 ---\n");
-	mkdirSync(craftTestDir(worktreeRoot, feature), { recursive: true });
+	mkdirSync(craftCheckLogsDir(worktreeRoot, feature), { recursive: true });
+	writeFileSync(join(craftCheckLogsDir(worktreeRoot, feature), "check-2.log"), "$ bash run_check.sh\n--- exit 0 ---\n");
+	mkdirSync(craftDir(worktreeRoot, feature), { recursive: true });
 	writeFileSync(
 		craftStatePath(worktreeRoot, feature),
-		JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }),
+		JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 2, auditCycle: 1, checkLogAtCycleStart: 1 }),
 	);
 	git(worktreeRoot, ["add", "-A"]);
 	git(worktreeRoot, ["commit", "-q", "-m", `feat: ${feature}`]);
@@ -525,19 +525,19 @@ describe("lsc_land — AC1 fail-closed rejection (Phase R, distinct reason codes
 	});
 
 	it("audit present but no auditCycle/threshold in state → no-audit-cycle (missing-threshold fail-open blocked)", async () => {
-		const result = await landOnce(setupLandableFeature({ feature: "no-cycle", auditCycle: null, runLogAtCycleStart: null }));
+		const result = await landOnce(setupLandableFeature({ feature: "no-cycle", auditCycle: null, checkLogAtCycleStart: null }));
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("no-audit-cycle");
 	});
 
-	it("auditCycle present but threshold (runLogAtCycleStart) absent → no-audit-cycle (threshold-only fail-open blocked)", async () => {
-		const result = await landOnce(setupLandableFeature({ feature: "no-threshold", auditCycle: 1, runLogAtCycleStart: null }));
+	it("auditCycle present but threshold (checkLogAtCycleStart) absent → no-audit-cycle (threshold-only fail-open blocked)", async () => {
+		const result = await landOnce(setupLandableFeature({ feature: "no-threshold", auditCycle: 1, checkLogAtCycleStart: null }));
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("no-audit-cycle");
 	});
 
 	it("threshold present but auditCycle absent → no-audit-cycle (cycle-only fail-open blocked)", async () => {
-		const result = await landOnce(setupLandableFeature({ feature: "no-cycle-only", auditCycle: null, runLogAtCycleStart: 1 }));
+		const result = await landOnce(setupLandableFeature({ feature: "no-cycle-only", auditCycle: null, checkLogAtCycleStart: 1 }));
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("no-audit-cycle");
 	});
@@ -549,24 +549,24 @@ describe("lsc_land — AC1 fail-closed rejection (Phase R, distinct reason codes
 	});
 
 	it.each([
-		{ label: "fractional", feature: "frac-threshold", runLogAtCycleStart: 1.5 },
-		{ label: "JSON string", feature: "string-threshold", runLogAtCycleStart: "1" as unknown as number },
-	])("non-integer runLogAtCycleStart ($label) → no-audit-cycle (a non-integer threshold is not a valid cycle threshold)", async ({ feature, runLogAtCycleStart }) => {
-		const result = await landOnce(setupLandableFeature({ feature, auditNumber: 1, auditCycle: 1, runLogAtCycleStart }));
+		{ label: "fractional", feature: "frac-threshold", checkLogAtCycleStart: 1.5 },
+		{ label: "JSON string", feature: "string-threshold", checkLogAtCycleStart: "1" as unknown as number },
+	])("non-integer checkLogAtCycleStart ($label) → no-audit-cycle (a non-integer threshold is not a valid cycle threshold)", async ({ feature, checkLogAtCycleStart }) => {
+		const result = await landOnce(setupLandableFeature({ feature, auditNumber: 1, auditCycle: 1, checkLogAtCycleStart }));
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("no-audit-cycle");
 	});
 
-	it("only passing run log is run-N where N === threshold → stale-run-log (strict `> threshold`, not `>=`)", async () => {
-		const result = await landOnce(setupLandableFeature({ feature: "boundary-log", runLogAtCycleStart: 2, freshLogNumber: 2 }));
+	it("only passing run log is run-N where N === threshold → stale-check-log (strict `> threshold`, not `>=`)", async () => {
+		const result = await landOnce(setupLandableFeature({ feature: "boundary-log", checkLogAtCycleStart: 2, freshLogNumber: 2 }));
 		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("stale-run-log");
+		expect(textOf(result)).toContain("stale-check-log");
 	});
 
-	it("a post-threshold run log exists but is FAILING (exit 1) → stale-run-log (no passing log after the cycle)", async () => {
-		const result = await landOnce(setupLandableFeature({ feature: "failing-log", runLogAtCycleStart: 1, freshLogNumber: 2, freshLogPassing: false }));
+	it("a post-threshold run log exists but is FAILING (exit 1) → stale-check-log (no passing log after the cycle)", async () => {
+		const result = await landOnce(setupLandableFeature({ feature: "failing-log", checkLogAtCycleStart: 1, freshLogNumber: 2, freshLogPassing: false }));
 		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("stale-run-log");
+		expect(textOf(result)).toContain("stale-check-log");
 	});
 
 	it("auditCycle does not match latest audit-N.md → cycle-mismatch", async () => {
@@ -581,10 +581,10 @@ describe("lsc_land — AC1 fail-closed rejection (Phase R, distinct reason codes
 		expect(textOf(result)).toContain("verdict-not-approve");
 	});
 
-	it("no passing run-N.log after the cycle threshold → stale-run-log", async () => {
-		const result = await landOnce(setupLandableFeature({ feature: "stale", runLogAtCycleStart: 5, freshLogNumber: null }));
+	it("no passing check-N.log after the cycle threshold → stale-check-log", async () => {
+		const result = await landOnce(setupLandableFeature({ feature: "stale", checkLogAtCycleStart: 5, freshLogNumber: null }));
 		expect(result.isError).toBe(true);
-		expect(textOf(result)).toContain("stale-run-log");
+		expect(textOf(result)).toContain("stale-check-log");
 	});
 
 	it("auditValidated marker for the current cycle with a different verdict → evidence-tamper", async () => {
@@ -728,10 +728,10 @@ describe("lsc_land — AC3 effect-path failure state machine", () => {
 		writeFileSync(join(worktreeRoot, "README.md"), "feature edit\n");
 		mkdirSync(craftAuditDir(worktreeRoot, feature), { recursive: true });
 		writeFileSync(craftAuditPath(worktreeRoot, feature, 1), "**AUDIT VERDICT: APPROVE**\n");
-		mkdirSync(craftTestLogsDir(worktreeRoot, feature), { recursive: true });
-		writeFileSync(join(craftTestLogsDir(worktreeRoot, feature), "run-2.log"), "--- exit 0 ---\n");
-		mkdirSync(craftTestDir(worktreeRoot, feature), { recursive: true });
-		writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
+		mkdirSync(craftCheckLogsDir(worktreeRoot, feature), { recursive: true });
+		writeFileSync(join(craftCheckLogsDir(worktreeRoot, feature), "check-2.log"), "--- exit 0 ---\n");
+		mkdirSync(craftDir(worktreeRoot, feature), { recursive: true });
+		writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 2, auditCycle: 1, checkLogAtCycleStart: 1 }));
 		git(worktreeRoot, ["add", "-A"]);
 		git(worktreeRoot, ["commit", "-q", "-m", "feat: conflicting README"]);
 		// Advance main so it conflicts with the feature's README edit.
@@ -827,12 +827,12 @@ describe("lsc_land — AC3 effect-path failure state machine", () => {
 		git(projectRoot, ["checkout", "-q", "-b", branch]);
 		mkdirSync(craftAuditDir(projectRoot, feature), { recursive: true });
 		writeFileSync(craftAuditPath(projectRoot, feature, 1), "**AUDIT VERDICT: APPROVE**\n");
-		mkdirSync(craftTestLogsDir(projectRoot, feature), { recursive: true });
-		writeFileSync(join(craftTestLogsDir(projectRoot, feature), "run-2.log"), "--- exit 0 ---\n");
-		mkdirSync(craftTestDir(projectRoot, feature), { recursive: true });
+		mkdirSync(craftCheckLogsDir(projectRoot, feature), { recursive: true });
+		writeFileSync(join(craftCheckLogsDir(projectRoot, feature), "check-2.log"), "--- exit 0 ---\n");
+		mkdirSync(craftDir(projectRoot, feature), { recursive: true });
 		writeFileSync(
 			craftStatePath(projectRoot, feature),
-			JSON.stringify({ feature, projectRoot, worktreeRoot: worktreePath(projectRoot, feature), aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }),
+			JSON.stringify({ feature, projectRoot, worktreeRoot: worktreePath(projectRoot, feature), aborted: false, stateVersion: 2, auditCycle: 1, checkLogAtCycleStart: 1 }),
 		);
 
 		const result = await callTool(tools, "lsc_land", { feature }, makeCtx(projectRoot));
@@ -917,10 +917,10 @@ function setupConflictingFeature(feature: string): LandFixture {
 	writeFileSync(join(worktreeRoot, "README.md"), "feature edit\n");
 	mkdirSync(craftAuditDir(worktreeRoot, feature), { recursive: true });
 	writeFileSync(craftAuditPath(worktreeRoot, feature, 1), "**AUDIT VERDICT: APPROVE**\n");
-	mkdirSync(craftTestLogsDir(worktreeRoot, feature), { recursive: true });
-	writeFileSync(join(craftTestLogsDir(worktreeRoot, feature), "run-2.log"), "--- exit 0 ---\n");
-	mkdirSync(craftTestDir(worktreeRoot, feature), { recursive: true });
-	writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
+	mkdirSync(craftCheckLogsDir(worktreeRoot, feature), { recursive: true });
+	writeFileSync(join(craftCheckLogsDir(worktreeRoot, feature), "check-2.log"), "--- exit 0 ---\n");
+	mkdirSync(craftDir(worktreeRoot, feature), { recursive: true });
+	writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 2, auditCycle: 1, checkLogAtCycleStart: 1 }));
 	git(worktreeRoot, ["add", "-A"]);
 	git(worktreeRoot, ["commit", "-q", "-m", "feat: conflicting README"]);
 	writeFileSync(join(projectRoot, "README.md"), "main edit\n");
@@ -998,10 +998,10 @@ describe("lsc_land — standalone real-git rejections (membership / lock / main-
 		// Valid evidence at the worktree path — but never `git worktree add`, so it is not registered.
 		mkdirSync(craftAuditDir(worktreeRoot, feature), { recursive: true });
 		writeFileSync(craftAuditPath(worktreeRoot, feature, 1), "**AUDIT VERDICT: APPROVE**\n");
-		mkdirSync(craftTestLogsDir(worktreeRoot, feature), { recursive: true });
-		writeFileSync(join(craftTestLogsDir(worktreeRoot, feature), "run-2.log"), "--- exit 0 ---\n");
-		mkdirSync(craftTestDir(worktreeRoot, feature), { recursive: true });
-		writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
+		mkdirSync(craftCheckLogsDir(worktreeRoot, feature), { recursive: true });
+		writeFileSync(join(craftCheckLogsDir(worktreeRoot, feature), "check-2.log"), "--- exit 0 ---\n");
+		mkdirSync(craftDir(worktreeRoot, feature), { recursive: true });
+		writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 2, auditCycle: 1, checkLogAtCycleStart: 1 }));
 		const result = await callTool(buildTools(), "lsc_land", { feature }, makeCtx(projectRoot));
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("not-registered");
@@ -1038,10 +1038,10 @@ describe("lsc_land — standalone real-git rejections (membership / lock / main-
 		// Evidence at projectRoot/.lsc so it stays readable through the post-swap symlink (→ projectRoot).
 		mkdirSync(craftAuditDir(projectRoot, feature), { recursive: true });
 		writeFileSync(craftAuditPath(projectRoot, feature, 1), "**AUDIT VERDICT: APPROVE**\n");
-		mkdirSync(craftTestLogsDir(projectRoot, feature), { recursive: true });
-		writeFileSync(join(craftTestLogsDir(projectRoot, feature), "run-2.log"), "--- exit 0 ---\n");
-		mkdirSync(craftTestDir(projectRoot, feature), { recursive: true });
-		writeFileSync(craftStatePath(projectRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
+		mkdirSync(craftCheckLogsDir(projectRoot, feature), { recursive: true });
+		writeFileSync(join(craftCheckLogsDir(projectRoot, feature), "check-2.log"), "--- exit 0 ---\n");
+		mkdirSync(craftDir(projectRoot, feature), { recursive: true });
+		writeFileSync(craftStatePath(projectRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 2, auditCycle: 1, checkLogAtCycleStart: 1 }));
 		rmSync(worktreeRoot, { recursive: true, force: true });
 		symlinkSync(projectRoot, worktreeRoot);
 

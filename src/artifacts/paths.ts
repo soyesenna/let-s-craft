@@ -16,7 +16,7 @@ export function projectLscDir(cwd: string): string {
 }
 
 // ============================================================================
-// crafts/{feature}/ — trace.md, spec.md, plan.md, test/, audit/ (C8)
+// crafts/{feature}/ — trace.md, spec.md, plan.md, .craft-state.json, check/, audit/ (C8, C3)
 // ============================================================================
 
 /** `.lsc/crafts/` — parent of every feature's craft directory. */
@@ -41,24 +41,24 @@ export function craftPlanPath(cwd: string, feature: string): string {
 	return join(craftDir(cwd, feature), "plan.md");
 }
 
-/** `.lsc/crafts/{feature}/test/` — run_test.sh + test assets (hash-protected, §3.3). */
-export function craftTestDir(cwd: string, feature: string): string {
-	return join(craftDir(cwd, feature), "test");
-}
-
-/** `.lsc/crafts/{feature}/test/run_test.sh` — the single trusted test entrypoint (C18). */
-export function craftRunTestScriptPath(cwd: string, feature: string): string {
-	return join(craftTestDir(cwd, feature), "run_test.sh");
-}
-
-/** `.lsc/crafts/{feature}/test/logs/` — run_test.sh transcripts (excluded from hash protection). */
-export function craftTestLogsDir(cwd: string, feature: string): string {
-	return join(craftTestDir(cwd, feature), "logs");
-}
-
-/** `.lsc/crafts/{feature}/test/.craft-state.json` — restart-durable active-craft state. */
+/** `.lsc/crafts/{feature}/.craft-state.json` — restart-durable active-craft state (C3: moved out of test/, which is no longer a pipeline-owned tree). */
 export function craftStatePath(cwd: string, feature: string): string {
-	return join(craftTestDir(cwd, feature), ".craft-state.json");
+	return join(craftDir(cwd, feature), ".craft-state.json");
+}
+
+/** `.lsc/crafts/{feature}/check/` — post-craft's deterministic check entrypoint + its logs (C3). */
+export function craftCheckDir(cwd: string, feature: string): string {
+	return join(craftDir(cwd, feature), "check");
+}
+
+/** `.lsc/crafts/{feature}/check/run_check.sh` — the single trusted, post-craft-authored check entrypoint (build/lint/typecheck/test, C3). Tracked (a committed deliverable), unlike its logs. */
+export function craftCheckScriptPath(cwd: string, feature: string): string {
+	return join(craftCheckDir(cwd, feature), "run_check.sh");
+}
+
+/** `.lsc/crafts/{feature}/check/logs/` — run_check.sh transcripts. */
+export function craftCheckLogsDir(cwd: string, feature: string): string {
+	return join(craftCheckDir(cwd, feature), "logs");
 }
 
 /** `.lsc/crafts/{feature}/audit/` — post-craft adversarial audit reports (C8). */

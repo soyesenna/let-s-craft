@@ -8,7 +8,7 @@ import { registerCompactionDirective } from "./craft/compact-directive.js";
 import { registerCraftInitTool } from "./craft/init.js";
 import { registerLatencyReportTool } from "./craft/latency-report.js";
 import { registerLandTool } from "./craft/land.js";
-import { registerRunTestsTool } from "./craft/run-tests.js";
+import { registerRunCheckTool } from "./craft/run-check.js";
 import { registerCraftStateResets } from "./craft/state.js";
 import { registerDoctorCommand, registerDoctorTool } from "./doctor.js";
 import { registerAuditValidateTools } from "./craft/verdict.js";
@@ -30,7 +30,7 @@ export default function (pi: ExtensionAPI): void {
 
 	registerPresetCommand(pi);
 	registerCraftInitTool(pi);
-	registerRunTestsTool(pi);
+	registerRunCheckTool(pi);
 	registerCraftStateResets(pi);
 	registerCompactionDirective(pi);
 	registerAskTools(pi, createAskRuntimeFactory(pi));

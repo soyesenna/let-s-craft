@@ -9,5 +9,7 @@ dist/
 src/generated/
 node_modules/
 .lsc/worktrees/
+.lsc/crafts/*/.craft-state.json
+.lsc/crafts/*/check/logs/
 dogfooding.html
 gajae-code/

@@ -77,7 +77,7 @@ const EXISTING_REGISTRARS = [
 	"registerFlag",
 	"registerPresetCommand",
 	"registerCraftInitTool",
-	"registerRunTestsTool",
+	"registerRunCheckTool",
 	"registerCraftStateResets",
 	"registerAskTools",
 	"registerCraftAbortTool",

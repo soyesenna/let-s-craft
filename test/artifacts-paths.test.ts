@@ -1,12 +1,13 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import * as paths from "../src/artifacts/paths";
 import {
 	craftAuditPath,
+	craftCheckDir,
+	craftCheckLogsDir,
+	craftCheckScriptPath,
 	craftDir,
-	craftRunTestScriptPath,
 	craftStatePath,
-	craftTestDir,
-	craftTestLogsDir,
 	globalLscDir,
 	projectLscDir,
 	resolveFeatureName,
@@ -21,11 +22,11 @@ describe("path composition", () => {
 		expect(craftDir(CWD, "my-feature")).toBe(join(CWD, ".lsc", "crafts", "my-feature"));
 	});
 
-	it("derives test/, logs/, and state paths from craftDir", () => {
-		expect(craftTestDir(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "test"));
-		expect(craftTestLogsDir(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "test", "logs"));
-		expect(craftRunTestScriptPath(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "test", "run_test.sh"));
-		expect(craftStatePath(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "test", ".craft-state.json"));
+	it("derives check/, logs/, and state paths from craftDir (C3: .craft-state.json moved out of test/)", () => {
+		expect(craftCheckDir(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "check"));
+		expect(craftCheckLogsDir(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "check", "logs"));
+		expect(craftCheckScriptPath(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", "check", "run_check.sh"));
+		expect(craftStatePath(CWD, "f")).toBe(join(CWD, ".lsc", "crafts", "f", ".craft-state.json"));
 	});
 
 	it("numbers audit reports from 0", () => {
@@ -39,6 +40,13 @@ describe("path composition", () => {
 
 	it("anchors the global root at ~/.omp/.lsc", () => {
 		expect(globalLscDir().endsWith(join(".omp", ".lsc"))).toBe(true);
+	});
+
+	it("no longer exports the retired test-tree/hash-protection helpers (AC8 — C2 hash protection removal + C3 test/ tree retirement)", () => {
+		const removed = ["craftTestDir", "craftRunTestScriptPath", "craftTestLogsDir", "craftHashManifestPath", "craftSnapshotDir"];
+		for (const name of removed) {
+			expect(name in paths, `${name} must not be exported from artifacts/paths.ts`).toBe(false);
+		}
 	});
 });
 

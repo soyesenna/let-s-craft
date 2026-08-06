@@ -65,7 +65,7 @@ export const LAND_REASON_CODES = [
 	"no-audit-cycle",
 	"cycle-mismatch",
 	"verdict-not-approve",
-	"stale-run-log",
+	"stale-check-log",
 	"evidence-tamper",
 	"evidence-mismatch",
 	"approval-required",
@@ -282,7 +282,16 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 	//    cycle-aware evidence, never authority).
 	const audit = validateLandAuditEvidence(evidenceRoot, feature, state);
 	if (!audit.ok) {
-		return landError(audit.reason, feature, mode, `strict land-time audit re-validation failed (evidence root: ${evidenceRoot}).`);
+		// m1: a state file persisted before the C3 rename (runLogAtCycleStart -> checkLogAtCycleStart)
+		// has no checkLogAtCycleStart at all, so lsc_audit_validate passes leniently (validateAuditFreshness
+		// tolerates the missing threshold) while this undefined-INTOLERANT gate still refuses with
+		// no-audit-cycle — that specific combination is the expected symptom, not a new bug.
+		const migrationHint =
+			audit.reason === "no-audit-cycle"
+				? " If lsc_audit_validate reported success for this feature but land refuses here, the persisted state " +
+					"predates the checkLogAtCycleStart field (C3) — re-run lsc_audit_begin to record the threshold under the current schema."
+				: "";
+		return landError(audit.reason, feature, mode, `strict land-time audit re-validation failed (evidence root: ${evidenceRoot}).${migrationHint}`);
 	}
 	const marker = state.auditValidated;
 	const markerWarn =

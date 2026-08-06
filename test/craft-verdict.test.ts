@@ -2,12 +2,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { craftAuditDir, craftStatePath, craftTestLogsDir } from "../src/artifacts/paths";
+import { craftAuditDir, craftCheckLogsDir, craftStatePath } from "../src/artifacts/paths";
 import { type CraftState, clearActiveCraft, readPersistedCraftState, setActiveCraft } from "../src/craft/state";
 import {
 	AUDIT_VERDICTS,
 	CRITIC_VERDICTS,
-	isPassingRunLog,
+	isPassingCheckLog,
 	parseAuditVerdict,
 	parseCriticVerdict,
 	parseVerdictLine,
@@ -82,27 +82,27 @@ describe("parseCriticVerdict (agents/lsc-critic.md's independent 5-value scale)"
 	});
 });
 
-describe("isPassingRunLog", () => {
+describe("isPassingCheckLog", () => {
 	it("recognizes a clean 'exit 0' transcript as passing", () => {
-		expect(isPassingRunLog(["$ bash run_test.sh", "--- stdout ---", "3 passed", "--- exit 0 ---"].join("\n"))).toBe(true);
+		expect(isPassingCheckLog(["$ bash run_check.sh", "--- stdout ---", "3 passed", "--- exit 0 ---"].join("\n"))).toBe(true);
 	});
 
 	it("treats a non-zero exit as failing", () => {
-		expect(isPassingRunLog(["--- stdout ---", "1 failed", "--- exit 1 ---"].join("\n"))).toBe(false);
+		expect(isPassingCheckLog(["--- stdout ---", "1 failed", "--- exit 1 ---"].join("\n"))).toBe(false);
 	});
 
 	it("treats an 'exit 0 (killed)' transcript as failing (killed overrides the exit code)", () => {
-		expect(isPassingRunLog("--- exit 0 (killed) ---")).toBe(false);
+		expect(isPassingCheckLog("--- exit 0 (killed) ---")).toBe(false);
 	});
 
 	it("returns false on empty/garbage content without throwing", () => {
-		expect(() => isPassingRunLog("")).not.toThrow();
-		expect(isPassingRunLog("")).toBe(false);
+		expect(() => isPassingCheckLog("")).not.toThrow();
+		expect(isPassingCheckLog("")).toBe(false);
 	});
 });
 
 describe("validateAuditFreshness (B-1's core value: cycle-freshness)", () => {
-	it("ok when a passing run-N.log exists after the cycle start", () => {
+	it("ok when a passing check-N.log exists after the cycle start", () => {
 		const result = validateAuditFreshness("APPROVE", 2, [
 			{ number: 1, passed: true },
 			{ number: 2, passed: false },
@@ -111,7 +111,7 @@ describe("validateAuditFreshness (B-1's core value: cycle-freshness)", () => {
 		expect(result).toEqual({ ok: true });
 	});
 
-	it("violation when every run-N.log is at or before the cycle start (stale-log)", () => {
+	it("violation when every check-N.log is at or before the cycle start (stale-log)", () => {
 		const result = validateAuditFreshness("APPROVE", 3, [
 			{ number: 1, passed: true },
 			{ number: 2, passed: true },
@@ -120,7 +120,7 @@ describe("validateAuditFreshness (B-1's core value: cycle-freshness)", () => {
 		expect(result).toEqual({ ok: false, reason: "stale-log" });
 	});
 
-	it("violation when fresh run-N.log(s) exist but none of them passed (no-passing-log)", () => {
+	it("violation when fresh check-N.log(s) exist but none of them passed (no-passing-log)", () => {
 		const result = validateAuditFreshness("APPROVE-WITH-COMMENT", 2, [
 			{ number: 1, passed: true },
 			{ number: 3, passed: false },
@@ -129,7 +129,7 @@ describe("validateAuditFreshness (B-1's core value: cycle-freshness)", () => {
 		expect(result).toEqual({ ok: false, reason: "no-passing-log" });
 	});
 
-	it("tolerant (ok) when runLogAtCycleStart is undefined — a legacy craft state that never called lsc_audit_begin", () => {
+	it("tolerant (ok) when checkLogAtCycleStart is undefined — a legacy craft state that never called lsc_audit_begin", () => {
 		const result = validateAuditFreshness("APPROVE", undefined, [{ number: 1, passed: false }]);
 		expect(result).toEqual({ ok: true });
 	});
@@ -151,7 +151,7 @@ describe("validateAuditFreshness (B-1's core value: cycle-freshness)", () => {
 // B-1 review NEEDS-FIX MEDIUM: tool-execute-level integration coverage for performAuditBegin /
 // performAuditValidate against real temp directories — no ExtensionAPI/pi.zod mocking needed
 // since both are the extracted "performX" cores the registerTool wrappers call directly (mirrors
-// run-tests.ts's own tool-level test pattern added alongside this fix).
+// run-check.ts's own tool-level test pattern added alongside this fix).
 // ---------------------------------------------------------------------------
 
 const tempDirs: string[] = [];
@@ -186,17 +186,17 @@ function writeAuditDoc(root: string, feature: string, n: number, verdict: string
 }
 
 function passingLog(): string {
-	return ["$ bash run_test.sh", "--- stdout ---", "ok", "--- stderr ---", "", "--- exit 0 ---"].join("\n");
+	return ["$ bash run_check.sh", "--- stdout ---", "ok", "--- stderr ---", "", "--- exit 0 ---"].join("\n");
 }
 
 function failingLog(code = 1): string {
-	return ["$ bash run_test.sh", "--- stdout ---", "", "--- stderr ---", "boom", `--- exit ${code} ---`].join("\n");
+	return ["$ bash run_check.sh", "--- stdout ---", "", "--- stderr ---", "boom", `--- exit ${code} ---`].join("\n");
 }
 
-function writeRunLog(root: string, feature: string, n: number, content: string): void {
-	const dir = craftTestLogsDir(root, feature);
+function writeCheckLog(root: string, feature: string, n: number, content: string): void {
+	const dir = craftCheckLogsDir(root, feature);
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(join(dir, `run-${n}.log`), content);
+	writeFileSync(join(dir, `check-${n}.log`), content);
 }
 
 describe("performAuditBegin (tool-execute-level)", () => {
@@ -206,41 +206,65 @@ describe("performAuditBegin (tool-execute-level)", () => {
 		expect(result.isError).toBe(true);
 	});
 
-	it("records auditCycle (audit dir max+1) and runLogAtCycleStart (logs dir max) onto the persisted state", () => {
+	it("records auditCycle (audit dir max+1) and checkLogAtCycleStart (logs dir max) onto the persisted state", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		persistOnly(freshState(root, feature));
-		writeRunLog(root, feature, 1, passingLog());
-		writeRunLog(root, feature, 2, failingLog());
+		writeCheckLog(root, feature, 1, passingLog());
+		writeCheckLog(root, feature, 2, failingLog());
 		writeAuditDoc(root, feature, 0, "APPROVE-WITH-CHANGE");
 
 		const result = performAuditBegin(feature, root);
 
 		expect(result.isError).toBeFalsy();
-		expect(result.details).toEqual({ feature, auditCycle: 1, runLogAtCycleStart: 2 });
+		expect(result.details).toEqual({ feature, auditCycle: 1, checkLogAtCycleStart: 2 });
 		expect(readPersistedCraftState(root, feature)?.auditCycle).toBe(1);
-		expect(readPersistedCraftState(root, feature)?.runLogAtCycleStart).toBe(2);
+		expect(readPersistedCraftState(root, feature)?.checkLogAtCycleStart).toBe(2);
 	});
 
-	it("uses auditCycle 0 and runLogAtCycleStart 0 when neither an audit doc nor a run log exists yet", () => {
+	it("uses auditCycle 0 and checkLogAtCycleStart 0 when neither an audit doc nor a check log exists yet", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		persistOnly(freshState(root, feature));
 
 		const result = performAuditBegin(feature, root);
 
-		expect(result.details).toEqual({ feature, auditCycle: 0, runLogAtCycleStart: 0 });
+		expect(result.details).toEqual({ feature, auditCycle: 0, checkLogAtCycleStart: 0 });
+	});
+
+	it("appends the S3 cycle≥3 WARN once the audit cycle reaches 3, without affecting the recorded details", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly(freshState(root, feature));
+		for (let n = 0; n < 3; n++) writeAuditDoc(root, feature, n, "REJECT"); // 3 prior cycles (0,1,2) -> next begin is cycle 3
+
+		const result = performAuditBegin(feature, root);
+
+		expect(result.isError).toBeFalsy();
+		expect(result.details).toEqual({ feature, auditCycle: 3, checkLogAtCycleStart: 0 });
+		expect((result.content[0] as { text: string }).text).toContain("감사 사이클 3회차");
+	});
+
+	it("omits the S3 WARN below cycle 3", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly(freshState(root, feature));
+		writeAuditDoc(root, feature, 0, "REJECT"); // 1 prior cycle -> next begin is cycle 1
+
+		const result = performAuditBegin(feature, root);
+
+		expect((result.content[0] as { text: string }).text).not.toContain("감사 사이클");
 	});
 });
 
 describe("performAuditValidate (tool-execute-level, 4 branches + mismatch guard)", () => {
-	it("succeeds for an APPROVE-family verdict backed by a fresh passing run-N.log, and records the auditValidated marker", () => {
+	it("succeeds for an APPROVE-family verdict backed by a fresh passing check-N.log, and records the auditValidated marker", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		persistOnly(freshState(root, feature));
-		writeRunLog(root, feature, 1, passingLog()); // pre-cycle (stale)
-		performAuditBegin(feature, root); // auditCycle=0, runLogAtCycleStart=1
-		writeRunLog(root, feature, 2, passingLog()); // fresh, after the cycle start
+		writeCheckLog(root, feature, 1, passingLog()); // pre-cycle (stale)
+		performAuditBegin(feature, root); // auditCycle=0, checkLogAtCycleStart=1
+		writeCheckLog(root, feature, 2, passingLog()); // fresh, after the cycle start
 		writeAuditDoc(root, feature, 0, "APPROVE");
 
 		const result = performAuditValidate(feature, root);
@@ -251,12 +275,12 @@ describe("performAuditValidate (tool-execute-level, 4 branches + mismatch guard)
 		expect(persisted?.auditValidated).toEqual({ cycle: 0, verdict: "APPROVE", at: expect.any(String) });
 	});
 
-	it("fails closed with 'stale-log' when no run-N.log exists after the cycle's freshness threshold", () => {
+	it("fails closed with 'stale-log' when no check-N.log exists after the cycle's freshness threshold", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		persistOnly(freshState(root, feature));
-		writeRunLog(root, feature, 1, passingLog());
-		performAuditBegin(feature, root); // runLogAtCycleStart=1 — nothing fresher gets written below
+		writeCheckLog(root, feature, 1, passingLog());
+		performAuditBegin(feature, root); // checkLogAtCycleStart=1 — nothing fresher gets written below
 		writeAuditDoc(root, feature, 0, "APPROVE");
 
 		const result = performAuditValidate(feature, root);
@@ -265,12 +289,12 @@ describe("performAuditValidate (tool-execute-level, 4 branches + mismatch guard)
 		expect((result.content[0] as { text: string }).text).toContain("cannot be backed by a fresh run");
 	});
 
-	it("fails closed with 'no-passing-log' when fresh run-N.log(s) exist but none passed", () => {
+	it("fails closed with 'no-passing-log' when fresh check-N.log(s) exist but none passed", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		persistOnly(freshState(root, feature));
-		performAuditBegin(feature, root); // runLogAtCycleStart=0
-		writeRunLog(root, feature, 1, failingLog());
+		performAuditBegin(feature, root); // checkLogAtCycleStart=0
+		writeCheckLog(root, feature, 1, failingLog());
 		writeAuditDoc(root, feature, 0, "APPROVE-WITH-COMMENT");
 
 		const result = performAuditValidate(feature, root);
@@ -309,7 +333,7 @@ describe("performAuditValidate (tool-execute-level, 4 branches + mismatch guard)
 		const feature = "my-feature";
 		persistOnly(freshState(root, feature));
 		performAuditBegin(feature, root); // auditCycle=0 recorded
-		writeRunLog(root, feature, 1, passingLog());
+		writeCheckLog(root, feature, 1, passingLog());
 		// A second audit doc is written WITHOUT calling lsc_audit_begin again for it — the persisted
 		// auditCycle (0) no longer matches the actual latest audit doc (1).
 		writeAuditDoc(root, feature, 1, "APPROVE");

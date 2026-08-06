@@ -81,11 +81,10 @@ function futureVersion(): number {
 }
 
 describe("CRAFT_STATE_VERSION (the on-disk schema version constant — M6)", () => {
-	it("is pinned to 1 (the first, current on-disk schema generation)", () => {
+	it("is pinned to 2 (C3: runLogAtCycleStart renamed to checkLogAtCycleStart, and .craft-state.json moved out of test/)", () => {
 		// A hard pin: bumping the on-disk schema is a deliberate, reviewed act (it changes what
 		// `> CRAFT_STATE_VERSION` rejects and what every write stamps), never accidental drift.
-		// Pre-craft the const is undefined, so this is import-RED until Step 1a lands it as `1`.
-		expect(CRAFT_STATE_VERSION).toBe(1);
+		expect(CRAFT_STATE_VERSION).toBe(2);
 	});
 });
 
@@ -253,7 +252,7 @@ describe("every durable mutator stamps stateVersion when it rewrites a legacy (u
 
 	it("recordAuditValidated stamps the file it rewrites", () => {
 		const root = tmpProject();
-		seedLegacy(root, { auditCycle: 1, runLogAtCycleStart: 5 });
+		seedLegacy(root, { auditCycle: 1, checkLogAtCycleStart: 5 });
 		recordAuditValidated(root, feature, 1, "APPROVE", "2026-07-18T10:00:00.000Z");
 		expectStampedToCurrent(root);
 	});
