@@ -17,7 +17,6 @@ import {
 	recordAuditValidated,
 	recordOpenRelease,
 	recordReleaseApproval,
-	recordTestResult,
 	type ReleaseApprovalEvidence,
 	setActiveCraft,
 } from "../src/craft/state";
@@ -39,7 +38,7 @@ function tmpProject(): string {
 }
 
 function freshState(projectRoot: string, feature = "my-feature"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 describe("setActiveCraft / getActiveCraft", () => {
@@ -68,93 +67,6 @@ describe("setActiveCraft / getActiveCraft", () => {
 	});
 });
 
-describe("recordTestResult", () => {
-	it("updates testsPassed and clears the failure summary on pass", () => {
-		const projectRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), lastFailureSummary: "old failure" });
-
-		recordTestResult(true);
-
-		expect(getActiveCraft()?.testsPassed).toBe(true);
-		expect(getActiveCraft()?.lastFailureSummary).toBeUndefined();
-	});
-
-	it("records the failure summary on fail", () => {
-		const projectRoot = tmpProject();
-		setActiveCraft(freshState(projectRoot));
-
-		recordTestResult(false, "2 tests failed");
-
-		expect(getActiveCraft()?.testsPassed).toBe(false);
-		expect(getActiveCraft()?.lastFailureSummary).toBe("2 tests failed");
-	});
-
-	it("is a no-op when there is no active craft", () => {
-		recordTestResult(true);
-		expect(getActiveCraft()).toBeUndefined();
-	});
-});
-
-describe("recordTestResult — no-progress detection (C-1)", () => {
-	it("returns noProgress:true on the 3rd consecutive matching-signature failure", () => {
-		const projectRoot = tmpProject();
-		setActiveCraft(freshState(projectRoot));
-
-		expect(recordTestResult(false, "run 1", "sig-a")).toEqual({ consecutiveFailures: 1, noProgress: false });
-		expect(recordTestResult(false, "run 2", "sig-a")).toEqual({ consecutiveFailures: 2, noProgress: false });
-		expect(recordTestResult(false, "run 3", "sig-a")).toEqual({ consecutiveFailures: 3, noProgress: true });
-		expect(getActiveCraft()?.consecutiveFailures).toBe(3);
-		expect(getActiveCraft()?.failureSignature).toBe("sig-a");
-	});
-
-	it("resets the counter to 1 when the failure signature changes — progress happened even though the suite still fails", () => {
-		const projectRoot = tmpProject();
-		setActiveCraft(freshState(projectRoot));
-
-		recordTestResult(false, "run 1", "sig-a");
-		recordTestResult(false, "run 2", "sig-a");
-		const outcome = recordTestResult(false, "run 3", "sig-b");
-
-		expect(outcome).toEqual({ consecutiveFailures: 1, noProgress: false });
-		expect(getActiveCraft()?.failureSignature).toBe("sig-b");
-	});
-
-	it("clears failureSignature and consecutiveFailures on a pass", () => {
-		const projectRoot = tmpProject();
-		setActiveCraft(freshState(projectRoot));
-
-		recordTestResult(false, "run 1", "sig-a");
-		recordTestResult(true);
-
-		expect(getActiveCraft()?.failureSignature).toBeUndefined();
-		expect(getActiveCraft()?.consecutiveFailures).toBeUndefined();
-	});
-
-	it("treats a missing failureSignature as always-progressed (never accumulates toward no-progress)", () => {
-		const projectRoot = tmpProject();
-		setActiveCraft(freshState(projectRoot));
-
-		recordTestResult(false, "run 1");
-		recordTestResult(false, "run 2");
-		const outcome = recordTestResult(false, "run 3");
-
-		expect(outcome).toEqual({ consecutiveFailures: 1, noProgress: false });
-	});
-
-	it("loads a legacy state file with no failureSignature/consecutiveFailures fields without throwing, and treats it as a clean slate", () => {
-		const projectRoot = tmpProject();
-		const path = craftStatePath(projectRoot, "my-feature");
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, JSON.stringify({ feature: "my-feature", projectRoot, testsPassed: false, aborted: false }));
-
-		const restored = loadActiveCraft(projectRoot, "my-feature");
-		expect(restored?.failureSignature).toBeUndefined();
-		expect(restored?.consecutiveFailures).toBeUndefined();
-
-		expect(recordTestResult(false, "new failure", "sig-x")).toEqual({ consecutiveFailures: 1, noProgress: false });
-	});
-});
-
 describe("recordAuditCycleBegin (B-1, cycle-freshness marker)", () => {
 	it("throws when no persisted craft state exists at the given root/feature — nothing to begin a cycle against", () => {
 		const projectRoot = tmpProject();
@@ -163,13 +75,13 @@ describe("recordAuditCycleBegin (B-1, cycle-freshness marker)", () => {
 
 	it("persists auditCycle/runLogAtCycleStart onto the existing persisted state without touching other fields", () => {
 		const projectRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), testsPassed: true });
+		setActiveCraft({ ...freshState(projectRoot), aborted: true });
 
 		const next = recordAuditCycleBegin(projectRoot, "my-feature", 1, 3);
 
 		expect(next.auditCycle).toBe(1);
 		expect(next.runLogAtCycleStart).toBe(3);
-		expect(next.testsPassed).toBe(true); // untouched
+		expect(next.aborted).toBe(true); // untouched
 		const persisted = JSON.parse(readFileSync(craftStatePath(projectRoot, "my-feature"), "utf8"));
 		expect(persisted.auditCycle).toBe(1);
 		expect(persisted.runLogAtCycleStart).toBe(3);
@@ -206,12 +118,12 @@ describe("recordAuditValidated (B-1 follow-up, review NEEDS-FIX MEDIUM — durab
 
 	it("persists the {cycle, verdict, at} marker onto the existing persisted state without touching other fields", () => {
 		const projectRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), testsPassed: true });
+		setActiveCraft({ ...freshState(projectRoot), aborted: true });
 
 		const next = recordAuditValidated(projectRoot, "my-feature", 2, "APPROVE-WITH-COMMENT", "2026-07-17T10:00:00.000Z");
 
 		expect(next.auditValidated).toEqual({ cycle: 2, verdict: "APPROVE-WITH-COMMENT", at: "2026-07-17T10:00:00.000Z" });
-		expect(next.testsPassed).toBe(true); // untouched
+		expect(next.aborted).toBe(true); // untouched
 		const persisted = JSON.parse(readFileSync(craftStatePath(projectRoot, "my-feature"), "utf8"));
 		expect(persisted.auditValidated).toEqual({ cycle: 2, verdict: "APPROVE-WITH-COMMENT", at: "2026-07-17T10:00:00.000Z" });
 	});
@@ -263,13 +175,13 @@ describe("clearActiveCraft / loadActiveCraft", () => {
 
 	it("restores a persisted craft after a simulated restart", () => {
 		const projectRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), testsPassed: true });
+		setActiveCraft({ ...freshState(projectRoot), aborted: true });
 		clearActiveCraft();
 
 		const restored = loadActiveCraft(projectRoot, "my-feature");
 
-		expect(restored?.testsPassed).toBe(true);
-		expect(getActiveCraft()?.testsPassed).toBe(true);
+		expect(restored?.aborted).toBe(true);
+		expect(getActiveCraft()?.aborted).toBe(true);
 	});
 
 	it("returns undefined when no state was ever persisted for that feature", () => {
@@ -330,7 +242,7 @@ function writePersistedState(root: string, feature: string, state: object): void
 
 describe("AC6 — legacy .craft-state.json (no release/open-release fields) parses tolerantly", () => {
 	// The exact pre-release-gate CraftState shape: no releaseApproval / openRelease keys.
-	const legacy = (projectRoot: string) => ({ feature: "my-feature", projectRoot, testsPassed: false, aborted: false });
+	const legacy = (projectRoot: string) => ({ feature: "my-feature", projectRoot, aborted: false });
 
 	it("loadActiveCraft reads a legacy state file without throwing and leaves the new fields undefined", () => {
 		const projectRoot = tmpProject();

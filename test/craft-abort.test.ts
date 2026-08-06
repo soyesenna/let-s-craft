@@ -22,7 +22,7 @@ function tmpProject(): string {
 }
 
 function freshState(projectRoot: string, feature = "my-feature"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 describe("performCraftAbort", () => {
@@ -39,20 +39,21 @@ describe("performCraftAbort", () => {
 		});
 		expect(result.details).toEqual({ feature: "my-feature", reason: "user declined the hash-violation restore prompt" });
 
-		// reflected in state.ts, which is what flips the session_stop backstop off (enforcement.ts)
+		// reflected in state.ts — watchdog.ts's explicit-stop check (craft?.aborted) and
+		// destructive-approval invalidation both key off this field directly.
 		expect(getActiveCraft()?.aborted).toBe(true);
 	});
 
-	it("does not clobber testsPassed / lastFailureSummary — only sets aborted", () => {
+	it("does not clobber other durable evidence (e.g. releaseApproval) — only sets aborted", () => {
 		const projectRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), testsPassed: false, lastFailureSummary: "2 failing" });
+		const releaseApproval = { nonce: "n", tag: "[Land]", question: "q", response: "yes", issuedAt: "2026-01-01T00:00:00.000Z" };
+		setActiveCraft({ ...freshState(projectRoot), releaseApproval });
 
 		performCraftAbort("run_test.sh is unrunnable and the user declined to continue");
 
 		const craft = getActiveCraft();
 		expect(craft?.aborted).toBe(true);
-		expect(craft?.testsPassed).toBe(false);
-		expect(craft?.lastFailureSummary).toBe("2 failing");
+		expect(craft?.releaseApproval).toEqual(releaseApproval);
 	});
 
 	it("errors clearly when there is no active craft to abort", () => {

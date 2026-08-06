@@ -23,9 +23,8 @@ import {
 	resetWatchdogState,
 	runResumeTimerCallback,
 	shouldSetStickyForToolExecution,
-	shouldSuppressResumeForCraftBackstop,
 } from "../src/craft/watchdog";
-import { type CraftState, clearActiveCraft, setActiveCraft } from "../src/craft/state";
+import { clearActiveCraft, setActiveCraft } from "../src/craft/state";
 
 // Real (bundle-confirmed literal) finalError shapes — see watchdog.ts's module doc comment for
 // the cli.js emit sites these mirror.
@@ -251,7 +250,7 @@ describe("isWatchdogActive / markWatchdogActive / resetWatchdogState", () => {
 
 	it("is active whenever a durable craft is active, with no sticky flag needed", () => {
 		const projectRoot = mkdtempSync(join(tmpdir(), "lsc-watchdog-"));
-		setActiveCraft({ feature: "f", projectRoot, testsPassed: false, aborted: false });
+		setActiveCraft({ feature: "f", projectRoot, aborted: false });
 		expect(isWatchdogActive()).toBe(true);
 		rmSync(projectRoot, { recursive: true, force: true });
 	});
@@ -337,28 +336,6 @@ describe("getAutoResumeMaxRetryAfterMs (CS-8 cutoff)", () => {
 	});
 });
 
-describe("shouldSuppressResumeForCraftBackstop", () => {
-	function freshCraft(overrides: Partial<CraftState> = {}): CraftState {
-		return { feature: "f", projectRoot: "/repo", testsPassed: false, aborted: false, ...overrides };
-	}
-
-	it("is false when there is no craft at all (pre-craft — nothing else would resume it)", () => {
-		expect(shouldSuppressResumeForCraftBackstop(undefined)).toBe(false);
-	});
-
-	it("is true when a craft is active and its tests have not passed (the backstop forces continuation)", () => {
-		expect(shouldSuppressResumeForCraftBackstop(freshCraft())).toBe(true);
-	});
-
-	it("is false once the craft's tests have passed (the backstop stops forcing turns)", () => {
-		expect(shouldSuppressResumeForCraftBackstop(freshCraft({ testsPassed: true }))).toBe(false);
-	});
-
-	it("is false when the craft was aborted (the backstop also stands down — a different, aborted-specific check handles that case in the caller)", () => {
-		expect(shouldSuppressResumeForCraftBackstop(freshCraft({ aborted: true }))).toBe(false);
-	});
-});
-
 describe("buildResumeMessage", () => {
 	it("matches the exact contract text (plan U1-2), substituting seconds and attempt", () => {
 		expect(buildResumeMessage(415, 1)).toBe(
@@ -423,16 +400,7 @@ describe("runResumeTimerCallback", () => {
 
 	it("clears pending but does not resume when the craft was aborted in the interim (CS-3)", () => {
 		const { ctx, sent, getPendingLive } = baseCtx({
-			getActiveCraftState: () => ({ feature: "f", projectRoot: "/repo", testsPassed: false, aborted: true }),
-		});
-		runResumeTimerCallback(ctx);
-		expect(sent).toHaveLength(0);
-		expect(getPendingLive()).toBeUndefined();
-	});
-
-	it("clears pending but does not resume when the craft backstop already owns continuation (single entry point)", () => {
-		const { ctx, sent, getPendingLive } = baseCtx({
-			getActiveCraftState: () => ({ feature: "f", projectRoot: "/repo", testsPassed: false, aborted: false }),
+			getActiveCraftState: () => ({ feature: "f", projectRoot: "/repo", aborted: true }),
 		});
 		runResumeTimerCallback(ctx);
 		expect(sent).toHaveLength(0);
@@ -597,23 +565,11 @@ describe("registerWatchdog (end-to-end wiring)", () => {
 		const { fakePi, handlers, execCalls } = makeFakePi();
 		registerWatchdog(fakePi as unknown as Parameters<typeof registerWatchdog>[0]);
 		const projectRoot = mkdtempSync(join(tmpdir(), "lsc-watchdog-abort-"));
-		setActiveCraft({ feature: "f", projectRoot, testsPassed: false, aborted: true });
+		setActiveCraft({ feature: "f", projectRoot, aborted: true });
 
 		await fire(handlers, "auto_retry_end", { success: false, attempt: 1, finalError: FIXTURE_RATE_LIMIT_429 }, makeCtx());
 		expect(execCalls).toHaveLength(0);
 		expect(getWatchdogPending()).toBeUndefined();
-		rmSync(projectRoot, { recursive: true, force: true });
-	});
-
-	it("notifies but does not schedule its own resume when an active, not-yet-passing craft's backstop already owns continuation (single entry point)", async () => {
-		const { fakePi, handlers, execCalls } = makeFakePi();
-		registerWatchdog(fakePi as unknown as Parameters<typeof registerWatchdog>[0]);
-		const projectRoot = mkdtempSync(join(tmpdir(), "lsc-watchdog-craft-"));
-		setActiveCraft({ feature: "f", projectRoot, testsPassed: false, aborted: false });
-
-		await fire(handlers, "auto_retry_end", { success: false, attempt: 1, finalError: FIXTURE_RATE_LIMIT_429 }, makeCtx());
-		expect(execCalls).toHaveLength(1); // still visible (C3) ...
-		expect(getWatchdogPending()).toBeUndefined(); // ... but no duplicate resume timer
 		rmSync(projectRoot, { recursive: true, force: true });
 	});
 

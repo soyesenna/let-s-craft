@@ -45,7 +45,6 @@ import {
 	openReleaseGuidance,
 	recordOpenRelease,
 	recordReleaseApproval,
-	recordTestResult,
 	registerCraftStateResets,
 	setActiveCraft,
 } from "../src/craft/state";
@@ -88,7 +87,7 @@ function tmpProject(): string {
 }
 
 function freshState(projectRoot: string, feature = "my-feature"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 function identityOf(state: CraftState): ApprovalCraftIdentity {
@@ -445,7 +444,7 @@ describe("lifecycle invalidation — real event/tool wiring (CS6)", () => {
 			openedAt: "2026-03-03T00:00:00.000Z",
 			// no closedAt → unclosed
 		};
-		const persisted: CraftState = { feature, projectRoot: root, testsPassed: false, aborted: false, openRelease: open };
+		const persisted: CraftState = { feature, projectRoot: root, aborted: false, openRelease: open };
 		const path = craftStatePath(root, feature);
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(path, JSON.stringify(persisted, null, 2));
@@ -606,7 +605,9 @@ describe("issuance transaction — captured lsc_confirm execute (CS2/CS6)", () =
 		const ui: SelectUI = { select: () => gate, editor: async () => undefined };
 
 		const pending = execute("tc", { question: CANON_QUESTION }, undefined, undefined, uiCtx(ui));
-		recordTestResult(false, "same identity", "sig"); // spreads a NEW active object with the SAME identity
+		// recordReleaseApproval spreads a NEW active object with the SAME identity, and (unlike
+		// setActiveCraft/markCraftAborted) never calls invalidatePendingApproval itself.
+		recordReleaseApproval({ nonce: "n-identity", tag: "[Land]", question: "q", response: "yes", issuedAt: "2026-01-01T00:00:00.000Z" });
 		releaseSelect("Yes");
 		await pending;
 
@@ -740,7 +741,7 @@ describe("pure reducers — hasOpenRelease / closeOpenRelease / openReleaseGuida
 	};
 
 	it("hasOpenRelease is true only for an unclosed open-release", () => {
-		const base: CraftState = { feature: "f", projectRoot: "/p", testsPassed: false, aborted: false };
+		const base: CraftState = { feature: "f", projectRoot: "/p", aborted: false };
 		expect(hasOpenRelease(undefined)).toBe(false);
 		expect(hasOpenRelease(base)).toBe(false);
 		expect(hasOpenRelease({ ...base, openRelease: openEvidence })).toBe(true);

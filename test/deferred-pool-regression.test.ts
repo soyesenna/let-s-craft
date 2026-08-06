@@ -79,7 +79,7 @@ function tmpProject(): string {
 }
 
 function freshState(projectRoot: string, feature = "my-feature"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 /** Write an exact on-disk .craft-state.json shape via JSON.stringify (bypasses the mutators), mirroring craft-state.test.ts's writePersistedState. */

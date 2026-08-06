@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { craftAuditDir, craftTestLogsDir } from "../artifacts/paths.js";
+import { craftAuditDir, worktreesRootDir } from "../artifacts/paths.js";
 import { getActiveCraft } from "../craft/state.js";
 import { type AuditVerdict, latestAuditNumber, latestRunNumber, parseAuditVerdict } from "../craft/verdict.js";
 import type { RenderRow, RowSegment } from "./render.js";
@@ -30,22 +30,30 @@ export { type AuditVerdict, latestAuditNumber, latestRunNumber, parseAuditVerdic
 
 export interface CraftProgressInput {
 	feature: string;
-	/** Highest completed test/logs/run-N.log index (0 = no run yet). */
-	iteration: number;
-	testsPassed: boolean;
-	hasFailure: boolean;
+	/** Sibling `.lsc/worktrees/{feature}-c*-lane-*` directory count for the active craft's audit cycle (0 = single executor, no parallel lanes this cycle). */
+	laneCount: number;
+	aborted: boolean;
 	/** undefined when no audit exists yet, or the latest one didn't parse (fallback). */
 	auditVerdict: AuditVerdict | undefined;
 }
 
 /**
  * Thin gather: the active craft comes from the in-process singleton (no FS scan); a
- * couple of small directory reads derive the iteration count and the latest audit
- * verdict. Returns undefined when there is no active craft (card omitted — see the
- * file header's scope-cut note). Never throws — the statusbar's render loop calls
- * this on every redraw (see index.ts), so any unexpected FS error (a race against a
- * directory being removed mid-craft, a permission glitch, ...) falls back to "no
- * card" for that frame rather than breaking the whole widget.
+ * couple of small directory reads derive the lane count and the latest audit verdict.
+ * Returns undefined when there is no active craft (card omitted — see the file
+ * header's scope-cut note). Never throws — the statusbar's render loop calls this on
+ * every redraw (see index.ts), so any unexpected FS error (a race against a directory
+ * being removed mid-craft, a permission glitch, ...) falls back to "no card" for that
+ * frame rather than breaking the whole widget.
+ *
+ * **Progress axis is executor lanes, not test status (C1).** craft is now a single-shot
+ * executor run (plan §craft) with no repeating test-pass loop to report progress against —
+ * `checkPassed` would be unreachable here regardless, since the deterministic check log is
+ * produced by post-craft (`check/run_check.sh`, C3), which never calls `lsc_craft_init` and so
+ * never has a craft session with this card rendered in the first place. Sibling lane worktree
+ * directories under `.lsc/worktrees/` (readdir on the MAIN checkout, never the worktree root —
+ * craft.projectRoot is always the main checkout per state.ts) are the one thing this session can
+ * actually observe while craft is in flight.
  */
 export function gatherCraftProgress(): CraftProgressInput | undefined {
 	try {
@@ -54,9 +62,10 @@ export function gatherCraftProgress(): CraftProgressInput | undefined {
 
 		const root = craft.worktreeRoot ?? craft.projectRoot;
 
-		const logsDir = craftTestLogsDir(root, craft.feature);
-		const logNames = existsSync(logsDir) ? readdirSync(logsDir) : [];
-		const iteration = latestRunNumber(logNames);
+		const worktreesRoot = worktreesRootDir(craft.projectRoot);
+		const laneNames = existsSync(worktreesRoot) ? readdirSync(worktreesRoot) : [];
+		const lanePattern = new RegExp(`^${craft.feature}-c\\d+-lane-\\d+$`);
+		const laneCount = laneNames.filter(name => lanePattern.test(name)).length;
 
 		const auditDir = craftAuditDir(root, craft.feature);
 		const auditNames = existsSync(auditDir) ? readdirSync(auditDir) : [];
@@ -73,9 +82,8 @@ export function gatherCraftProgress(): CraftProgressInput | undefined {
 
 		return {
 			feature: craft.feature,
-			iteration,
-			testsPassed: craft.testsPassed,
-			hasFailure: craft.lastFailureSummary !== undefined,
+			laneCount,
+			aborted: craft.aborted,
 			auditVerdict,
 		};
 	} catch {
@@ -90,22 +98,20 @@ function seg(text: string, style: RowSegment["style"]): RowSegment {
 }
 
 /**
- * Render the one-line craft progress card, e.g. `⚒ craft demo · iter 3 · tests
- * failing · audit —`. Reuses render.ts's existing SegmentStyle palette (title/
- * label/header/pct-ok/pct-crit/na) so the registrar's style→theme-color table
- * needs no new entries; width degradation (clipping to the terminal width) is
- * applied by the caller via render.ts's exported `clipRow`, same as every other
- * statusbar row.
+ * Render the one-line craft progress card, e.g. `⚒ craft demo · lanes 3 · audit —`
+ * or `⚒ craft demo · single executor · aborted · audit APPROVE`. Reuses render.ts's
+ * existing SegmentStyle palette (title/label/header/pct-ok/pct-crit/na) so the
+ * registrar's style→theme-color table needs no new entries; width degradation
+ * (clipping to the terminal width) is applied by the caller via render.ts's exported
+ * `clipRow`, same as every other statusbar row.
  */
 export function renderCraftProgressRow(input: CraftProgressInput): RenderRow {
-	const segments: RowSegment[] = [seg("⚒ craft ", "title"), seg(input.feature, "label"), seg(` · iter ${input.iteration}`, "header")];
+	const segments: RowSegment[] = [seg("⚒ craft ", "title"), seg(input.feature, "label")];
 
-	if (input.hasFailure) {
-		segments.push(seg(" · tests failing", "pct-crit"));
-	} else if (input.testsPassed) {
-		segments.push(seg(" · tests passing", "pct-ok"));
-	} else {
-		segments.push(seg(" · tests pending", "na"));
+	segments.push(input.laneCount > 0 ? seg(` · lanes ${input.laneCount}`, "header") : seg(" · single executor", "header"));
+
+	if (input.aborted) {
+		segments.push(seg(" · aborted", "pct-crit"));
 	}
 
 	segments.push(seg(` · audit ${input.auditVerdict ?? NO_AUDIT}`, input.auditVerdict ? "label" : "na"));

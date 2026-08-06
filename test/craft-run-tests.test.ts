@@ -3,18 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { craftRunTestScriptPath, craftTestDir } from "../src/artifacts/paths";
-import {
-	composeRunTestsResultText,
-	computeFailureSignature,
-	extractFailureLines,
-	failureSummaryFor,
-	nextLogNumber,
-	noProgressEscalationText,
-	performRunTests,
-	resolveRunTestsTarget,
-	runFeatureTests,
-} from "../src/craft/run-tests";
-import { type CraftState, clearActiveCraft, getActiveCraft, recordTestResult, setActiveCraft } from "../src/craft/state";
+import { extractFailureLines, failureSummaryFor, nextLogNumber, performRunTests, resolveRunTestsTarget, runFeatureTests } from "../src/craft/run-tests";
+import { type CraftState, clearActiveCraft, getActiveCraft, setActiveCraft } from "../src/craft/state";
 
 const tempDirs: string[] = [];
 afterEach(() => {
@@ -143,96 +133,6 @@ describe("runFeatureTests", () => {
 	});
 });
 
-describe("computeFailureSignature (C-1)", () => {
-	it("collapses two failure summaries that differ only in volatile tokens (absolute paths, line:col, durations)", () => {
-		const a = "FAIL test/slugify.test.ts\n  at /Users/alice/repo/src/slugify.ts:12:34\n  Error: expected 1 to be 2 (123ms)";
-		const b = "FAIL test/slugify.test.ts\n  at /Users/bob/other/repo/src/slugify.ts:45:1\n  Error: expected 1 to be 2 (456ms)";
-		expect(computeFailureSignature(a)).toBe(computeFailureSignature(b));
-	});
-
-	it("strips ANSI color escapes and hex addresses", () => {
-		const a = "FAIL test/x.test.ts\n\x1b[31mError: null pointer at 0x1a2b3c\x1b[0m";
-		const b = "FAIL test/x.test.ts\nError: null pointer at 0x4d5e6f";
-		expect(computeFailureSignature(a)).toBe(computeFailureSignature(b));
-	});
-
-	it("produces a different signature when the failing test name differs", () => {
-		const a = "FAIL test/slugify.test.ts\nError: boom";
-		const b = "FAIL test/other.test.ts\nError: boom";
-		expect(computeFailureSignature(a)).not.toBe(computeFailureSignature(b));
-	});
-
-	it("produces a different signature when the error message differs", () => {
-		const a = "FAIL test/slugify.test.ts\nError: expected foo";
-		const b = "FAIL test/slugify.test.ts\nError: expected bar";
-		expect(computeFailureSignature(a)).not.toBe(computeFailureSignature(b));
-	});
-
-	it("is order-independent over which failing tests were named (sorted set)", () => {
-		const a = "FAIL test/b.test.ts\nFAIL test/a.test.ts\nError: boom";
-		const b = "FAIL test/a.test.ts\nFAIL test/b.test.ts\nError: boom";
-		expect(computeFailureSignature(a)).toBe(computeFailureSignature(b));
-	});
-
-	// Regression: `\b` after the symbol markers never matched (`✗`/`✘` are non-word chars, so
-	// `✗ name` has no word boundary before the space) — the failing-test-name set stayed empty for
-	// that runner style and two DIFFERENT failure sets collapsed into one signature.
-	it("recognizes ✗/✘ symbol markers as test-name lines (not bare error lines)", () => {
-		const a = "✗ test/a.test.ts\n✗ test/b.test.ts\nError: boom";
-		const b = "✗ test/a.test.ts\n✗ test/c.test.ts\nError: boom";
-		expect(computeFailureSignature(a)).not.toBe(computeFailureSignature(b));
-		const heavy = "✘ test/a.test.ts\nError: boom";
-		const fail = "FAIL test/a.test.ts\nError: boom";
-		expect(computeFailureSignature(heavy)).toBe(computeFailureSignature(fail));
-	});
-});
-
-describe("noProgressEscalationText / composeRunTestsResultText (C-1)", () => {
-	it("includes the [No Progress] marker and the consecutive-failure count", () => {
-		expect(noProgressEscalationText(3)).toContain("[No Progress]");
-		expect(noProgressEscalationText(3)).toContain("3");
-	});
-
-	it("composeRunTestsResultText leaves the base text untouched when noProgress is false", () => {
-		const text = composeRunTestsResultText("lets-craft: run_test.sh FAILED (exit 1).", { noProgress: false, consecutiveFailures: 1 });
-		expect(text).toBe("lets-craft: run_test.sh FAILED (exit 1).");
-	});
-
-	it("composeRunTestsResultText appends the [No Progress] notice when noProgress is true", () => {
-		const text = composeRunTestsResultText("lets-craft: run_test.sh FAILED (exit 1).", { noProgress: true, consecutiveFailures: 3 });
-		expect(text).toContain("lets-craft: run_test.sh FAILED (exit 1).");
-		expect(text).toContain("[No Progress]");
-	});
-});
-
-describe("no-progress integration: recordTestResult -> composeRunTestsResultText (C-1)", () => {
-	afterEach(() => clearActiveCraft());
-
-	it("the 3rd consecutive matching-signature failure makes recordTestResult return noProgress:true, and the assembled tool-result text carries the [No Progress] marker", () => {
-		setActiveCraft({ feature: "f", projectRoot: tmpProject(), testsPassed: false, aborted: false });
-
-		recordTestResult(false, "run 1", computeFailureSignature("FAIL test/b.test.ts\nError: boom"));
-		recordTestResult(false, "run 2", computeFailureSignature("FAIL test/b.test.ts\nError: boom"));
-		const record = recordTestResult(false, "run 3", computeFailureSignature("FAIL test/b.test.ts\nError: boom"));
-
-		expect(record).toEqual({ consecutiveFailures: 3, noProgress: true });
-		const text = composeRunTestsResultText("lets-craft: run_test.sh FAILED (exit 1).", record);
-		expect(text).toContain("[No Progress]");
-	});
-
-	it("a genuinely different failure on the 3rd run resets progress and produces no notice", () => {
-		setActiveCraft({ feature: "f", projectRoot: tmpProject(), testsPassed: false, aborted: false });
-
-		recordTestResult(false, "run 1", computeFailureSignature("FAIL test/b.test.ts\nError: boom"));
-		recordTestResult(false, "run 2", computeFailureSignature("FAIL test/b.test.ts\nError: boom"));
-		const record = recordTestResult(false, "run 3", computeFailureSignature("FAIL test/c.test.ts\nError: kaboom"));
-
-		expect(record).toEqual({ consecutiveFailures: 1, noProgress: false });
-		const text = composeRunTestsResultText("lets-craft: run_test.sh FAILED (exit 1).", record);
-		expect(text).not.toContain("[No Progress]");
-	});
-});
-
 // ---------------------------------------------------------------------------
 // B-1 review NEEDS-FIX HIGH: lsc_run_tests must not be gated on an exact active-craft match in the
 // common post-craft path (post-craft never calls lsc_craft_init, skills/post-craft/SKILL.md §1.5) —
@@ -241,30 +141,30 @@ describe("no-progress integration: recordTestResult -> composeRunTestsResultText
 // ---------------------------------------------------------------------------
 
 function freshCraftState(projectRoot: string, feature = "my-feature"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 describe("resolveRunTestsTarget (B-1)", () => {
-	it("prefers an exact active-craft match — 'active' mode, regardless of any persisted state", () => {
+	it("prefers an exact active-craft match, regardless of any persisted state", () => {
 		const active = freshCraftState("/active-root", "my-feature");
 		const persisted = freshCraftState("/persisted-root", "my-feature");
-		expect(resolveRunTestsTarget("my-feature", active, persisted)).toEqual({ mode: "active", root: "/active-root" });
+		expect(resolveRunTestsTarget("my-feature", active, persisted)).toEqual({ mode: "run", root: "/active-root", auditEvidenceOnly: false });
 	});
 
 	it("uses the active craft's worktreeRoot over projectRoot when both are set", () => {
 		const active: CraftState = { ...freshCraftState("/project-root"), worktreeRoot: "/worktree-root" };
-		expect(resolveRunTestsTarget("my-feature", active, undefined)).toEqual({ mode: "active", root: "/worktree-root" });
+		expect(resolveRunTestsTarget("my-feature", active, undefined)).toEqual({ mode: "run", root: "/worktree-root", auditEvidenceOnly: false });
 	});
 
-	it("falls back to 'audit-evidence' mode when no active craft matches but persisted state exists (no open-release)", () => {
+	it("falls back to audit-evidence-only when no active craft matches but persisted state exists (no open-release)", () => {
 		const persisted = freshCraftState("/persisted-root", "my-feature");
-		expect(resolveRunTestsTarget("my-feature", undefined, persisted)).toEqual({ mode: "audit-evidence", root: "/persisted-root" });
+		expect(resolveRunTestsTarget("my-feature", undefined, persisted)).toEqual({ mode: "run", root: "/persisted-root", auditEvidenceOnly: true });
 	});
 
-	it("falls back to 'audit-evidence' mode when an active craft exists for a DIFFERENT feature (never contaminates it)", () => {
+	it("falls back to audit-evidence-only when an active craft exists for a DIFFERENT feature (never contaminates it)", () => {
 		const active = freshCraftState("/active-root", "other-feature");
 		const persisted = freshCraftState("/persisted-root", "my-feature");
-		expect(resolveRunTestsTarget("my-feature", active, persisted)).toEqual({ mode: "audit-evidence", root: "/persisted-root" });
+		expect(resolveRunTestsTarget("my-feature", active, persisted)).toEqual({ mode: "run", root: "/persisted-root", auditEvidenceOnly: true });
 	});
 
 	it("refuses with the open-release re-baseline guidance when persisted state carries an unclosed open-release", () => {
@@ -295,7 +195,7 @@ describe("performRunTests (B-1, tool-execute-level)", () => {
 
 	afterEach(() => clearActiveCraft());
 
-	it("'active' mode: runs the script, records the result via recordTestResult, and never mentions audit-evidence mode", async () => {
+	it("an exact active-craft match: runs the script and never mentions audit-evidence mode", async () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		seedScript(root, feature);
@@ -305,10 +205,10 @@ describe("performRunTests (B-1, tool-execute-level)", () => {
 
 		expect(result.isError).toBeFalsy();
 		expect((result.content[0] as { text: string }).text).not.toContain("[Audit Evidence Mode]");
-		expect(getActiveCraft()?.testsPassed).toBe(true); // recordTestResult DID mutate the active craft
+		expect((result.content[0] as { text: string }).text).toContain("passed");
 	});
 
-	it("'audit-evidence' mode: runs the script and writes run-N.log, but does not mutate active-craft state", async () => {
+	it("audit-evidence-only: runs the script and writes run-N.log without creating an active craft", async () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		seedScript(root, feature);
@@ -323,7 +223,7 @@ describe("performRunTests (B-1, tool-execute-level)", () => {
 		expect(logNames).toContain("run-1.log"); // the log run-tests.ts's own numbering owns was still written
 	});
 
-	it("'audit-evidence' mode never contaminates a DIFFERENT feature's active-craft bookkeeping", async () => {
+	it("audit-evidence-only never contaminates a DIFFERENT feature's active craft", async () => {
 		const root = tmpProject();
 		seedScript(root, "my-feature");
 		const otherActive = freshCraftState(root, "other-feature");
@@ -333,8 +233,7 @@ describe("performRunTests (B-1, tool-execute-level)", () => {
 		const result = await performRunTests({ feature: "my-feature", activeCraft: getActiveCraft(), persisted, exec: passExec });
 
 		expect(result.isError, JSON.stringify(result)).toBeFalsy();
-		expect(getActiveCraft()?.feature).toBe("other-feature");
-		expect(getActiveCraft()?.testsPassed).toBe(false); // untouched by my-feature's audit-evidence run
+		expect(getActiveCraft()?.feature).toBe("other-feature"); // untouched by my-feature's audit-evidence run
 	});
 
 	it("'refuse' mode never calls exec at all (e.g. no persisted state)", async () => {

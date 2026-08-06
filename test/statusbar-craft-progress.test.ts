@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { craftAuditDir, craftTestLogsDir } from "../src/artifacts/paths.js";
+import { craftAuditDir, worktreesRootDir } from "../src/artifacts/paths.js";
 import { clearActiveCraft, setActiveCraft, type CraftState } from "../src/craft/state.js";
 import { rowText } from "../src/statusbar/render.js";
 import {
@@ -17,8 +17,10 @@ import {
 // ---------------------------------------------------------------------------
 // QW7: craft-progress statusbar card. Covers the pure derivations (run-N /
 // audit-N max, VERDICT-line parsing, one-line render) plus the thin gather's
-// active/inactive/testsPassed-state behavior against real temp directories
-// (mirrors test/craft-state.test.ts's setActiveCraft/clearActiveCraft usage).
+// active/inactive/lane-count behavior against real temp directories (mirrors
+// test/craft-state.test.ts's setActiveCraft/clearActiveCraft usage). The
+// progress axis is executor lanes, not test status (C1) — see craft-progress.ts's
+// own gatherCraftProgress doc comment for why.
 // ---------------------------------------------------------------------------
 
 describe("latestRunNumber", () => {
@@ -83,21 +85,17 @@ describe("renderCraftProgressRow", () => {
 		return rowText(renderCraftProgressRow(input));
 	}
 
-	it("renders the failing-tests example line", () => {
-		expect(text({ feature: "demo", iteration: 3, testsPassed: false, hasFailure: true, auditVerdict: undefined })).toBe(
-			"⚒ craft demo · iter 3 · tests failing · audit —",
-		);
+	it("renders parallel lanes with a parsed audit verdict", () => {
+		expect(text({ feature: "demo", laneCount: 3, aborted: false, auditVerdict: "APPROVE" })).toBe("⚒ craft demo · lanes 3 · audit APPROVE");
 	});
 
-	it("renders passing tests and a parsed audit verdict", () => {
-		expect(text({ feature: "demo", iteration: 5, testsPassed: true, hasFailure: false, auditVerdict: "APPROVE" })).toBe(
-			"⚒ craft demo · iter 5 · tests passing · audit APPROVE",
-		);
+	it("renders a single-executor run before any audit exists", () => {
+		expect(text({ feature: "demo", laneCount: 0, aborted: false, auditVerdict: undefined })).toBe("⚒ craft demo · single executor · audit —");
 	});
 
-	it("renders a pending state before any test has run", () => {
-		expect(text({ feature: "demo", iteration: 0, testsPassed: false, hasFailure: false, auditVerdict: undefined })).toBe(
-			"⚒ craft demo · iter 0 · tests pending · audit —",
+	it("renders the aborted state", () => {
+		expect(text({ feature: "demo", laneCount: 0, aborted: true, auditVerdict: undefined })).toBe(
+			"⚒ craft demo · single executor · aborted · audit —",
 		);
 	});
 });
@@ -109,7 +107,7 @@ function tmpProject(): string {
 	return dir;
 }
 function freshState(projectRoot: string, feature = "demo"): CraftState {
-	return { feature, projectRoot, testsPassed: false, aborted: false };
+	return { feature, projectRoot, aborted: false };
 }
 
 beforeEach(() => clearActiveCraft());
@@ -126,45 +124,41 @@ describe("gatherCraftProgress", () => {
 		expect(gatherCraftProgress()).toBeUndefined();
 	});
 
-	it("returns a pending-tests card for a freshly-initialized craft with no logs/audit yet", () => {
+	it("returns a single-executor card for a freshly-initialized craft with no lanes/audit yet", () => {
 		const projectRoot = tmpProject();
 		setActiveCraft(freshState(projectRoot));
 
 		expect(gatherCraftProgress()).toEqual({
 			feature: "demo",
-			iteration: 0,
-			testsPassed: false,
-			hasFailure: false,
+			laneCount: 0,
+			aborted: false,
 			auditVerdict: undefined,
 		});
 	});
 
-	it("derives the iteration from the highest run-N.log and reports a failing state", () => {
+	it("counts sibling lane worktree directories matching {feature}-c*-lane-*, ignoring other features", () => {
 		const projectRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), testsPassed: false, lastFailureSummary: "2 tests failed" });
-		const logsDir = craftTestLogsDir(projectRoot, "demo");
-		mkdirSync(logsDir, { recursive: true });
-		writeFileSync(join(logsDir, "run-1.log"), "log 1");
-		writeFileSync(join(logsDir, "run-2.log"), "log 2");
+		setActiveCraft(freshState(projectRoot));
+		const worktreesRoot = worktreesRootDir(projectRoot);
+		mkdirSync(join(worktreesRoot, "demo-c0-lane-1"), { recursive: true });
+		mkdirSync(join(worktreesRoot, "demo-c0-lane-2"), { recursive: true });
+		mkdirSync(join(worktreesRoot, "other-feature-c0-lane-1"), { recursive: true }); // different feature — not counted
 
-		const progress = gatherCraftProgress();
-		expect(progress?.iteration).toBe(2);
-		expect(progress?.hasFailure).toBe(true);
-		expect(progress?.testsPassed).toBe(false);
+		expect(gatherCraftProgress()?.laneCount).toBe(2);
 	});
 
-	it("reports testsPassed true once recorded, with no failure", () => {
+	it("reports aborted true once marked, independent of lane count", () => {
 		const projectRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), testsPassed: true });
+		setActiveCraft({ ...freshState(projectRoot), aborted: true });
 
 		const progress = gatherCraftProgress();
-		expect(progress?.testsPassed).toBe(true);
-		expect(progress?.hasFailure).toBe(false);
+		expect(progress?.aborted).toBe(true);
+		expect(progress?.laneCount).toBe(0);
 	});
 
 	it("attaches the latest audit's verdict when parseable", () => {
 		const projectRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), testsPassed: true });
+		setActiveCraft(freshState(projectRoot));
 		const auditDir = craftAuditDir(projectRoot, "demo");
 		mkdirSync(auditDir, { recursive: true });
 		writeFileSync(join(auditDir, "audit-0.md"), "**AUDIT VERDICT: APPROVE-WITH-CHANGE**\n");
@@ -175,7 +169,7 @@ describe("gatherCraftProgress", () => {
 
 	it("omits the audit verdict (fallback) when the latest audit doc doesn't parse", () => {
 		const projectRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), testsPassed: true });
+		setActiveCraft(freshState(projectRoot));
 		const auditDir = craftAuditDir(projectRoot, "demo");
 		mkdirSync(auditDir, { recursive: true });
 		writeFileSync(join(auditDir, "audit-0.md"), "# no verdict line in this doc\n");
@@ -183,14 +177,25 @@ describe("gatherCraftProgress", () => {
 		expect(gatherCraftProgress()?.auditVerdict).toBeUndefined();
 	});
 
-	it("resolves logs/audit dirs under worktreeRoot, not projectRoot, when a worktree is active", () => {
+	it("resolves the audit dir under worktreeRoot, not projectRoot, when a worktree is active", () => {
 		const projectRoot = tmpProject();
 		const worktreeRoot = tmpProject();
-		setActiveCraft({ ...freshState(projectRoot), worktreeRoot, testsPassed: true });
-		const logsDir = craftTestLogsDir(worktreeRoot, "demo");
-		mkdirSync(logsDir, { recursive: true });
-		writeFileSync(join(logsDir, "run-4.log"), "log 4");
+		setActiveCraft({ ...freshState(projectRoot), worktreeRoot });
+		const auditDir = craftAuditDir(worktreeRoot, "demo");
+		mkdirSync(auditDir, { recursive: true });
+		writeFileSync(join(auditDir, "audit-0.md"), "**AUDIT VERDICT: APPROVE**\n");
 
-		expect(gatherCraftProgress()?.iteration).toBe(4);
+		expect(gatherCraftProgress()?.auditVerdict).toBe("APPROVE");
+	});
+
+	it("resolves lane worktree directories under the MAIN checkout's .lsc/worktrees, never the worktree root", () => {
+		const projectRoot = tmpProject();
+		const worktreeRoot = tmpProject();
+		setActiveCraft({ ...freshState(projectRoot), worktreeRoot });
+		mkdirSync(join(worktreesRootDir(projectRoot), "demo-c0-lane-1"), { recursive: true });
+		// A lane directory sitting under the (wrong) worktree root must not be counted.
+		mkdirSync(join(worktreesRootDir(worktreeRoot), "demo-c0-lane-2"), { recursive: true });
+
+		expect(gatherCraftProgress()?.laneCount).toBe(1);
 	});
 });

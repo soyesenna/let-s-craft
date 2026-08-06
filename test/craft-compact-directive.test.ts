@@ -7,7 +7,7 @@ import { buildCompactionDirective, registerCompactionDirective } from "../src/cr
 import * as stateModule from "../src/craft/state";
 import { clearActiveCraft, type CraftState, setActiveCraft } from "../src/craft/state";
 
-const CRAFT: CraftState = { projectRoot: "/repo", feature: "my-feature", testsPassed: false, aborted: false };
+const CRAFT: CraftState = { projectRoot: "/repo", feature: "my-feature", aborted: false };
 const WORKTREE_ROOT = "/repo/.lsc/worktrees/my-feature";
 const CRAFT_WORKTREE: CraftState = { ...CRAFT, worktreeRoot: WORKTREE_ROOT };
 
@@ -51,18 +51,6 @@ describe("buildCompactionDirective", () => {
 		expect(directive).toMatch(/test\/ tree/);
 		expect(directive).toMatch(/must never.*be modified/i);
 		expect(directive).toContain("C20");
-	});
-
-	it("restates the hash-verification discipline", () => {
-		const directive = buildCompactionDirective(CRAFT) ?? "";
-		expect(directive).toContain("lsc_verify_hash");
-		expect(directive).toMatch(/never assumed from a summary/i);
-	});
-
-	it("restates the loop's only two valid exits: run_test.sh passing or an explicit abort", () => {
-		const directive = buildCompactionDirective(CRAFT) ?? "";
-		expect(directive).toMatch(/run_test\.sh/);
-		expect(directive).toContain("lsc_craft_abort");
 	});
 
 	it("restates that human-facing questions must go through lsc_ask/lsc_select/lsc_confirm", () => {
@@ -115,7 +103,7 @@ describe("registerCompactionDirective", () => {
 
 	it("returns { context: [directive] } matching buildCompactionDirective when a craft is active", () => {
 		const projectRoot = tmpProject();
-		const craft: CraftState = { projectRoot, feature: "my-feature", testsPassed: false, aborted: false };
+		const craft: CraftState = { projectRoot, feature: "my-feature", aborted: false };
 		setActiveCraft(craft);
 
 		const handler = captureHandler();

@@ -23,8 +23,8 @@
 // shouldContinueCraftLoop) so tests can assert the block/continue logic directly
 // without booting a session.
 import { isAbsolute, relative, resolve } from "node:path";
-import type { ExtensionAPI, SessionStopEventResult, ToolCallEventResult } from "@oh-my-pi/pi-coding-agent";
-import { craftStatePath, craftTestDir, craftTestLogsDir } from "../artifacts/paths.js";
+import type { ExtensionAPI, ToolCallEventResult } from "@oh-my-pi/pi-coding-agent";
+import { craftTestDir } from "../artifacts/paths.js";
 import { type CraftState, getActiveCraft, registerCraftStateResets } from "./state.js";
 
 const PROTECTED_TOOLS = new Set(["write", "edit", "ast_edit"]);
@@ -162,50 +162,13 @@ export function evaluateToolCallForActiveCraft(
 	return undefined;
 }
 
-/** Pure decision for the `session_stop` handler: continue iff a craft is active, its tests haven't passed, and it hasn't been user-aborted. */
-export function shouldContinueCraftLoop(craft: Pick<CraftState, "testsPassed" | "aborted"> | undefined): boolean {
-	return craft !== undefined && !craft.testsPassed && !craft.aborted;
-}
-
-/**
- * Resume-discipline mini template (C-2 part 1 — the hook layer's own restatement of
- * craft/SKILL.md's resume note, not just a one-line nudge). session_stop only ever fires again
- * after the model already thinks a turn is over, so the injected text cannot assume anything of
- * the resumed turn's own context is still live in-model — it must point back at the durable
- * files (`.craft-state.json`, the latest `run-N.log`) rather than let the model reconstruct
- * "what was I doing" from memory, and it must foreclose the one failure mode observed in
- * practice: pausing to ask the user "should I continue?" instead of just resuming §3 of the
- * skill contract.
- */
-export function continuationResult(craft: CraftState): SessionStopEventResult {
-	const root = craft.worktreeRoot ?? craft.projectRoot;
-	const statePath = craftStatePath(root, craft.feature);
-	const logsDir = craftTestLogsDir(root, craft.feature);
-	const failure = craft.lastFailureSummary ? ` Last failure summary (also on disk in the state file): ${craft.lastFailureSummary}` : "";
-	return {
-		continue: true,
-		additionalContext:
-			`lets-craft: craft "${craft.feature}" has not passed run_test.sh yet. This is a resume, not a fresh decision — do not reconstruct its state from memory. ` +
-			`1) Read ${statePath} now to confirm the real testsPassed/lastFailureSummary. ` +
-			`2) Read the latest run-N.log under ${logsDir} to re-confirm the last failure in full. ` +
-			`3) Do not ask the user whether to continue — resume craft/SKILL.md's §3 loop immediately. The only valid exits are run_test.sh passing (§3.4) or an explicit lsc_craft_abort (§3.3/§3.4 decline branches).` +
-			failure,
-	};
-}
-
-/** Wire the tool_call block, the session_stop backstop, and active-craft reset on session transitions. */
+/** Wire the tool_call block and active-craft reset on session transitions. */
 export function registerCraftEnforcement(pi: ExtensionAPI): void {
 	pi.on("tool_call", (event, ctx) => {
 		return evaluateToolCallForActiveCraft(
 			{ toolName: event.toolName, input: event.input as Record<string, unknown>, cwd: ctx.cwd },
 			getActiveCraft(),
 		);
-	});
-
-	pi.on("session_stop", () => {
-		const craft = getActiveCraft();
-		if (!shouldContinueCraftLoop(craft)) return undefined;
-		return continuationResult(craft as CraftState);
 	});
 
 	registerCraftStateResets(pi);

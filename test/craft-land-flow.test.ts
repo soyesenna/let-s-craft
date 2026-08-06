@@ -202,7 +202,6 @@ interface PersistedState {
 	feature: string;
 	projectRoot: string;
 	worktreeRoot: string;
-	testsPassed: boolean;
 	aborted: boolean;
 	stateVersion?: number;
 	auditCycle?: number;
@@ -274,7 +273,6 @@ function setupLandableFeature(opts: FeatureOpts = {}): LandFixture {
 		feature: opts.stateFeature ?? feature,
 		projectRoot: opts.stateProjectRoot ?? projectRoot,
 		worktreeRoot: opts.stateWorktreeRoot ?? worktreeRoot,
-		testsPassed: true,
 		aborted: false,
 		stateVersion: 1,
 	};
@@ -377,7 +375,7 @@ describe("lsc_land — AC2 production approval path (real confirm execute + fixt
 	it("issues via the craft-bound path when a same-identity active craft is present (same-session), then lands", async () => {
 		const tools = buildTools();
 		const fx = setupLandableFeature({ feature: "same-session" });
-		setActiveCraft({ feature: fx.feature, projectRoot: fx.projectRoot, worktreeRoot: fx.worktreeRoot, testsPassed: true, aborted: false } as CraftState);
+		setActiveCraft({ feature: fx.feature, projectRoot: fx.projectRoot, worktreeRoot: fx.worktreeRoot, aborted: false } as CraftState);
 
 		await issueLandApproval(tools, fx);
 		const land = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
@@ -489,7 +487,7 @@ function setupLandableFeatureIn(projectRoot: string, feature: string): LandFixtu
 	mkdirSync(craftTestDir(worktreeRoot, feature), { recursive: true });
 	writeFileSync(
 		craftStatePath(worktreeRoot, feature),
-		JSON.stringify({ feature, projectRoot, worktreeRoot, testsPassed: true, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }),
+		JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }),
 	);
 	git(worktreeRoot, ["add", "-A"]);
 	git(worktreeRoot, ["commit", "-q", "-m", `feat: ${feature}`]);
@@ -733,7 +731,7 @@ describe("lsc_land — AC3 effect-path failure state machine", () => {
 		mkdirSync(craftTestLogsDir(worktreeRoot, feature), { recursive: true });
 		writeFileSync(join(craftTestLogsDir(worktreeRoot, feature), "run-2.log"), "--- exit 0 ---\n");
 		mkdirSync(craftTestDir(worktreeRoot, feature), { recursive: true });
-		writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, testsPassed: true, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
+		writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
 		git(worktreeRoot, ["add", "-A"]);
 		git(worktreeRoot, ["commit", "-q", "-m", "feat: conflicting README"]);
 		// Advance main so it conflicts with the feature's README edit.
@@ -834,7 +832,7 @@ describe("lsc_land — AC3 effect-path failure state machine", () => {
 		mkdirSync(craftTestDir(projectRoot, feature), { recursive: true });
 		writeFileSync(
 			craftStatePath(projectRoot, feature),
-			JSON.stringify({ feature, projectRoot, worktreeRoot: worktreePath(projectRoot, feature), testsPassed: true, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }),
+			JSON.stringify({ feature, projectRoot, worktreeRoot: worktreePath(projectRoot, feature), aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }),
 		);
 
 		const result = await callTool(tools, "lsc_land", { feature }, makeCtx(projectRoot));
@@ -922,7 +920,7 @@ function setupConflictingFeature(feature: string): LandFixture {
 	mkdirSync(craftTestLogsDir(worktreeRoot, feature), { recursive: true });
 	writeFileSync(join(craftTestLogsDir(worktreeRoot, feature), "run-2.log"), "--- exit 0 ---\n");
 	mkdirSync(craftTestDir(worktreeRoot, feature), { recursive: true });
-	writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, testsPassed: true, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
+	writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
 	git(worktreeRoot, ["add", "-A"]);
 	git(worktreeRoot, ["commit", "-q", "-m", "feat: conflicting README"]);
 	writeFileSync(join(projectRoot, "README.md"), "main edit\n");
@@ -1003,7 +1001,7 @@ describe("lsc_land — standalone real-git rejections (membership / lock / main-
 		mkdirSync(craftTestLogsDir(worktreeRoot, feature), { recursive: true });
 		writeFileSync(join(craftTestLogsDir(worktreeRoot, feature), "run-2.log"), "--- exit 0 ---\n");
 		mkdirSync(craftTestDir(worktreeRoot, feature), { recursive: true });
-		writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, testsPassed: true, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
+		writeFileSync(craftStatePath(worktreeRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
 		const result = await callTool(buildTools(), "lsc_land", { feature }, makeCtx(projectRoot));
 		expect(result.isError).toBe(true);
 		expect(textOf(result)).toContain("not-registered");
@@ -1043,7 +1041,7 @@ describe("lsc_land — standalone real-git rejections (membership / lock / main-
 		mkdirSync(craftTestLogsDir(projectRoot, feature), { recursive: true });
 		writeFileSync(join(craftTestLogsDir(projectRoot, feature), "run-2.log"), "--- exit 0 ---\n");
 		mkdirSync(craftTestDir(projectRoot, feature), { recursive: true });
-		writeFileSync(craftStatePath(projectRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, testsPassed: true, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
+		writeFileSync(craftStatePath(projectRoot, feature), JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 1, auditCycle: 1, runLogAtCycleStart: 1 }));
 		rmSync(worktreeRoot, { recursive: true, force: true });
 		symlinkSync(projectRoot, worktreeRoot);
 
@@ -1147,7 +1145,7 @@ describe("lsc_land — prepared-operation issuance eligibility", () => {
 	it("does not issue when a DIFFERENT-identity active craft is present (mismatched active craft)", async () => {
 		const tools = buildTools();
 		const fx = setupLandableFeature({ feature: "mismatch-active" });
-		setActiveCraft({ feature: "unrelated-feature", projectRoot: "/some/other/root", worktreeRoot: "/some/other/root/wt", testsPassed: true, aborted: false } as CraftState);
+		setActiveCraft({ feature: "unrelated-feature", projectRoot: "/some/other/root", worktreeRoot: "/some/other/root/wt", aborted: false } as CraftState);
 		await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
 		const question = peekPreparedOperation(LAND_TAG)?.approvalQuestion ?? "";
 		const confirm = await callTool(tools, "lsc_confirm", { question }, makeCtx(fx.projectRoot, makeUI(["Yes"])));
