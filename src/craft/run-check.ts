@@ -204,17 +204,46 @@ export async function runFeatureCheck(args: RunFeatureCheckArgs): Promise<RunFea
 	const logNumber = nextLogNumber(args.logsDir);
 	const logPath = join(args.logsDir, `check-${logNumber}.log`);
 	const scriptDigest = createHash("sha256").update(args.scriptText).digest("hex");
+	// The empty-transcript gate (E3 rule ①, below in performRunCheck) runs AFTER this log is already
+	// written — an exit-0 empty-transcript run would otherwise leave a `--- exit 0 ---` last line
+	// that isPassingCheckLog's regex reads as a genuine pass, letting a rejected run still back
+	// validateLandAuditEvidence's freshness check. Same idiom as the `(killed)` variant just below:
+	// decorate the exit line so the passing regex never matches, without touching the regex itself.
+	const emptyTranscript = isEmptyCheckTranscript(result.stdout, result.stderr);
+	const exitSuffix = result.killed ? " (killed)" : emptyTranscript ? " (empty-transcript: rejected)" : "";
+
+	// F5 (self-modifying script audit trail): re-read + re-hash the script file AFTER execution. The
+	// pre-lint (evaluateCheckScriptShape) judged `args.scriptText` as read BEFORE exec — if the file
+	// on disk no longer matches that text once the script has finished running (it rewrote itself, or
+	// something else raced it), the log and result text must say so rather than silently presenting a
+	// single sha256 as if it covered the whole run.
+	let postExecDigest: string | undefined;
+	let postExecReadError: string | undefined;
+	try {
+		postExecDigest = createHash("sha256").update(readFileSync(args.scriptPath, "utf8")).digest("hex");
+	} catch (error) {
+		postExecReadError = error instanceof Error ? error.message : String(error);
+	}
+	const scriptSelfModified = postExecDigest !== undefined && postExecDigest !== scriptDigest;
+	const postExecLine =
+		postExecDigest === undefined
+			? `post-exec script sha256: unreadable (${postExecReadError})`
+			: scriptSelfModified
+				? `post-exec script sha256: ${postExecDigest} (CHANGED from pre-exec ${scriptDigest} — script modified itself during execution)`
+				: `post-exec script sha256: ${postExecDigest} (unchanged)`;
+
 	const transcript = [
 		`$ bash ${args.scriptPath}`,
 		`cwd: ${args.execCwd}`,
 		`script sha256: ${scriptDigest}`,
+		postExecLine,
 		"--- script ---",
 		args.scriptText,
 		"--- stdout ---",
 		result.stdout,
 		"--- stderr ---",
 		result.stderr,
-		`--- exit ${result.code}${result.killed ? " (killed)" : ""} ---`,
+		`--- exit ${result.code}${exitSuffix} ---`,
 	].join("\n");
 	writeFileSync(logPath, transcript);
 
@@ -231,11 +260,16 @@ export async function runFeatureCheck(args: RunFeatureCheckArgs): Promise<RunFea
 		stderr: result.stderr,
 	};
 
-	const text = passed
-		? `lets-craft: run_check.sh passed (exit 0). Log: ${logPath}.`
-		: `lets-craft: run_check.sh FAILED (exit ${result.code}${result.killed ? ", killed" : ""}).${
-				failureLines.length > 0 ? ` ${failureLines.length} failure line(s):\n${failureLines.join("\n")}\n` : " "
-			}Full log: ${logPath}.`;
+	const selfModifiedNote = scriptSelfModified
+		? `\n\n[NOTE] check/run_check.sh's content changed during execution (see the log's post-exec sha256 line) — the result above judges the script as it was BEFORE this run, not as it now sits on disk.`
+		: "";
+	const text = `${
+		passed
+			? `lets-craft: run_check.sh passed (exit 0). Log: ${logPath}.`
+			: `lets-craft: run_check.sh FAILED (exit ${result.code}${result.killed ? ", killed" : ""}).${
+					failureLines.length > 0 ? ` ${failureLines.length} failure line(s):\n${failureLines.join("\n")}\n` : " "
+				}Full log: ${logPath}.`
+	}${selfModifiedNote}`;
 
 	return { details, text };
 }
