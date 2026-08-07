@@ -164,7 +164,7 @@ presets:
 
 ### 3. post-craft 실행
 
-`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-test-engineer`를 스폰해 구현 diff를 커버하는 회귀 테스트와 `check/run_check.sh`를 저작시키고, `lsc_run_check`로 결정적 체크를 실행한 뒤, `lsc-explore`(코드 매핑)와 `lsc-critic`(적대적 리뷰)를 병렬 스폰해 spec/plan 컴플라이언스 매트릭스를 직접 확인하고 4단계 판정을 워크트리 내부의 `audit/audit-N.md`에 기록합니다. 결정적 체크가 실패하면(또는 재저작 상한을 넘겨 실행조차 못 하면) verdict는 `REJECT`/`APPROVE-WITH-CHANGE`만 가능한 하드 게이트입니다.
+`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-test-engineer`를 스폰해 구현 diff를 커버하는 회귀 테스트와 `check/run_check.sh`를 저작시키고, `lsc_run_check`로 결정적 체크를 실행한 뒤, `lsc-explore`(코드 매핑) 1개와 lens별 `lsc-auditor`(spec 정합 / plan·ADR 준수 / 회귀·코드품질 / 인프라·설정 — 기본 4개, 최소 3개)를 **단일 `task` 배치로 동시 스폰**해 spec/plan 컴플라이언스 매트릭스를 직접 확인하고 4단계 판정을 워크트리 내부의 `audit/audit-N.md`에 기록합니다. 결정적 체크가 실패하면(또는 재저작 상한을 넘겨 실행조차 못 하면) verdict는 `REJECT`/`APPROVE-WITH-CHANGE`만 가능한 하드 게이트입니다.
 
 - `REJECT` / `APPROVE-WITH-CHANGE` → craft를 감사 문서 경로로 재호출하도록 제안(사용자 승인 시 자동 체이닝).
 - `APPROVE` / `APPROVE-WITH-COMMENT` → 사용자에게 명시적 병합 승인을 요청한 뒤(`git merge`는 이 승인 없이는 절대 실행되지 않음) feature 브랜치를 base 브랜치로 `--no-ff` 병합하고, 워크트리를 정리(`git worktree remove` + `git worktree prune`)합니다. 병합 전까지 base 브랜치는 이 feature의 산출물·구현·감사 어느 것도 담고 있지 않습니다.
