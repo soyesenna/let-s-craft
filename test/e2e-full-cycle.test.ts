@@ -276,6 +276,19 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 			// ITSELF — check/logs/ is gitignored (C7 BL2) and does not survive land, so the excerpt
 			// is the only durable trace once the worktree is gone. Check for it regardless of land.
 			expect(auditContent, "audit-0.md's Deterministic Check item must reference a check-N.log excerpt (§4.1 point 6)").toMatch(/check-\d+\.log/);
+			// Synthesized-verdict UNIQUENESS (§1.7 / §4.1 point 2 / §4.2): the audit document carries
+			// exactly ONE line-start "**AUDIT VERDICT:" — the main session's own holistic judgment.
+			// Each parallel `lsc-auditor` lane emits "**AUDITOR VERDICT:" instead (a prefix that
+			// structurally cannot match, since "AUDIT " requires the space "AUDITOR" spends on "OR"),
+			// and lane verdicts reach audit-0.md only as 요지 quotes with their own prefix intact. A
+			// second match here means either a lane leaked the audit-level prefix (banned outright by
+			// agents/lsc-auditor.md) or the main session normalized a quoted lane verdict — both make
+			// the single canonical anchor ambiguous for lsc_audit_validate and for this harness.
+			const auditVerdictLines = auditContent.match(/^\*\*AUDIT VERDICT:/gm) ?? [];
+			expect(
+				auditVerdictLines.length,
+				`audit-0.md must carry exactly one line-start "**AUDIT VERDICT:" anchor, found ${auditVerdictLines.length}.\n---\n${auditContent.slice(0, 4000)}`,
+			).toBe(1);
 
 			// While the worktree still exists (not landed, or this cycle's verdict didn't land), the
 			// raw check/logs/check-N.log is directly observable — assert its actual pass transcript.
@@ -288,8 +301,16 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 				expect(passingLog, `no check-N.log under ${checkLogsDir} shows a passing (--- exit 0 ---) run.\n${debugSummary(postCraftResult)}`).toBe(true);
 			}
 
-			// Order: audit-0.md written no earlier than craft's own tip commit.
-			expect(statSync(auditPath).mtimeMs, "audit-0.md must be written after craft's own commits").toBeGreaterThanOrEqual(statSync(runCheckPath).mtimeMs);
+			// Order: audit-0.md written no earlier than craft's own tip commit. Only observable while
+			// the worktree survives. Once land merges the craft onto base, BOTH files are re-created
+			// by git's merge checkout, which writes the index in path order — `audit/audit-0.md`
+			// sorts before `check/run_check.sh`, so it always receives the EARLIER mtime no matter
+			// which post-craft authored first (measured: audit-0.md lands 0.1-0.4ms ahead, 5/5 runs).
+			// Post-land these mtimes therefore encode git's path ordering, not post-craft's authoring
+			// order, and comparing them asserts something this harness never meant to assert.
+			if (!landed) {
+				expect(statSync(auditPath).mtimeMs, "audit-0.md must be written after craft's own commits").toBeGreaterThanOrEqual(statSync(runCheckPath).mtimeMs);
+			}
 
 			// ==================== Stage ④ land ====================
 			const verdict = verdictMatch?.[1];
@@ -335,6 +356,16 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 			expect(existsSync(join(landedCraftDir, "plan.md")), "plan.md not visible on base branch after land").toBe(true);
 			expect(existsSync(join(landedCraftDir, "check", "run_check.sh")), "check/run_check.sh not visible on base branch after land").toBe(true);
 			expect(existsSync(join(landedCraftDir, "audit", "audit-0.md")), "audit/audit-0.md not visible on base branch after land").toBe(true);
+			// Parallel auditor lane reports (§4.1 point 7) are TRACKED audit evidence, staged in the
+			// same §8 commit as audit-0.md — unlike gitignored check/logs/, they must survive land.
+			// The lens slugs are chosen per cycle (spec/plan/regression/infra, 4 by default and 3 at
+			// minimum), so match by shape rather than by name: at least one auditor-0-{lens}.md.
+			const landedAuditNames = readdirSync(join(landedCraftDir, "audit"));
+			const laneReports = landedAuditNames.filter(name => /^auditor-0-.+\.md$/.test(name));
+			expect(
+				laneReports.length,
+				`no audit/auditor-0-{lens}.md lane report visible on base branch after land — the §8 commit must stage them alongside audit-0.md.\n${JSON.stringify(landedAuditNames)}`,
+			).toBeGreaterThanOrEqual(1);
 		},
 		TEST_TIMEOUT_MS,
 	);
