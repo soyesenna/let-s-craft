@@ -485,6 +485,11 @@ const CRITIC_MIRROR_WHITELIST: ReadonlyArray<{ file: string; pattern: RegExp; wh
 	},
 	{
 		file: "README.md",
+		pattern: /^\|\s*`lsc-critic-recheck`\s*\|/,
+		why: "agent catalog table row — a distinct agent (pre-craft's AWC diff-only re-check), not lsc-critic itself",
+	},
+	{
+		file: "README.md",
 		pattern: /서브에이전트 위임 적극화/,
 		why: "delegation enumeration (mirror of rules/lets-craft.md §1) — routing, not post-craft's batch",
 	},
