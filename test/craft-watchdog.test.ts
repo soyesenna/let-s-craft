@@ -175,6 +175,26 @@ describe("shouldSetStickyForToolExecution (DR-2)", () => {
 		).toBe(true);
 	});
 
+	// Named regression for the post-craft review batch: `lsc-auditor` is a NEW agent that no
+	// watchdog code path enumerates by name — it is covered only by the `startsWith("lsc-")`
+	// generic (`src/craft/watchdog.ts:131` flat, `:133-140` batch scan). This case pins that the generic really does extend to
+	// a newly added agent, so the audit lane's own 429/5xx backoff coverage is deterministic
+	// evidence rather than an inference from the other agents' cases.
+	it("is true for a batch task spawn carrying lsc-auditor alongside lsc-explore (post-craft review batch)", () => {
+		expect(
+			shouldSetStickyForToolExecution({
+				toolName: "task",
+				args: {
+					context: "c",
+					tasks: [
+						{ agent: "lsc-explore", task: "code mapping" },
+						{ agent: "lsc-auditor", task: "audit lens ①" },
+					],
+				},
+			}),
+		).toBe(true);
+	});
+
 	it("is true for a batch task spawn where only a later task is lsc- prefixed", () => {
 		expect(
 			shouldSetStickyForToolExecution({
