@@ -47,7 +47,7 @@ describe("parseVerdictLine (generic, shared by both vocabularies)", () => {
 		expect(parseVerdictLine("", "AUDIT VERDICT", AUDIT_VERDICTS)).toBeUndefined();
 	});
 
-	it("two distinct prefixes never collide even in the same document (post-craft quotes lsc-critic verbatim, §4.1 point 7)", () => {
+	it("two distinct prefixes never collide even in the same document (pre-craft Stage 3 합의 루프의 critic 리포트 파싱)", () => {
 		const markdown = ["**AUDIT VERDICT: APPROVE-WITH-COMMENT**", "", "> quoting lsc-critic:", "**VERDICT: REVISE**"].join("\n");
 		expect(parseVerdictLine(markdown, "AUDIT VERDICT", AUDIT_VERDICTS)).toBe("APPROVE-WITH-COMMENT");
 		expect(parseVerdictLine(markdown, "VERDICT", CRITIC_VERDICTS)).toBe("REVISE");

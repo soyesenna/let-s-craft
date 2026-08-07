@@ -268,8 +268,8 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 			expect(existsSync(auditPath), `audit/audit-0.md missing (landed=${landed}).\n${debugSummary(postCraftResult)}`).toBe(true);
 			const auditContent = readFileSync(auditPath, "utf8");
 			// Line-start anchor, per skills/post-craft/SKILL.md §4.1 point 2's explicit flag: this
-			// must not match lsc-critic's own embedded "**VERDICT: ...**" sub-line quoted later in
-			// the same document.
+			// must not match lsc-critic's own embedded "**VERDICT: ...**" sub-line, which appears in
+			// pre-craft Stage 3's consensus-loop reports, not in post-craft's own audit document.
 			const verdictMatch = auditContent.match(/^\*\*AUDIT VERDICT: (APPROVE|APPROVE-WITH-COMMENT|APPROVE-WITH-CHANGE|REJECT)\*\*/m);
 			expect(verdictMatch, `audit-0.md has no line-start "**AUDIT VERDICT:" line.\n---\n${auditContent.slice(0, 2000)}`).not.toBeNull();
 			// The Deterministic Check item (§4.1 point 6) requires a log excerpt IN THE AUDIT DOC
