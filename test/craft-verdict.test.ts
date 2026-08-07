@@ -64,6 +64,24 @@ describe("parseAuditVerdict (canonical home, re-exported by statusbar/craft-prog
 	});
 });
 
+// ---------------------------------------------------------------------------
+// U1: multi-auditor rework anchor probes. Each auditor writes its own
+// `**AUDITOR VERDICT: X**` line into its report; the final gate reads ONLY the main session's
+// `**AUDIT VERDICT: X**` line (first-match, see parseVerdictLine's regex). These two probes pin
+// that boundary as a regression, plus (in a later describe block) the fail-open it leaves open.
+// ---------------------------------------------------------------------------
+describe("parseAuditVerdict vs. per-auditor '**AUDITOR VERDICT: ...**' lines (U1 regression anchor)", () => {
+	it("returns undefined when only a line-start '**AUDITOR VERDICT: REJECT**' line exists and no '**AUDIT VERDICT:**' line is present — an individual auditor's own verdict line is never mistaken for the gate's line", () => {
+		const markdown = "# Audit\n\n**AUDITOR VERDICT: REJECT**\n";
+		expect(parseAuditVerdict(markdown)).toBeUndefined();
+	});
+
+	it("reads only '**AUDIT VERDICT: APPROVE**' when it sits above a '**AUDITOR VERDICT: REJECT**' line in the same document — the two prefixes never collide (AUDIT VERDICT requires a space right after 'AUDIT', which 'AUDITOR' structurally cannot satisfy), so this is not a near-miss, it is a fixed structural distinction", () => {
+		const markdown = ["# Audit", "", "**AUDIT VERDICT: APPROVE**", "", "**AUDITOR VERDICT: REJECT**", ""].join("\n");
+		expect(parseAuditVerdict(markdown)).toBe("APPROVE");
+	});
+});
+
 describe("parseCriticVerdict (agents/lsc-critic.md's independent 5-value scale)", () => {
 	it.each(CRITIC_VERDICTS)("parses %s by exact literal match", verdict => {
 		expect(parseCriticVerdict(`**VERDICT: ${verdict}**`)).toBe(verdict);
@@ -382,4 +400,59 @@ describe("performAuditValidate (tool-execute-level, 4 branches + mismatch guard)
 		expect(result.isError, JSON.stringify(result)).toBeFalsy();
 		expect((result.content[0] as { text: string }).text).toContain("Not land-eligible");
 	});
+});
+
+// ---------------------------------------------------------------------------
+// U1 (b): the real risk path — first-match fail-open. If a sub-agent auditor drifts off its own
+// `**AUDITOR VERDICT: X**` vocabulary and instead emits a genuine `**AUDIT VERDICT: X**` line, AND
+// that line is quoted verbatim into audit-N.md ABOVE the main session's own synthesized
+// `**AUDIT VERDICT: ...**` line, parseAuditVerdict's first-match semantics read the WRONG verdict.
+// This test pins that as an OBSERVED FACT of the current implementation, not a desired behavior.
+// ---------------------------------------------------------------------------
+describe("multi-auditor first-match fail-open (U1 load-bearing FACT-LOCK, CN-2 residual risk)", () => {
+	it(
+		"FACT-LOCK: a sub-agent auditor report quoted verbatim into audit-N.md, whose drifted " +
+			"'**AUDIT VERDICT: APPROVE**' line sits ABOVE the main session's synthesized " +
+			"'**AUDIT VERDICT: REJECT**' line, makes performAuditValidate read + durably record APPROVE " +
+			"instead of the intended REJECT. This fail-open is suppressed ONLY by isolating each " +
+			"auditor's report into its own audit/auditor-{N}-{lens}.md file rather than quoting it " +
+			"verbatim inside audit-N.md — parseAuditVerdict uniqueness hardening was deliberately NOT " +
+			"adopted for this (CN-2); it remains a live residual risk this test locks down as fact.",
+		() => {
+			const root = tmpProject();
+			const feature = "my-feature";
+			persistOnly(freshState(root, feature));
+			performAuditBegin(feature, root); // auditCycle=0, checkLogAtCycleStart=0
+			writeCheckLog(root, feature, 1, passingLog()); // fresh, after the cycle start
+
+			// A sub-agent auditor's report is quoted verbatim into audit-0.md ABOVE the main session's
+			// own synthesized verdict. The sub-agent drifted off its own "**AUDITOR VERDICT: ...**"
+			// vocabulary (skills/post-craft's per-auditor contract) and emitted the CANONICAL
+			// "**AUDIT VERDICT: ...**" line instead — a genuine, well-formed line the gate's parser
+			// cannot distinguish from the main session's own.
+			const auditDir = craftAuditDir(root, feature);
+			mkdirSync(auditDir, { recursive: true });
+			const auditMarkdown = [
+				"# Audit",
+				"",
+				"> quoting auditor-0-correctness verbatim:",
+				"**AUDIT VERDICT: APPROVE**",
+				"",
+				"## Main session synthesis",
+				"**AUDIT VERDICT: REJECT**",
+				"",
+			].join("\n");
+			writeFileSync(join(auditDir, "audit-0.md"), auditMarkdown);
+
+			const result = performAuditValidate(feature, root);
+
+			// FACT (not desired behavior): the first-match parser reads APPROVE — the WRONG verdict,
+			// backed by a fresh passing log — and succeeds (isError falsy) rather than failing closed.
+			expect(result.isError, JSON.stringify(result)).toBeFalsy();
+			expect(result.details?.verdict).toBe("APPROVE");
+			// The wrong verdict is durably recorded too — a downstream lsc_land re-derivation
+			// (validateLandAuditEvidence) that trusts this marker as consistency evidence would see APPROVE.
+			expect(readPersistedCraftState(root, feature)?.auditValidated?.verdict).toBe("APPROVE");
+		},
+	);
 });
