@@ -24,10 +24,11 @@ export type AuditVerdict = (typeof AUDIT_VERDICTS)[number];
 /**
  * lsc-critic's own independent five-level scale (agents/lsc-critic.md Output_Format) — a
  * DIFFERENT, agent-scoped vocabulary that merely shares two token spellings
- * ("APPROVE-WITH-CHANGE", "REJECT") with AUDIT_VERDICTS (skills/post-craft/SKILL.md §1.7's own
- * "do not conflate them" warning). Parsed by the same generic `parseVerdictLine` below under a
- * distinct line prefix, so the two never collide even when both lines appear in the same document
- * (post-craft's audit doc quotes lsc-critic's report verbatim, §4.1 point 7).
+ * ("APPROVE-WITH-CHANGE", "REJECT") with AUDIT_VERDICTS. lsc-critic renders this scale in
+ * pre-craft Stage 3's plan-review consensus loop (skills/pre-craft/SKILL.md), a wholly separate
+ * document from post-craft's own `**AUDIT VERDICT:` line. Parsed by the same generic
+ * `parseVerdictLine` below under a distinct line prefix, so the two never collide even when both
+ * lines happen to appear in the same document.
  */
 export const CRITIC_VERDICTS = ["REJECT", "REVISE", "APPROVE-WITH-CHANGE", "ACCEPT-WITH-RESERVATIONS", "ACCEPT"] as const;
 export type CriticVerdict = (typeof CRITIC_VERDICTS)[number];

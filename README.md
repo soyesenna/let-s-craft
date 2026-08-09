@@ -44,20 +44,24 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 
 ## 구성 요소
 
-### 에이전트 8종
+### 에이전트 10종
 
 각 에이전트는 `agents/lsc-*.md`에 프런트매터(`name`/`description`/`tools`/`spawns`)와 행동 계약으로 정의되어 있습니다.
 
-| 에이전트 | 역할 |
-|---|---|
-| `lsc-explore` | 읽기 전용 코드베이스 검색 — 파일/코드 패턴/관계를 찾아 즉시 활용 가능한 결과를 반환 |
-| `lsc-tracer` | 증거 기반 원인 추적 — 경쟁 가설, 찬반 증거, 불확실성 추적과 다음 탐침 추천 |
-| `lsc-critic` | 계획/코드 리뷰 최종 품질 게이트 — 4단계 판정을 내리는 다관점 구조적 리뷰 |
-| `lsc-architect` | 전략적 아키텍처·디버깅 자문 — 읽기 전용 코드 분석, 근본 원인 진단, 트레이드오프 포함 권고 |
-| `lsc-executor` | 집중형 구현 실행자 — 지정된 작업을 최소 변경으로 구현하고 빌드/테스트를 검증 |
-| `lsc-planner` | 확정된 spec을 실행 가능한 계획으로 전환 — DR(합의 요약)과 ADR을 포함, 코드는 절대 작성하지 않음 |
-| `lsc-test-engineer` | 테스트 전략·유닛/통합/e2e 작성, 플레이키 테스트 보강, TDD 강제 |
-| `lsc-librarian` | 외부 라이브러리/API/생태계 리서치 전문 — 로컬 의존성(설치된 패키지 소스·타입 정의) 우선 확인 후 필요 시 클론/웹 검색, 모든 주장을 소스/공식문서로 근거화한 구조화된 결과(answer/sources/api/version)를 반환 |
+| 에이전트 | 파일명 | 역할 |
+|---|---|---|
+| `lsc-explore` | `lsc-explore.md` | 읽기 전용 코드베이스 검색 — 파일/코드 패턴/관계를 찾아 즉시 활용 가능한 결과를 반환 |
+| `lsc-tracer` | `lsc-tracer.md` | 증거 기반 원인 추적 — 경쟁 가설, 찬반 증거, 불확실성 추적과 다음 탐침 추천 |
+| `lsc-critic` | `lsc-critic.md` | 계획/코드 리뷰 최종 품질 게이트 — 4단계 판정을 내리는 다관점 구조적 리뷰 |
+| `lsc-critic-recheck` | `lsc-critic-recheck.md` | pre-craft Stage 3 AWC 경로 전용 경량 diff-only 재확인 — 이미 적용된 수정 세트를 3개의 기계적 체크로만 검증 |
+| `lsc-architect` | `lsc-architect.md` | 전략적 아키텍처·디버깅 자문 — 읽기 전용 코드 분석, 근본 원인 진단, 트레이드오프 포함 권고 |
+| `lsc-executor` | `lsc-executor.md` | 집중형 구현 실행자 — 지정된 작업을 최소 변경으로 구현하고 빌드/테스트를 검증 |
+| `lsc-planner` | `lsc-planner.md` | 확정된 spec을 실행 가능한 계획으로 전환 — DR(합의 요약)과 ADR을 포함, 코드는 절대 작성하지 않음 |
+| `lsc-test-engineer` | `lsc-test-engineer.md` | 테스트 전략·유닛/통합/e2e 작성, 플레이키 테스트 보강, TDD 강제 |
+| `lsc-librarian` | `lsc-librarian.md` | 외부 라이브러리/API/생태계 리서치 전문 — 로컬 의존성(설치된 패키지 소스·타입 정의) 우선 확인 후 필요 시 클론/웹 검색, 모든 주장을 소스/공식문서로 근거화한 구조화된 결과(answer/sources/api/version)를 반환 |
+| `lsc-auditor` | `lsc-auditor.md` | post-craft 감사 전용 — 지정된 lens(spec 정합/plan·ADR 준수/회귀·코드품질/인프라·설정) 하나로 구현 diff를 spec/plan 대비 감사하며, 감사 사이클마다 lens별로 병렬 스폰됨 |
+
+에이전트는 10종이지만 모델 프리셋의 라우팅 대상(`LSC_AGENT_NAMES`, `src/preset/models-file.ts`)은 9개입니다 — `lsc-critic-recheck`만 의도적으로 빠져 있습니다. 이 에이전트는 자체 프런트매터에 `thinkingLevel: medium`을 고정해 경량 재확인 전용으로 동작하므로, 프리셋이 모델/효율을 덮어쓰면 그 고정이 무의미해집니다.
 
 ### 스킬 3종
 
@@ -74,7 +78,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 ```
 /lsc-preset list                    # 유효 프리셋(전역+프로젝트 병합) 목록 출력 — 기본 서브액션
 /lsc-preset switch|use [name]       # 프리셋 전환, 에이전트 override와 세션 default 즉시 적용
-/lsc-preset create|new [name]       # 세션 default를 먼저 묻고(skip 가능), 8개 에이전트를 순회해 생성
+/lsc-preset create|new [name]       # 세션 default를 먼저 묻고(skip 가능), 9개 에이전트를 순회해 생성
 /lsc-preset edit [name]             # 같은 질문 순서로 수정(default는 즉시 재적용하지 않음)
 /lsc-preset delete|rm [name]        # 프리셋 삭제(default 모델 복원 없음)
 ```
@@ -85,7 +89,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 
 `rules/lets-craft.md`(`alwaysApply: true`)는 pre-craft/craft/post-craft 어느 단계에서든 항상 적용되는 세션 규칙입니다.
 
-1. **서브에이전트 위임 적극화**: 읽기 전용 조사는 `lsc-explore`, 원인 설명은 `lsc-tracer`, 계획/diff 리뷰는 `lsc-critic`, 아키텍처 진단은 `lsc-architect`, 구현은 `lsc-executor`, 계획 수립은 `lsc-planner`, 테스트 전략은 `lsc-test-engineer`, 외부 라이브러리/API 리서치는 `lsc-librarian`으로 위임합니다.
+1. **서브에이전트 위임 적극화**: 읽기 전용 조사는 `lsc-explore`, 원인 설명은 `lsc-tracer`, 계획/diff 리뷰는 `lsc-critic`, 아키텍처 진단은 `lsc-architect`, 구현은 `lsc-executor`, 계획 수립은 `lsc-planner`, 테스트 전략은 `lsc-test-engineer`, 외부 라이브러리/API 리서치는 `lsc-librarian`, 구현 완료 후 감사(lens assignment·implBranch OID 앵커가 필요)는 `lsc-auditor`로 위임합니다.
 2. **기능 단위 커밋**: 하나의 커밋은 하나의 논리적 작업 단위(파이프라인 한 단계의 산출물, 프리미티브 하나, 버그 하나, 테스트 스위트 하나)만 담아야 하며, 여러 관심사를 섞은 대규모 커밋을 금지합니다.
 3. **커밋 메시지 형식**: 한국어 제목 + conventional-commit 접두사(`feat:`/`fix:`/`chore:`/`docs:`/`refactor:`/`test:` 등) + `what:`/`why:`/`evidence:`/`verify:` 4개 섹션으로 구성된 본문을 요구합니다. `evidence:`/`verify:`를 placeholder로 채우는 것은 금지됩니다.
 
@@ -116,7 +120,7 @@ presets:
 - `active`: 현재 활성 프리셋 이름(문자열) 또는 `null`.
 - `presets`: 프리셋 이름 → 구조형 엔트리 맵.
 - `default`(선택): omp 세션 메인 모델 `provider/model-id[:effort]`.
-- `agents`: 에이전트 짧은 이름 → 모델 문자열 맵. 짧은 이름은 `explore`, `tracer`, `critic`, `architect`, `executor`, `planner`, `test-engineer`, `librarian` 8개이며, 내부적으로 `lsc-` 접두사가 붙습니다(예: `executor` → `lsc-executor`).
+- `agents`: 에이전트 짧은 이름 → 모델 문자열 맵. 짧은 이름은 `explore`, `tracer`, `critic`, `architect`, `executor`, `planner`, `test-engineer`, `librarian`, `auditor` 9개이며, 내부적으로 `lsc-` 접두사가 붙습니다(예: `executor` → `lsc-executor`).
 
 기존의 평면 형식(`fast-triage: { explore: ..., tracer: ... }`)도 **agents-only** 프리셋으로 계속 읽습니다. 평면 맵의 `default`/`agents` 키는 에이전트 이름으로 사용하지 않고 경고 후 버리므로 세션 default는 반드시 위 구조형 sibling 필드로 작성해야 합니다. `switch`/`create`/`edit`/`delete`로 파일을 저장하면 구조형으로 업그레이드되며, v0.1.0에서는 이 파일을 구버전 lets-craft가 다시 읽지 못할 수 있습니다.
 
@@ -164,7 +168,7 @@ presets:
 
 ### 3. post-craft 실행
 
-`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-test-engineer`를 스폰해 구현 diff를 커버하는 회귀 테스트와 `check/run_check.sh`를 저작시키고, `lsc_run_check`로 결정적 체크를 실행한 뒤, `lsc-explore`(코드 매핑)와 `lsc-critic`(적대적 리뷰)를 병렬 스폰해 spec/plan 컴플라이언스 매트릭스를 직접 확인하고 4단계 판정을 워크트리 내부의 `audit/audit-N.md`에 기록합니다. 결정적 체크가 실패하면(또는 재저작 상한을 넘겨 실행조차 못 하면) verdict는 `REJECT`/`APPROVE-WITH-CHANGE`만 가능한 하드 게이트입니다.
+`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-test-engineer`를 스폰해 구현 diff를 커버하는 회귀 테스트와 `check/run_check.sh`를 저작시키고, `lsc_run_check`로 결정적 체크를 실행한 뒤, `lsc-explore`(코드 매핑) 1개와 lens별 `lsc-auditor`(spec 정합 / plan·ADR 준수 / 회귀·코드품질 / 인프라·설정 — 기본 4개, 최소 3개)를 **단일 `task` 배치로 동시 스폰**해 spec/plan 컴플라이언스 매트릭스를 직접 확인하고 4단계 판정을 워크트리 내부의 `audit/audit-N.md`에 기록합니다. 결정적 체크가 실패하면(또는 재저작 상한을 넘겨 실행조차 못 하면) verdict는 `REJECT`/`APPROVE-WITH-CHANGE`만 가능한 하드 게이트입니다.
 
 - `REJECT` / `APPROVE-WITH-CHANGE` → craft를 감사 문서 경로로 재호출하도록 제안(사용자 승인 시 자동 체이닝).
 - `APPROVE` / `APPROVE-WITH-COMMENT` → 사용자에게 명시적 병합 승인을 요청한 뒤(`git merge`는 이 승인 없이는 절대 실행되지 않음) feature 브랜치를 base 브랜치로 `--no-ff` 병합하고, 워크트리를 정리(`git worktree remove` + `git worktree prune`)합니다. 병합 전까지 base 브랜치는 이 feature의 산출물·구현·감사 어느 것도 담고 있지 않습니다.
