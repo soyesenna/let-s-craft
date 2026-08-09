@@ -61,7 +61,7 @@ describe("parseAuditVerdict", () => {
 		expect(parseAuditVerdict(markdown)).toBe(expected);
 	});
 
-	it("does not confuse lsc-critic's own embedded **VERDICT: ...** sub-line for the audit verdict", () => {
+	it("does not confuse lsc-critic's own embedded **VERDICT: ...** sub-line (pre-craft Stage 3 합의 루프의 critic 리포트) for the audit verdict", () => {
 		const markdown = ["**AUDIT VERDICT: APPROVE-WITH-COMMENT**", "", "> quoting lsc-critic:", "**VERDICT: REVISE**"].join("\n");
 		expect(parseAuditVerdict(markdown)).toBe("APPROVE-WITH-COMMENT");
 	});

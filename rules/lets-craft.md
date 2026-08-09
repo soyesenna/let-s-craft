@@ -18,8 +18,9 @@ Prefer spawning a specialized `lsc-*` subagent over doing the work yourself in t
 - Implementing a specified code change → `lsc-executor`.
 - Turning a confirmed spec into an actionable plan → `lsc-planner`.
 - Test strategy, post-implementation test authoring, or flaky-test hardening → `lsc-test-engineer`.
+- Auditing a finished implementation against its confirmed spec/plan, post-craft only (requires a lens assignment and an implementation-branch OID anchor) → `lsc-auditor`.
 
-Use the `task` tool to spawn these in parallel whenever the work is independent (e.g. multiple `lsc-explore` lookups across unrelated areas, or `lsc-explore`+`lsc-critic` in post-craft's own adversarial-review batch). Do not do multi-step implementation, investigation, or review work directly in the main session when a subagent contract already exists for it — the main session's job is to orchestrate the pipeline (trace → interview → plan → craft → post-craft's own test authoring + audit), not to substitute for the agents that own each step.
+Use the `task` tool to spawn these in parallel whenever the work is independent (e.g. multiple `lsc-explore` lookups across unrelated areas, or `lsc-explore`+lens별 `lsc-auditor` in post-craft's own adversarial-review batch). Do not do multi-step implementation, investigation, or review work directly in the main session when a subagent contract already exists for it — the main session's job is to orchestrate the pipeline (trace → interview → plan → craft → post-craft's own test authoring + audit), not to substitute for the agents that own each step.
 
 ## 2. Commit at feature granularity — never in large, mixed batches
 

@@ -49,7 +49,7 @@ export interface MergedModelsFile extends ModelsFile {
 	defaultSource: Record<string, PresetSourceLayer>;
 }
 
-/** The eight lets-craft agents, by short name (as written in models.yaml presets). */
+/** The nine lets-craft agents, by short name (as written in models.yaml presets). */
 export const LSC_AGENT_NAMES = [
 	"explore",
 	"tracer",
@@ -59,6 +59,7 @@ export const LSC_AGENT_NAMES = [
 	"planner",
 	"test-engineer",
 	"librarian",
+	"auditor",
 ] as const;
 export type LscAgentName = (typeof LSC_AGENT_NAMES)[number];
 
