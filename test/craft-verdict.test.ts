@@ -76,8 +76,13 @@ describe("parseAuditVerdict vs. per-auditor '**AUDITOR VERDICT: ...**' lines (U1
 		expect(parseAuditVerdict(markdown)).toBeUndefined();
 	});
 
-	it("reads only '**AUDIT VERDICT: APPROVE**' when it sits above a '**AUDITOR VERDICT: REJECT**' line in the same document — the two prefixes never collide (AUDIT VERDICT requires a space right after 'AUDIT', which 'AUDITOR' structurally cannot satisfy), so this is not a near-miss, it is a fixed structural distinction", () => {
-		const markdown = ["# Audit", "", "**AUDIT VERDICT: APPROVE**", "", "**AUDITOR VERDICT: REJECT**", ""].join("\n");
+	it("reads only '**AUDIT VERDICT: APPROVE**' when a '**AUDITOR VERDICT: REJECT**' line sits ABOVE it in the same document — the two prefixes never collide (AUDIT VERDICT requires a space right after 'AUDIT', which 'AUDITOR' structurally cannot satisfy), so this is not a near-miss, it is a fixed structural distinction", () => {
+		// Auditor line FIRST, deliberately: parseVerdictLine takes the first line-anchored
+		// match, so this is the order that actually falsifies a loosened prefix. Were the
+		// regex ever relaxed to a plain `AUDIT VERDICT` prefix (dropping the required space
+		// after 'AUDIT'), this document would resolve to the LANE's REJECT instead of the
+		// main session's APPROVE. With the audit line on top the assertion holds either way.
+		const markdown = ["# Audit", "", "**AUDITOR VERDICT: REJECT**", "", "**AUDIT VERDICT: APPROVE**", ""].join("\n");
 		expect(parseAuditVerdict(markdown)).toBe("APPROVE");
 	});
 });
