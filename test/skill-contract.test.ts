@@ -580,6 +580,21 @@ describe("U3 — post-craft 리뷰 배치: lsc-explore + lens별 lsc-auditor", (
 			expect(postCraft).toContain("never normalize a lane's `AUDITOR VERDICT` to `AUDIT VERDICT`");
 		});
 
+		// The prefix boundary above is stated from both sides, but neither side says what to DO
+		// with a lane that crosses it anyway. Without this rule the natural repair is to quote
+		// the lane's verdict with the prefix fixed up — which is precisely the laundering that
+		// turns a broken lane into a clean-looking 요지 and puts a second line-anchored
+		// audit-level prefix into a document whose parser takes the first match.
+		it("treats a lane that emitted the audit-level prefix as inconclusive, and bans transcribing its verdict line", () => {
+			expect(postCraft).toContain(
+				"**A lane that emitted the audit-level prefix is a contract violation, not a verdict — 무응답 lane과 동일하게 처리한다.**",
+			);
+			expect(postCraft).toContain("**Never transcribe that verdict line into `audit-{N}.md` in any form**");
+			// The "corrected" case is the one a well-meaning revision drops first — it reads
+			// like a fix rather than a violation. Pin it separately from the blanket ban.
+			expect(postCraft).toContain("not with the prefix corrected");
+		});
+
 		it("anchors every lane to a tip OID frozen right after §3.0's test authoring, checked three ways", () => {
 			expect(postCraft).toContain("§3.0의 테스트 저작이 완료된 직후 고정한다");
 			expect(postCraft).toContain("rev-parse {implBranch}");
@@ -749,7 +764,7 @@ describe("U3 — agents/lsc-auditor.md contract text (mirrors the lsc-critic-rec
 		expect(lscAuditor).toContain("Your verdict prefix is `**AUDITOR VERDICT:` and that prefix only.");
 	});
 
-	it("names all four lenses, each bound to the ASCII slug its report filename uses", () => {
+	it("names all four lenses, each with its Korean and English heading", () => {
 		for (const [korean, english] of [
 			["spec 정합", "spec compliance"],
 			["plan·ADR 준수", "plan and ADR compliance"],
