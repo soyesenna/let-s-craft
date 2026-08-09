@@ -358,8 +358,11 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 			expect(existsSync(join(landedCraftDir, "audit", "audit-0.md")), "audit/audit-0.md not visible on base branch after land").toBe(true);
 			// Parallel auditor lane reports (§4.1 point 7) are TRACKED audit evidence, staged in the
 			// same §8 commit as audit-0.md — unlike gitignored check/logs/, they must survive land.
-			// The lens slugs are chosen per cycle (spec/plan/regression/infra, 4 by default and 3 at
-			// minimum), so match by shape rather than by name: at least one auditor-0-{lens}.md.
+			// Matched by SHAPE, not by slug name: §4.1 point 7 lists spec/plan/regression/infra only
+			// as examples and nothing enforces that set, and in a real run of this harness a lane
+			// filed itself as `auditor-0-plan-adr.md` — outside the listed slugs. Asserting the
+			// listed names would have failed on a correct run. The durability contract under test
+			// is that at least one lane report is tracked and visible on base, not what it is called.
 			const landedAuditNames = readdirSync(join(landedCraftDir, "audit"));
 			const laneReports = landedAuditNames.filter(name => /^auditor-0-.+\.md$/.test(name));
 			expect(

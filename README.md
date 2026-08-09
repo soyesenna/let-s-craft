@@ -61,6 +61,8 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 | `lsc-librarian` | `lsc-librarian.md` | 외부 라이브러리/API/생태계 리서치 전문 — 로컬 의존성(설치된 패키지 소스·타입 정의) 우선 확인 후 필요 시 클론/웹 검색, 모든 주장을 소스/공식문서로 근거화한 구조화된 결과(answer/sources/api/version)를 반환 |
 | `lsc-auditor` | `lsc-auditor.md` | post-craft 감사 전용 — 지정된 lens(spec 정합/plan·ADR 준수/회귀·코드품질/인프라·설정) 하나로 구현 diff를 spec/plan 대비 감사하며, 감사 사이클마다 lens별로 병렬 스폰됨 |
 
+에이전트는 10종이지만 모델 프리셋의 라우팅 대상(`LSC_AGENT_NAMES`, `src/preset/models-file.ts`)은 9개입니다 — `lsc-critic-recheck`만 의도적으로 빠져 있습니다. 이 에이전트는 자체 프런트매터에 `thinkingLevel: medium`을 고정해 경량 재확인 전용으로 동작하므로, 프리셋이 모델/효율을 덮어쓰면 그 고정이 무의미해집니다.
+
 ### 스킬 3종
 
 `skills/{pre-craft,craft,post-craft}/SKILL.md`로 정의됩니다.
