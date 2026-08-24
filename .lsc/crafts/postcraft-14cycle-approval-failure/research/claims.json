@@ -1,0 +1,426 @@
+{
+  "claims": [
+    {
+      "claim": "C-01: 대상 프로젝트 <대상 기능>의 audit cycle 0~14 전부(15/15)가 AUDIT VERDICT: REJECT로 종결됐다.",
+      "dropCondition": "audit-N.md 중 하나라도 REJECT가 아닌 verdict 라인이 발견되면 폐기.",
+      "evidence": [
+        {
+          "source": "audit-0..14.md grep 전수 (**AUDIT VERDICT: REJECT** 15/15) — Lane3MeasurementPremise",
+          "verdict": "support"
+        },
+        {
+          "source": ".craft-state.json auditCycle=14 verdict=REJECT — 메인 세션 직접 확인",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: audit-0..14.md grep 전수 (**AUDIT VERDICT: REJECT** 15/15) — Lane3MeasurementPremise, .craft-state.json auditCycle=14 verdict=REJECT — 메인 세션 직접 확인"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-02: post-craft 계약에는 audit↔craft 사이클 상한이 없다 — 유일한 사이클 인지 장치는 cycle≥3에서의 정보성 WARN(판정 무영향)이며, pre-craft(cap 10+에스컬레이션)·craft(re-entry cap 1)와 비대칭이다.",
+      "dropCondition": "skills/post-craft/SKILL.md 또는 src/craft/*.ts에서 집행되는 사이클 상한/에스컬레이션 게이트가 발견되면 폐기.",
+      "evidence": [
+        {
+          "source": "skills/post-craft/SKILL.md:266-268 'No cycle cap' — R1DesignHistory",
+          "verdict": "support"
+        },
+        {
+          "source": "src/craft/verdict.ts:277-282 cycleWarn '판정 무영향' — Lane1PipelineContract",
+          "verdict": "support"
+        },
+        {
+          "source": "skills/pre-craft/SKILL.md:383-389 (pre-craft cap 10 대비) — R1DesignHistory",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: skills/post-craft/SKILL.md:266-268 'No cycle cap' — R1DesignHistory, src/craft/verdict.ts:277-282 cycleWarn '판정 무영향' — Lane1PipelineContract, skills/pre-craft/SKILL.md:383-389 (pre-craft cap 10 대비) — R1DesignHistory"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-03: craft는 매 사이클 직전 audit의 finding을 사실상 전량 소비했다(cycle-11 8/8, cycle-12 10/10 명시 참조; 어떤 audit도 미이행을 REJECT 사유로 보고하지 않음) — 비수렴은 craft 불복종 탓이 아니다.",
+      "dropCondition": "audit-N.md에서 '지시된 finding 미이행'이 REJECT 주사유로 기록된 사이클이 발견되면 폐기.",
+      "evidence": [
+        {
+          "source": "cycle-11/12 커밋의 F10-*/F11-* 태그 전수 대응 — Lane2OrchestrationState",
+          "verdict": "support"
+        },
+        {
+          "source": "audit-13.md:86-93 방향별 이행표 8/8 — Lane2OrchestrationState",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: cycle-11/12 커밋의 F10-*/F11-* 태그 전수 대응 — Lane2OrchestrationState, audit-13.md:86-93 방향별 이행표 8/8 — Lane2OrchestrationState"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-04: 사이클당 완전 해소율은 한 번도 100%에 도달하지 못했고(범위 36~69%), fix가 다음 사이클의 신규 CRITICAL을 만드는 연쇄가 후기 4사이클 연속 발생했다(F12-3→F13-2→F14-3/4). 신규 finding의 ≥70%는 기존 결함 가계의 후속이며 순수 신규 가계는 c12~14에 각 2~3건뿐이다.",
+      "dropCondition": "finding 계보 재집계에서 100% 해소 사이클이 발견되거나, 후반 신규 finding 다수가 기존 가계와 무관한 신규 스코프로 판명되면 폐기.",
+      "evidence": [
+        {
+          "source": "audit-5~14 방향별 표 해소율 집계 — Lane2OrchestrationState",
+          "verdict": "support"
+        },
+        {
+          "source": "가계 추적 (HIL epoch ≥10 cycle, freeze 재현성, Flyway 13-cycle 재발) — Lane5FindingDynamics",
+          "verdict": "support"
+        },
+        {
+          "source": "audit-12.md:246, audit-13.md:263, audit-14.md:433 독립 자인 — Lane2/Lane5",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: audit-5~14 방향별 표 해소율 집계 — Lane2OrchestrationState, 가계 추적 (HIL epoch ≥10 cycle, freeze 재현성, Flyway 13-cycle 재발) — Lane5FindingDynamics, audit-12.md:246, audit-13.md:263, audit-14.md:433 독립 자인 — Lane2/Lane5"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-05: 최종 REJECT(cycle 14)의 최상위 CRITICAL F14-1(Flyway V82/V83 이중 점유, dev 152커밋 drift)은 루프가 자력으로 닫을 수 없는 인간 통합 결정 항목이며, 14사이클 동안 worktree base 재동기화는 0회였다.",
+      "dropCondition": "F14-1이 feature tree 내부에서 인간 결정 없이 해소 가능함이 실증되면 폐기.",
+      "evidence": [
+        {
+          "source": "audit-14.md:432,469,486 원문 ('처방 이전에 사람의 통합 순서 결정 필요', '이 게이트가 원리적으로 잡을 수 없다') — Lane3",
+          "verdict": "support"
+        },
+        {
+          "source": "git merge-base/rev-list/ls-tree 직접 실증 (V82/V83 양측 파일명) — Lane2",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: audit-14.md:432,469,486 원문 ('처방 이전에 사람의 통합 순서 결정 필요', '이 게이트가 원리적으로 잡을 수 없다') — Lane3, git merge-base/rev-list/ls-tree 직접 실증 (V82/V83 양측 파일명) — Lane2"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-06: 검증 방법론 결함이 비수렴에 실질 기여했다 — check-15 FAIL은 감사 오케스트레이션 artifact, check-17/18 실패는 §3.0 자신이 저작한 테스트 결함, F14-10은 spec 소급 변경(기준 이동), auditor-12-spec CRITICAL 1건은 spec에 없는 요구 인용. 최종 REJECT CRITICAL 4건 중 순수 구현 결함은 2건(F14-3/4)뿐이다.",
+      "dropCondition": "audit-13/14 원문 재독에서 해당 귀속(당사자 진술·폐기 기록)이 오독으로 판명되면 폐기.",
+      "evidence": [
+        {
+          "source": "audit-13 Deterministic Check (lens ④ Gradle 충돌 당사자 진술, check-16 무변경 PASS) — Lane3 M2",
+          "verdict": "support"
+        },
+        {
+          "source": "audit-14 §3.0 자기 결함 2건 기록 (@AfterEach Int, setString/setObject) — Lane3 M3",
+          "verdict": "support"
+        },
+        {
+          "source": "audit-14:461 F14-10 + auditor-12-spec.md:127 폐기 기록 — Lane3 M4/M7",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: audit-13 Deterministic Check (lens ④ Gradle 충돌 당사자 진술, check-16 무변경 PASS) — Lane3 M2, audit-14 §3.0 자기 결함 2건 기록 (@AfterEach Int, setString/setObject) — Lane3 M3, audit-14:461 F14-10 + auditor-12-spec.md:127 폐기 기록 — Lane3 M4/M7"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-07: spec의 AC-08/AC-09(live 85% 판정)는 루프 안에서 원리적으로 실행 불가였고(15사이클 내 live probe 0회, 영구 PENDING), 그 간극을 메우는 결정적 대리 게이트(freeze oracle/wire identity v1→v3) 충실성 증명이 audit 11~14 CRITICAL 과반을 생성했다. live PENDING 자체는 REJECT 사유가 아니었다(audit-4~14 명문).",
+      "dropCondition": "check 로그/감사 기록에서 live probe 실행 흔적이 발견되거나, audit 11~14 CRITICAL 다수가 대리 게이트 축 밖으로 재분류되면 폐기.",
+      "evidence": [
+        {
+          "source": "F1-4→PENDING 제도화, OBSERVE_ONLY 명문화 (cycle 1/3 plan·spec 커밋) — Lane4",
+          "verdict": "support"
+        },
+        {
+          "source": "<게이트 평가기>:25 TARGET_HIT_RATE + NoVerdict 선행 구조 — R2TargetSubject",
+          "verdict": "support"
+        },
+        {
+          "source": "audit-14:455 'live 항목은 이번 REJECT의 사유가 아니다' — Lane3 M10",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: F1-4→PENDING 제도화, OBSERVE_ONLY 명문화 (cycle 1/3 plan·spec 커밋) — Lane4, <게이트 평가기>:25 TARGET_HIT_RATE + NoVerdict 선행 구조 — R2TargetSubject, audit-14:455 'live 항목은 이번 REJECT의 사유가 아니다' — Lane3 M10"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-08: 'LLM 캐시 적중률 85%'는 어느 provider에서도 결정론적으로 달성·검증 가능한 목표가 아니다 — 캐시 히트는 best-effort(용량·라우팅·동시성·TTL minimum 의존)이며 byte-identical prefix도 히트를 보장하지 않는다.",
+      "dropCondition": "provider 공식 문서가 동일 prefix 순차 요청에 대한 히트 보장(SLA)을 명시하면 폐기.",
+      "evidence": [
+        {
+          "source": "Anthropic prompt-caching docs (minimum 5m TTL, 병렬 miss, best-effort batch) — R3PromptCaching",
+          "verdict": "support"
+        },
+        {
+          "source": "OpenAI prompt-caching guide ('Cache reuse is best-effort', 머신 라우팅, ~15RPM) — R3/R4",
+          "verdict": "support"
+        },
+        {
+          "source": "Metabase/OpenRouter/LiteLLM 측정 함정 문서 — R4HitRateMeasure",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: Anthropic prompt-caching docs (minimum 5m TTL, 병렬 miss, best-effort batch) — R3PromptCaching, OpenAI prompt-caching guide ('Cache reuse is best-effort', 머신 라우팅, ~15RPM) — R3/R4, Metabase/OpenRouter/LiteLLM 측정 함정 문서 — R4HitRateMeasure"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-09: 문헌상 반복 LLM 비평 루프는 1~3회 이후 정체/악화하고, 적대적 비평 지시는 위양성을 높이며, 심판 승인을 종료 조건으로 쓰면 Goodhart 부패에 노출된다. 경성 게이트 하에서는 수용이 소멸한 채 예산 소진까지 루프가 지속되는 현상이 실측됐다(accepted 0/72, 95.8% 예산 소진 — 14B 매트릭스 한정, 복제 스택에서는 ON에서도 소수 sound 수용 존재; '무한 지속'은 예산 외삽).",
+      "dropCondition": "동등 설정에서 3회 초과 반복의 단조 개선을 보이는 반복 연구가 나오거나, 인용 원문 재독에서 핵심 수치(0/72, FP 0.719→0.012, 2회 후 하락)가 오독으로 판명되면 폐기.",
+      "evidence": [
+        {
+          "source": "arXiv:2303.17651+2305.13829 (2회 후 하락), 2310.01798, 2502.19130 — R5CritiqueLoops",
+          "verdict": "support"
+        },
+        {
+          "source": "arXiv:2508.12358 (비평 정교화→오판률 상승), 2407.00215 CriticGPT — R5",
+          "verdict": "support"
+        },
+        {
+          "source": "arXiv:2210.10760 Goodhart, 2607.05904 (pass 0.72→0.94 vs 정확도 0.20 불변) — R5",
+          "verdict": "support"
+        },
+        {
+          "source": "arXiv:2607.24604 §5.6 원문 정독 (0/72은 Qwen2.5-14B 매트릭스 고유; 'livelock'은 원문 용어 아님; 복제 3스택에서 ON 셀 sound 수용 존재) — W2LivelockDeep",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: arXiv:2303.17651+2305.13829 (2회 후 하락), 2310.01798, 2502.19130 — R5CritiqueLoops, arXiv:2508.12358 (비평 정교화→오판률 상승), 2407.00215 CriticGPT — R5, arXiv:2210.10760 Goodhart, 2607.05904 (pass 0.72→0.94 vs 정확도 0.20 불변) — R5, arXiv:2607.24604 §5.6 원문 정독 (0/72은 Qwen2.5-14B 매트릭스 고유; 'livelock'은 원문 용어 아님; 복제 3스택에서 ON 셀 sound 수용 존재) — W2LivelockDeep"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-10: OSS 에이전트 프레임워크의 리뷰 루프 바운딩은 다층 상한(재질의<라운드<재시도<예산) + 상한 도달 시 명시 정책(폐기/최선안 채택/에스컬레이션)이 표준이며, 동일-지적-반복을 코드로 감지하는 선례는 OpenHands stuck detector가 유일하다.",
+      "dropCondition": "인용 저장소 파일 재독에서 해당 메커니즘이 존재하지 않거나 다르게 동작함이 판명되면 폐기.",
+      "evidence": [
+        {
+          "source": "OpenHands software-agent-sdk critic/stuck_detector 파일 인용 — R7OssGates",
+          "verdict": "support"
+        },
+        {
+          "source": "SWE-agent reviewer.py/agents.py (ScoreRetryLoop, get_best, autosubmit) — R7",
+          "verdict": "support"
+        },
+        {
+          "source": "AutoCodeRover agent_reviewer.py (NO+빈 advice=무효) — R7",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: OpenHands software-agent-sdk critic/stuck_detector 파일 인용 — R7OssGates, SWE-agent reviewer.py/agents.py (ScoreRetryLoop, get_best, autosubmit) — R7, AutoCodeRover agent_reviewer.py (NO+빈 advice=무효) — R7"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-11: 인간 리뷰 공정의 수렴 장치는 ①사전 고정된 측정 가능 exit criteria ②변경 범위+부작용으로 스코프 강제된 재검사 ③재검사 진입 전 anomaly 전량 해결 ④통계적 잔여 결함 추정이며, 기준 creep과 검사자 분산이 측정 무효화의 2대 실패 모드다. 라운드 반복 자체는 탐지를 늘리지 않는다(Porter 1998).",
+      "dropCondition": "인용 1차 문헌(IEEE 1028 §6.5.5.6/§6.4.3(e), Fagan 2002, Porter 1998) 재독에서 해당 조항/결과가 부재하면 폐기.",
+      "evidence": [
+        {
+          "source": "IEEE Std 1028-1997 원문 §5-§6 — R8HumanExitCriteria",
+          "verdict": "support"
+        },
+        {
+          "source": "Fagan 2002 회고 (결함 정의 = exit criteria 상대적) — R8",
+          "verdict": "support"
+        },
+        {
+          "source": "Porter et al. TOSEM 1998 (세션 수·수리 무의미, 검사자 지배) — R8",
+          "verdict": "support"
+        },
+        {
+          "source": "Google ICSE-SEIP 2018 (80%+ ≤1 라운드) — R8",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: IEEE Std 1028-1997 원문 §5-§6 — R8HumanExitCriteria, Fagan 2002 회고 (결함 정의 = exit criteria 상대적) — R8, Porter et al. TOSEM 1998 (세션 수·수리 무의미, 검사자 지배) — R8, Google ICSE-SEIP 2018 (80%+ ≤1 라운드) — R8"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-12: §2.6 규칙(REJECT→다음 사이클 full audit, 스코프 축소 없음)에 따라 15사이클 전부 full 모드로 수행됐고, §4.2(any-lane REJECT 또는 생존 CRITICAL→REJECT) 하에서 cycles 9~14 전부 생존 CRITICAL이 존재해 AWC 축소 경로는 한 번도 진입되지 못했다 — 재검사 스코프 동결(IEEE 1028식) 장치의 부재가 전면 재감사 반복을 강제했다.",
+      "dropCondition": "audit-N.md 중 REJECT 후 축소 모드로 수행된 사이클이 발견되거나, §2.6/§4.2 문언이 다르게 확인되면 폐기.",
+      "evidence": [
+        {
+          "source": "skills/post-craft/SKILL.md:77-79 §2.6 + 전 audit 'Mode: full' 헤더 — Lane1",
+          "verdict": "support"
+        },
+        {
+          "source": "cycles 9-14 생존 CRITICAL 4/3/2/4/3/4 클러스터 — Lane1 (audit Layer 2/3 행)",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: skills/post-craft/SKILL.md:77-79 §2.6 + 전 audit 'Mode: full' 헤더 — Lane1, cycles 9-14 생존 CRITICAL 4/3/2/4/3/4 클러스터 — Lane1 (audit Layer 2/3 행)"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-13: Layer-1 FAIL 로그의 red 테스트케이스는 method-level blame 기준 (a)당-사이클 §3.0 신규 적대 red 8 : (b)기존 테스트 파손 40 : (c)하니스 2 (잔여 10로그; 보정 로그 포함 시 a=11, b=61, c=2) — Layer-1 red의 ~83%는 craft가 audit 전 run_check 1회 실행으로 예방 가능했던 기존 테스트 파손이었다.",
+      "dropCondition": "실패 메서드 blame 재검에서 (a) 우세로 재분류되면 폐기.",
+      "evidence": [
+        {
+          "source": "check-{2,3,4,7,8,10,11,15,17,18}.log 실패 메서드 → git blame/diff-filter=A 사이클 귀속 전수 — W2ProbeCheckLogs",
+          "verdict": "support"
+        },
+        {
+          "source": "check17-19 adapter 14건 = base dev 기존 테스트 (ab32f63507, 08-05) + audit-14.md:28,95,146-150 교차 확인 — W2ProbeCheckLogs",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: check-{2,3,4,7,8,10,11,15,17,18}.log 실패 메서드 → git blame/diff-filter=A 사이클 귀속 전수 — W2ProbeCheckLogs, check17-19 adapter 14건 = base dev 기존 테스트 (ab32f63507, 08-05) + audit-14.md:28,95,146-150 교차 확인 — W2ProbeCheckLogs"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-14: cycles 10~14의 audit finding 중 '직전 사이클 fix가 만든 코드'에 위치한 비율은 62.5→80→64.3→81.25→85.7% (보수 집계 전체 71.2%, causality-aware 72.7%)로 평평~상승 — 비수렴의 1차 동역학은 유한 결함 재고의 소진이 아니라 감사-표면 상호작용(fix가 새 감사 표면을 만들고 감사가 그 위에서 새 결함 클래스를 발견하는 구조적 트레드밀)이다.",
+      "dropCondition": "전수 재집계에서 fix-introduced 비율이 후기 사이클로 갈수록 유의하게 하락하는 것으로 판명되면 폐기.",
+      "evidence": [
+        {
+          "source": "F10-*~F14-* 주요 파일 last-commit vs 사이클 구현 범위 대조 (66건: fix 47/existing 7/doc 8) — W2ProbeFixIntroduced",
+          "verdict": "support"
+        },
+        {
+          "source": "F10-1 causal sensitivity 별도 집계 (75% vs 62.5%) — W2ProbeFixIntroduced",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: F10-*~F14-* 주요 파일 last-commit vs 사이클 구현 범위 대조 (66건: fix 47/existing 7/doc 8) — W2ProbeFixIntroduced, F10-1 causal sensitivity 별도 집계 (75% vs 62.5%) — W2ProbeFixIntroduced"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-15: freeze-oracle/wire-identity 축의 증명의무는 단조 감소가 아니라 재생산됐다 — 처방마다 닫힌 의무가 있어도 신규 노출이 C12 4→C13 5→C14 3+ finding으로 지속되고, 요구 축이 정규화 함수→marker 좌표 v2/v3→durable coordinate→production-effective strata→model/type/policy/schema semantic closure로 상위 경계로 이동한다. 대리 게이트가 원리적 병목이며 14사이클 내 유한 종결점 증거가 없다.",
+      "dropCondition": "의무 수지 재집계에서 단조 감소(유한 종결)로 판명되면 폐기.",
+      "evidence": [
+        {
+          "source": "audit-11~14 + auditor lens 파일 freeze/oracle/wire/identity finding 전수 시계열 — W2ProbeOracleObligations",
+          "verdict": "support"
+        },
+        {
+          "source": "F12-7→F13-3→F14-6/7/8 계보의 의무 성격 변화 인용 (auditor-12-infra:89-106, auditor-13-infra:167-182, auditor-14-infra:44-63) — W2ProbeOracleObligations",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: audit-11~14 + auditor lens 파일 freeze/oracle/wire/identity finding 전수 시계열 — W2ProbeOracleObligations, F12-7→F13-3→F14-6/7/8 계보의 의무 성격 변화 인용 (auditor-12-infra:89-106, auditor-13-infra:167-182, auditor-14-infra:44-63) — W2ProbeOracleObligations"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-16: 경성 게이트 루프의 liveness 회복에 대한 실증된 레버는 문헌에 없다 — cap 상향은 효과 없음(−0.23pts, caps rarely bind), 컴포넌트 절체 주효과 Holm 생존 0, checkpoint 보존은 conformance 증거일 뿐. 심판 위양성 절감의 최강 개입은 commit-before-judge(FP 0.719→0.012, TPR 97%)이나 solve 가능한 심판 + exact-match 가능한 최종답이 전제이며 개방형 감사 산출물 적용은 future work다.",
+      "dropCondition": "원문 재독에서 해당 수치/조건이 오독으로 판명되거나, 경성 게이트 루프의 liveness를 회복시킨 통제 실험이 발견되면 폐기.",
+      "evidence": [
+        {
+          "source": "arXiv:2607.24604v1 §5.6/§6/§8 원문 정독 (depth factorial −0.23pts Holm p=1.0; ablation 생존 0; StateSeal conformance) — W2LivelockDeep",
+          "verdict": "support"
+        },
+        {
+          "source": "arXiv:2607.05904v1 §4/§5.2/§7 원문 정독 (commit-first 프로토콜·Prop 1 bound·capability threshold 1.7B 역효과) — W2LivelockDeep",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: arXiv:2607.24604v1 §5.6/§6/§8 원문 정독 (depth factorial −0.23pts Holm p=1.0; ablation 생존 0; StateSeal conformance) — W2LivelockDeep, arXiv:2607.05904v1 §4/§5.2/§7 원문 정독 (commit-first 프로토콜·Prop 1 bound·capability threshold 1.7B 역효과) — W2LivelockDeep"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-17: audit-12~14 CRITICAL/MAJOR 55건의 근거 형성 순서 코딩 결과 E(기대 조항 선행) 9 : D(순수 diff-anchored) 0 : M(코드 증거 선행 후 계약 인용) 46 (16.4%/0%/83.6%)이며, 인용 교차검증 표본 10건 중 전면 오인용 3건 + 부분 오인용 4건(존재하지 않는 spec/plan 요구를 계약 근거로 인용) — auditor 계약에 commit-first(판정 전 독자 기대상태 서술) 구조가 없어 anchoring 위양성 위험에 구조적으로 노출되어 있었다.",
+      "dropCondition": "코딩 재검에서 M 비율이 대폭 낮게 재분류되거나, 오인용 표본이 정본 spec/plan의 다른 위치에서 실제로 확인되면 폐기.",
+      "evidence": [
+        {
+          "source": "auditor-{12,13,14}-{spec,plan,regression,infra}.md 55건 전수 코딩 (finding별 E/D/M 목록) — W3AnchoringAudit",
+          "verdict": "support"
+        },
+        {
+          "source": "표본 10건 인용→정본 대조 (auditor-12-spec F1/F2/F3 전면 오인용: spec.md:54-56/61-65/79-81의 실제 내용은 Non-Goals·AC-07~09) — W3AnchoringAudit",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: auditor-{12,13,14}-{spec,plan,regression,infra}.md 55건 전수 코딩 (finding별 E/D/M 목록) — W3AnchoringAudit, 표본 10건 인용→정본 대조 (auditor-12-spec F1/F2/F3 전면 오인용: spec.md:54-56/61-65/79-81의 실제 내용은 Non-Goals·AC-07~09) — W3AnchoringAudit"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    },
+    {
+      "claim": "C-18: countersearch 결과 — 순차·무상한 적대 루프가 반복 누적만으로 승인에 도달한 실측은 부재하다(유일 수렴 사례 arXiv:2605.12280은 locked audit protocol + 유한 9라운드 + n=1 사례연구). '더 많은 감사'의 실증된 커버리지 레버는 순차 반복이 아니라 병렬 멀티패스+집계(n=5-10에서 plateau)다. provider 캐시 비보장(C-08)은 반대증거 탐색에서 오히려 강화됐고, 자체호스팅 vLLM은 무 eviction·sha256_cbor·동일 salt 조건에서만 결정론적이다.",
+      "dropCondition": "순차 무상한 적대 루프의 수렴 실측(n>1, 프로토콜 비고정)이 발견되거나, provider가 히트 SLA를 문서화하면 폐기.",
+      "evidence": [
+        {
+          "source": "arXiv:2605.12280 (9라운드 0-결함, locked protocol, n=1) + 비수렴 증거군 (2605.01471 30% 비수렴, 2603.16244, 2607.01641) — W3Countersearch",
+          "verdict": "support"
+        },
+        {
+          "source": "arXiv:2509.01494 SWR-Bench (병렬 n=10 F1 +43.67%, n=5-10 plateau) + Large Language Monkeys 2407.21787 (검증기 없으면 plateau) — W3Countersearch",
+          "verdict": "support"
+        },
+        {
+          "source": "OpenAI/Anthropic/Bedrock/Gemini 문서 직접 재독 ('Repeated prompt content alone does not guarantee a cache hit' 등) + vLLM 설계 문서 — W3Countersearch",
+          "verdict": "support"
+        }
+      ],
+      "decision": {
+        "status": "accepted",
+        "reasons": [
+          "surviving support: arXiv:2605.12280 (9라운드 0-결함, locked protocol, n=1) + 비수렴 증거군 (2605.01471 30% 비수렴, 2603.16244, 2607.01641) — W3Countersearch, arXiv:2509.01494 SWR-Bench (병렬 n=10 F1 +43.67%, n=5-10 plateau) + Large Language Monkeys 2407.21787 (검증기 없으면 plateau) — W3Countersearch, OpenAI/Anthropic/Bedrock/Gemini 문서 직접 재독 ('Repeated prompt content alone does not guarantee a cache hit' 등) + vLLM 설계 문서 — W3Countersearch"
+        ],
+        "evaluatedAt": "2026-08-24T13:48:53.594Z"
+      }
+    }
+  ]
+}
