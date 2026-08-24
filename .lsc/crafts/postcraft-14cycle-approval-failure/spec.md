@@ -42,7 +42,9 @@
 
 1. **(A) 루프 바운딩**: post-craft audit 사이클에 상한 3(fixture 모드 2)을 도입한다. 상한 도달 시 `[Audit Escalation]` 사용자 게이트가 발동하고, 소비 전에는 `lsc_audit_begin`이 fail-closed로 거부된다. 사용자가 "계속"을 선택하면 이후 3사이클마다 재발동하는 주기형이다. 처분은 3종 — 계속 / 중단(abort 위임) / branch 보존 종결 — 이며 durable 기록된다.
 2. **(B) base drift 게이트**: `lsc_audit_begin`이 base branch 뒤처짐(커밋 수)을 계산해 WARN+감사 문서 기재 의무로 남기고, `lsc_land`가 merge 직전 base tip 대비 경로 충돌(F14-1형 이중 점유)을 fail-closed로 검사한다.
-3. **(C) 측정 위생**: craft가 yield 전 `run_check.sh` 실행을 의무화하고(red 상태 yield 금지 — C-13: 예방 가능 red 83%), auditor는 diff 열람 전 기대 상태를 먼저 서술(commit-first — C-17: 코드-선행형 83.6%)하며, finding의 spec/plan 인용은 file:line 실증을 의무화한다(오인용 7/10).
+3. **(C) 측정 위생**: craft가 yield 전 `run_check.sh` 실행을 의무화하고(red 상태에서의 **완료 선언 금지** — red/미실행 상태로는 `[Craft Complete]`를 낼 수 없으며, red는 반드시 red evidence를 동반한 `[Craft Incomplete]` 종료로만 반환한다; C-13: 예방 가능 red 83%), auditor는 diff 열람 전 기대 상태를 먼저 서술(commit-first — C-17: 코드-선행형 83.6%)하며, finding의 spec/plan 인용은 file:line 실증을 의무화한다(오인용 7/10).
+
+   > **Amendment — plan 합의 iteration 5 (2026-08-24)**: 원문 부연 "(red 상태 yield 금지)"는 문자 그대로 읽으면 모든 종료를 금지하는 불능 계약으로, R9에서 사용자가 확정한 AC-5 원문("craft/post-craft SKILL에 'craft yield 전 run_check 의무' 명문")에는 존재하지 않는 표현이었다. AC-5와의 내부 계약모순을 해소하기 위해 "red 상태에서의 완료 선언 금지 + red evidence 동반 [Craft Incomplete]"로 정정한다 (C-13이 진단한 실패 모드 — check 미실행/red 상태의 완료 인계 — 차단이라는 원 취지 보존). critic iteration 5 Major #1 계기.
 4. **(D) 사전 차단**: pre-craft spec 단계에서 AC마다 검증가능성 분류(결정적/하이브리드/live-전용)를 의무화하고, live-전용 AC가 존재하면 그 대리 게이트의 증명의무 범위를 spec에 명시하도록 강제한다(C-07/C-15: 개방형 증명의무 재생산 차단).
 5. **(E) 다중-lens AWC**: post-craft §5의 단수-lens 공백을 닫아, 여러 lens의 blocking finding을 한 사이클의 Required Fix 묶음으로 처방하고 lens별 fix-verification으로 재확인하는 경로를 정의한다(AWC 종결 도달성 회복 — C-12).
 
