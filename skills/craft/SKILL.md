@@ -91,19 +91,117 @@ For each lane `K`, in order:
 2. **On a completed exit**: run `git -C {worktreeAbs} status --short` (the implementation root is always the worktree now — §2.5). If anything is uncommitted (the executor's own commits per RULE should normally leave nothing behind, but verify rather than assume), commit it yourself per this project's own RULE's structured body (`what:`/`why:`/`evidence:`/`verify:`).
 3. **On an aborted exit** (the §1 escape valve was used): report plainly that the user asked to stop and where in the run that happened, and end the turn here — do not proceed to §5; there is nothing to hand off for a run that was explicitly cut short.
 
-## 5. Handoff
+## 5. Handoff — exit evidence, the 20 reachable cases, and the canonical red continuation
 
-**`[Craft Incomplete]` — one-shot re-entry gate (S2).** If the executor (or any lane) reported a build/typecheck failure in §3.3, ask this **before** the chaining gate below — and only once:
+### 5.0 Exit evidence — executor state × fresh check evidence (corrected Goal (C) contract)
 
-`[Craft Incomplete] executor가 빌드/타입체크 실패를 보고했다: {요약}. executor를 1회만 다시 실행할까? (아니오 = 실패 상태 그대로 post-craft 감사로 넘긴다) Proceed?`
+Every exit is decided by TWO independent facts, never one alone:
 
-CONTENT exactly `yes` → re-spawn that executor once, carrying the failure summary into the new assignment, **and whatever that re-spawn reports, there is no second re-entry.** `no`, or a free answer (reflect it as guidance and re-ask this exact gate, pre-craft §1.2 SSOT (c)) → proceed as-is, failure and all. The cap is 1 and the decision is the user's, not an automatic retry — this is not a loop; what the spec dismantled was unconditional automatic repetition, not a single user-directed judgment call.
+1. **Executor state** — `complete` or `incomplete`: the executor's (or, on the parallel path, every lane's) own report of whether it finished the whole assignment, plus §4's uncommitted-work check.
+2. **Fresh check evidence** — on every audit-driven re-entry where post-craft's authored `check/run_check.sh` exists, run `lsc_run_check(feature_dir, timeout_ms: 600000)` yourself (fresh — never reuse a log an earlier step or a prior cycle produced) and classify the ACTUAL tool result, before any attribution:
 
-**Chaining gate.** Once the above (if it applied) is resolved: check `[ -n "$LSC_FIXTURE" ]` (bash, one-time check right here — this replaces the old §1.7 fixture-bounding section, which no longer exists) and, if unset, whether this session's accumulated context is already large (long-running session, several executor spawns behind you). Ask for final handoff regardless of either:
+```ts
+type CheckEvidence =
+  | { state: "green"; details: RunCheckDetails & { passed: true }; logPath: string }
+  | {
+      state: "executed-red";
+      details: RunCheckDetails & { passed: false };
+      logPath: string;
+      repairHint: "implementation" | "test-check" | "unknown";
+    }
+  | {
+      state: "infrastructure";
+      diagnostic: string;
+      logPath?: string; // tool이 이 실패에서도 실제 log를 생성한 경우에만
+      repairHint?: never;
+    };
+```
 
-`[Craft Complete] craft is done for "{feature}" — the implementation is committed. Run the post-craft skill against .lsc/crafts/{feature}/ next. Proceed?`
+Classification is exact: `details.passed === true` is the ONLY `green`. A well-formed `details` carrying `passed === false` (nonzero exit or a killed run) is the ONLY `executed-red` — a cause-neutral observation of an executed red, never in itself proof of a production defect. A details-less `isError`, invalid/missing `details`, target refusal · execution exception · empty transcript, or an unregistered/unavailable `lsc_run_check` is `infrastructure`. `green` and `executed-red` REQUIRE the actual `details` and the tool-created `logPath`. `infrastructure` preserves the raw `diagnostic`, carries `logPath` ONLY when the tool actually produced one for this failure, and NEVER a synthetic path or a `repairHint`.
 
-via `lsc_confirm`. Regardless of the answer, tell the user plainly, in text: whether the run was single-executor or parallel-lane (and how many lanes), any build/typecheck failure left unresolved, the list of commits made during this craft run (`git -C {worktreeAbs} log --oneline {forkPoint}..HEAD`), and the exact path to pass to `post-craft`.
+**Boundary.** A FIRST-time craft has no post-craft-authored check script yet — §3.3's executor self build/typecheck report is the only check evidence there, and §5.2's EXEC-RETRY is the only retry selector that can fire. The fresh-green obligation binds every audit-driven re-entry from the moment `check/run_check.sh` exists.
+
+**`executed-red` attribution — a best-effort `repairHint`, never an owner authority.** Compare ONLY the current OID's just-created check log/transcript against the prior Required Fix's target/remediation; the prior OID's §3.0 test-authoring report is removed from the attribution inputs. `RunCheckDetails` carries no per-step command identity, so an exact failing command counts as best-effort evidence ONLY when it is uniquely identifiable from the script/log; multi-command ambiguity or a missing path/category closes as `unknown`. The record keeps the current implementation OID and the required `details`/`logPath`/observation basis/`repairHint`, and is never reused as the next cycle's authority. The three hints:
+- `implementation` — only when the prior fix targeted a production path/behavior AND the fresh failure evidence directly identifies an immediately-repairable mismatch on that same target AND there is not a single `test-check` signal.
+- `test-check` — a diagnostic hint used when the prior fix directly targeted tests/checks, or the fresh log directly identifies a defect in the check entrypoint/load/compile/collection/path artifact itself. Craft does not repair this artifact here — it `CYCLE-RETURN`s.
+- `unknown` — path not extractable, mixed signals, missing/conflicting evidence, or an assertion that cannot be decided between test defect and production defect. Production repair is not allowed; `CYCLE-RETURN`.
+
+**`[Craft Complete]` is a conjunction (load-bearing).** The completion declaration — and the §5.5 chaining gate — is permitted ONLY when executor = `complete` AND the fresh check evidence is `green`. Executor success never outranks an `executed-red`/`infrastructure` observation, and green never covers an incomplete executor. Declaring completion with a red or not-run check is FORBIDDEN; a red is returned only as a `[Craft Incomplete]` carrying the actual red evidence (§5.3).
+
+### 5.1 The 20 reachable cases (union branches expanded; green/infrastructure get no hint axis)
+
+
+executor (2) × evidence (3) × `retryUsed` (2), expanded per union branch ONLY — the hint axis multiplies neither green nor infrastructure: **4 + 12 + 4 = 20**. The `action` column is the route §5.2/§5.3/§5.4 take.
+
+| # | executor | evidence state | `retryUsed` | `repairHint` field | action |
+|---:|---|---|---:|---|---|
+| 1 | complete | green | false | 금지(필드 없음) | `COMPLETE` |
+| 2 | complete | green | true | 금지(필드 없음) | `COMPLETE` |
+| 3 | incomplete | green | false | 금지(필드 없음) | `EXEC-RETRY` |
+| 4 | incomplete | green | true | 금지(필드 없음) | `RETRY-EXHAUSTED` |
+| 5 | complete | executed-red | false | `implementation` | `IMPL-RETRY` |
+| 6 | complete | executed-red | false | `test-check` | `CYCLE-RETURN` |
+| 7 | complete | executed-red | false | `unknown` | `CYCLE-RETURN` |
+| 8 | complete | executed-red | true | `implementation` | `CYCLE-RETURN` |
+| 9 | complete | executed-red | true | `test-check` | `CYCLE-RETURN` |
+| 10 | complete | executed-red | true | `unknown` | `CYCLE-RETURN` |
+| 11 | incomplete | executed-red | false | `implementation` | `IMPL-RETRY` |
+| 12 | incomplete | executed-red | false | `test-check` | `CYCLE-RETURN` |
+| 13 | incomplete | executed-red | false | `unknown` | `CYCLE-RETURN` |
+| 14 | incomplete | executed-red | true | `implementation` | `CYCLE-RETURN` |
+| 15 | incomplete | executed-red | true | `test-check` | `CYCLE-RETURN` |
+| 16 | incomplete | executed-red | true | `unknown` | `CYCLE-RETURN` |
+| 17 | complete | infrastructure | false | 금지(필드 없음) | `CYCLE-RETURN` |
+| 18 | complete | infrastructure | true | 금지(필드 없음) | `CYCLE-RETURN` |
+| 19 | incomplete | infrastructure | false | 금지(필드 없음) | `CYCLE-RETURN` |
+| 20 | incomplete | infrastructure | true | 금지(필드 없음) | `CYCLE-RETURN` |
+
+### 5.2 Retry selectors — EXEC-RETRY / IMPL-RETRY only; one shared `retryUsed`
+
+Only two rows of the table open the user's one-shot retry selector, and they share a SINGLE boolean `retryUsed` for the whole parent invocation — an executor failure and an immediately-repairable implementation red consume the same one shot:
+
+- **EXEC-RETRY** (rows 3–4: executor `incomplete`, evidence `green`) — the existing one-shot re-entry gate, unchanged. If the executor (or any lane) reported a build/typecheck failure in §3.3, ask this **before** the chaining gate below — and only once:
+
+  `[Craft Incomplete] executor가 빌드/타입체크 실패를 보고했다: {요약}. executor를 1회만 다시 실행할까? (아니오 = 실패 상태 그대로 post-craft 감사로 넘긴다) Proceed?`
+
+  CONTENT exactly `yes` → set `retryUsed = true` immediately before the re-spawn, re-spawn that executor once carrying the failure summary into the new assignment, **and whatever that re-spawn reports, there is no second re-entry.** `no`, or a free answer (reflect it as guidance and re-ask this exact gate, pre-craft §1.2 SSOT (c)) → proceed as-is, failure and all, ending at row 4 with `reason=retry-exhausted`. The cap is 1 and the decision is the user's, not an automatic retry — this is not a loop; what the spec dismantled was unconditional automatic repetition, not a single user-directed judgment call.
+
+- **IMPL-RETRY** (rows 5 and 11: `executed-red` with `repairHint=implementation` and `retryUsed=false`) — the immediately-repairable production red. Ask, once, the same shape of one-shot question:
+
+  `[Craft Incomplete] 수정 직후 체크가 여전히 붉다: {details 요약 + 로그 path}. 단일 production repair executor를 1회만 실행할까? (아니오 = red evidence와 함께 다음 post-craft cycle로 돌아간다) Proceed?`
+
+  CONTENT exactly `yes` → set `retryUsed = true`, then run ONE single production-repair `lsc-executor` spawn against the integrated `{worktreeAbs}` (where serial/parallel final commits have all landed). An IMPL-RETRY assignment arriving from `executor=incomplete` covers BOTH the repairHint's specific defect AND the original executor's unfinished leftovers — it is complete only when both are done. `no` → `reason=retry-declined`; a cancelled roundtrip → `reason=retry-cancelled`. A repair executor that ends incomplete or unheard, or makes no commit → end with `reason=repair-incomplete`. On complete+commit: re-run the check EXACTLY once and re-enter the §5.1 table at executor=`complete`, `retryUsed=true` (rows 8–10) — a post-repair red opens NO second production retry; it ends as the hint-appropriate `CYCLE-RETURN` reason (`re-red` for `implementation`, §5.3). Deleted parallel lanes are never re-spawned, and no per-lane token or per-lane executor is ever created.
+
+### 5.3 The eight `[Craft Incomplete]` reasons
+
+Every non-COMPLETE exit ends as a `[Craft Incomplete]` report carrying: the executor state, the current implementation OID, the manual next step, and ONLY the actual union-branch evidence — green/executed-red: required `details` + `logPath`; executed-red only: the `repairHint`; infrastructure: the raw `diagnostic` and, only if the tool actually created one, an optional `logPath`. The eight exact reason labels:
+
+| exact `reason` | when |
+|---|---|
+| `retry-declined` | the user answered `no` to a §5.2 one-shot selector |
+| `retry-cancelled` | the selector roundtrip was cancelled (Esc / no answer) |
+| `retry-exhausted` | row 4 — green evidence, executor still `incomplete` with `retryUsed=true` |
+| `re-red` | rows 8/14 — `retryUsed=true` AND an `implementation`-hint executed-red (the one-shot repair already ran and the red persists) |
+| `repair-incomplete` | the IMPL-RETRY repair executor ended incomplete/unheard or made no commit |
+| `test-check-red` | an executed-red whose `repairHint` is `test-check` |
+| `red-attribution-unknown` | an executed-red whose `repairHint` is `unknown` |
+| `check-infrastructure` | an `infrastructure` evidence branch |
+
+### 5.4 `CYCLE-RETURN` — the canonical continuation is a NORMAL new post-craft cycle
+
+`CYCLE-RETURN` (every row whose action column says so) is not a completion and never a disguised `[Craft Complete]`: end the turn with the §5.3 `[Craft Incomplete]` report, then the user — or the orchestrating session — invokes a normal, fresh `post-craft` run against `.lsc/crafts/{feature}/`. That is the ONE continuation path:
+
+- The normal post-craft run calls `lsc_audit_begin` as always, consuming the next audit cycle, and re-authors/repairs/re-evaluates §3.0's tests at the CURRENT implementation OID, then continues its check/audit as always. If the tests were the problem, §3.0 repairs them and green resumes the complete path; if healthy tests keep a production red alive, the audit's Required Fix → craft path carries it. Do NOT precondition the return on a fresh green for `unknown`/`test-check`/`infrastructure` reds — re-establishing evidence at the current OID is precisely the next cycle's §3.0/check/audit job.
+- Each return costs one audit cycle, and the persisted `auditCycle` plus the periodic escalation interval (TS SSOT `LIVE_AUDIT_ESCALATION_INTERVAL` / `FIXTURE_AUDIT_ESCALATION_INTERVAL`, `src/craft/audit-policy.ts`) bound the repetition: at a due cycle `lsc_audit_begin` issues no new cycle without an explicit `Continue auditing`, and `Abort this craft` / `Preserve branch and stop` end the loop durably.
+- Never resume a handoff and never reuse a prior report across OIDs: there is no §3.0-only entry mode, no durable handoff envelope, no resume token, and no second-stage executor table in this contract. A crash mid-return simply follows the next post-craft run's same-cycle begin replay rule.
+
+### 5.5 Chaining gate — on COMPLETE only
+
+Only a §5.1 row-1/row-2 `COMPLETE` reaches this gate. Check `[ -n "$LSC_FIXTURE" ]` (bash, one-time check right here) and, if unset, whether this session's accumulated context is already large (long-running session, several executor spawns behind you). Ask for final handoff regardless of either:
+
+`[Craft Complete] craft is done for "{feature}" — the implementation is committed and the fresh check is green. Run the post-craft skill against .lsc/crafts/{feature}/ next. Proceed?`
+
+via `lsc_confirm`. Regardless of the answer, tell the user plainly, in text: whether the run was single-executor or parallel-lane (and how many lanes), any unresolved failure left behind (there is none on a COMPLETE — say so), the CheckEvidence branch backing the completion (`green` + its `logPath`), the list of commits made during this craft run (`git -C {worktreeAbs} log --oneline {forkPoint}..HEAD`), and the exact path to pass to `post-craft`.
 A free answer here (result CONTENT begins `User provided free answer:`) is not a yes — reflect it as guidance and re-ask this `[Craft Complete]` gate (pre-craft §1.2 SSOT (c)); only CONTENT exactly `yes` chains to post-craft.
 - **"yes", and neither gate above applies (not fixture mode, context not oversized)**: `read skill://post-craft` in this same turn — it returns post-craft's full contract text — and continue executing from post-craft's own §0 immediately, without ending this turn. **From this point on, this skill's own contract (§0's "not a loop owner," everything above) no longer applies — only the contract you just read from `skill://post-craft` governs the rest of this turn.** This is not hypothetical: `read skill://{skill}` returning the live contract text, and an in-turn tool call from that contract succeeding right after, has been confirmed against the real host.
 - **"yes", but `$LSC_FIXTURE` is set**: do not chain — the E2E harness drives pre-craft, craft, and post-craft as three separate invocations, and chaining here would run post-craft inside this craft turn, breaking that structure. This confirmation is a courtesy checkpoint under fixture mode, not a hard gate — end the turn normally.

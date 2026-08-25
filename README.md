@@ -101,7 +101,7 @@ omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 �
 - **`lsc_craft_init`**: craft 시작 시 한 번만 호출됩니다. `trace.md`/`spec.md`/`plan.md`가 모두 존재하고 비어있지 않은지 확인한 뒤, 이 feature를 "활성 craft"로 등록합니다.
 - **`lsc_run_check`**: post-craft가 저작한 `check/run_check.sh`를 LLM 자신의 bash 도구가 아니라 신뢰된 실행기(`pi.exec`)로 실행합니다. 스크립트의 sha256과 전문을 포함한 전체 실행 로그를 `check/logs/check-N.log`에 저장하고, 통과/실패 여부와 실패 라인 요약을 반환합니다. 실행 라인이 2줄 미만이거나 전부 무조건-성공이면 실행 전에 거부하고, 결과 transcript가 완전히 비어있으면 실행 후에도 거부합니다.
 - **`lsc_ask` / `lsc_select` / `lsc_confirm`**: 파이프라인이 사람에게 무언가를 물어볼 때 사용하는 유일한 통로입니다(자유 텍스트 / 객관식 / 예-아니오). 대화형 UI가 없는 헤드리스 모드에서 `LSC_FIXTURE`가 설정되지 않으면 이 도구들은 답을 추측하지 않고 즉시 오류로 실패합니다.
-- **`lsc_craft_abort`**: 활성 craft를 사용자 의사로 중단 상태로 기록하는 유일한 출구입니다. craft는 이제 단발 실행이라 이 도구를 자동으로 호출하는 게이트가 없으며, 사용자가 명시적으로 중단을 요청했을 때만 호출됩니다.
+- **`lsc_craft_abort`**: 활성 craft를 사용자 의사로 중단 상태로 기록하는 유일한 출구입니다. 활성 craft가 있는 세션에서는 인자 없이 호출하고, 활성 craft가 없는 세션(예를 들어 audit escalation의 `Abort this craft` 처분을 위임받는 fresh post-craft 프로세스)에서는 optional `feature_dir`로 정확한 루트를 지정해 같은 중단 기록을 남깁니다. craft는 이제 단발 실행이라 이 도구를 자동으로 호출하는 게이트가 없으며, 사용자가 명시적으로 중단을 요청했을 때만 호출됩니다.
 
 ## model preset 사용법
 
@@ -168,7 +168,7 @@ presets:
 
 ### 3. post-craft 실행
 
-`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-test-engineer`를 스폰해 구현 diff를 커버하는 회귀 테스트와 `check/run_check.sh`를 저작시키고, `lsc_run_check`로 결정적 체크를 실행한 뒤, `lsc-explore`(코드 매핑) 1개와 lens별 `lsc-auditor`(spec 정합 / plan·ADR 준수 / 회귀·코드품질 / 인프라·설정 — 기본 4개, 최소 3개)를 **단일 `task` 배치로 동시 스폰**해 spec/plan 컴플라이언스 매트릭스를 직접 확인하고 4단계 판정을 워크트리 내부의 `audit/audit-N.md`에 기록합니다. 결정적 체크가 실패하면(또는 재저작 상한을 넘겨 실행조차 못 하면) verdict는 `REJECT`/`APPROVE-WITH-CHANGE`만 가능한 하드 게이트입니다.
+`"post-craft"` / `/post-craft`라고 말하면 트리거됩니다. `lsc-test-engineer`를 스폰해 구현 diff를 커버하는 회귀 테스트와 `check/run_check.sh`를 저작시키고, `lsc_run_check`로 결정적 체크를 실행한 뒤, `lsc-explore`(코드 매핑) 1개와 lens별 `lsc-auditor`(spec 정합 / plan·ADR 준수 / 회귀·코드품질 / 인프라·설정 — 기본 4개, 최소 3개)를 **단일 `task` 배치로 동시 스폰**해 spec/plan 컴플라이언스 매트릭스를 직접 확인하고 4단계 판정을 워크트리 내부의 `audit/audit-N.md`에 기록합니다. 결정적 체크가 실패하면(또는 재저작 상한을 넘겨 실행조차 못 하면) verdict는 `REJECT`/`APPROVE-WITH-CHANGE`만 가능한 하드 게이트입니다. 사이클 시작 전에 실제 land target base 브랜치를 먼저 탐지해 `lsc_audit_begin`의 `base_branch`로 전달합니다(audit-time canonical base authority — 프로젝트 루트가 제3 브랜치에 있어도 감지된 base 기준으로 drift를 측정하고, 그 관측이 사이클과 함께 기록됩니다). 감사 사이클은 주기적 escalation로 바운딩됩니다: TS 상수 `LIVE_AUDIT_ESCALATION_INTERVAL`/`FIXTURE_AUDIT_ESCALATION_INTERVAL`(`src/craft/audit-policy.ts`)의 주기마다 `lsc_audit_begin`이 정확한 `[Audit Escalation]` 질문을 반환하고, `Continue auditing`(다음 사이클 발행) / `Abort this craft`(`lsc_craft_abort` 위임) / `Preserve branch and stop`(브랜치·워크트리 보존 종결) 세 처분만 소비합니다. `APPROVE-WITH-CHANGE`의 Required Fix는 다중 출처 bundle(auditor lens·explore probe·§3.0 테스트 저작·결정적 체크·main 절차의 concrete owner 참조 + 현재 OID/사이클 결합 검증 결과)로 다음 사이클에서 검증되며, craft 재진입이 red로 돌아오면 완료 선언 없이 red evidence를 동반한 `[Craft Incomplete]`로 종료하고 **정상적인 새 post-craft 사이클**이 현재 OID에서 증거를 재수립합니다(canonical red cycle return).
 
 - `REJECT` / `APPROVE-WITH-CHANGE` → craft를 감사 문서 경로로 재호출하도록 제안(사용자 승인 시 자동 체이닝).
 - `APPROVE` / `APPROVE-WITH-COMMENT` → 사용자에게 명시적 병합 승인을 요청한 뒤(`git merge`는 이 승인 없이는 절대 실행되지 않음) feature 브랜치를 base 브랜치로 `--no-ff` 병합하고, 워크트리를 정리(`git worktree remove` + `git worktree prune`)합니다. 병합 전까지 base 브랜치는 이 feature의 산출물·구현·감사 어느 것도 담고 있지 않습니다.
@@ -226,7 +226,7 @@ craft는 plan.md의 Detailed TODOs를 읽고, 서로소 작업 단위 2개 이�
 
 ### 3. 중단 경로
 
-사용자가 명시적으로 중단을 요청하면 `lsc_craft_abort`가 활성 craft를 중단 상태로 기록합니다. 이전 설계에 있던 해시 위반·테스트 실행 불가·무진전(no-progress) 자동 에스컬레이션 게이트는 모두 제거되었습니다 — 남은 유일한 중단 경로는 사용자의 명시적 지시뿐입니다.
+사용자가 명시적으로 중단을 요청하면 `lsc_craft_abort`가 활성 craft를 중단 상태로 기록합니다 — 활성 craft가 없는 프로세스에서는 optional `feature_dir` 정확한 루트 호출로 같은 기록을 남기며, audit escalation의 `Abort this craft` 처분도 이 도구로 위임됩니다(`Preserve branch and stop`은 별도 중단 없이 브랜치·워크트리를 남긴 채 감사 루프를 종결합니다). 이전 설계에 있던 해시 위반·테스트 실행 불가·무진전(no-progress) 자동 에스컬레이션 게이트는 모두 제거되었습니다 — 남은 중단 경로는 사용자의 명시적 지시와 주기적 escalation 게이트의 종결 처분뿐입니다.
 
 ## 테스트/검증
 
