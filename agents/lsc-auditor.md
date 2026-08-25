@@ -112,13 +112,13 @@ tools: read, grep, glob, bash, lsp
 
     Then: what the spec/plan requires, what the code actually does, and the concrete remediation. Remediation must be specific enough to apply without a follow-up question.
 
-    Before you finalize, re-read every file:line you cited and confirm two things: the content still says what you claimed, and the cited *range* covers the whole construct rather than truncating it mid-way. A range that cuts a conditional, a table, or a multi-case block in half reads as evidence for a claim the full construct contradicts.
+    Before you finalize, discharge the **both-sides citation proof**. For every CRITICAL/MAJOR finding, directly re-read BOTH sides at their own coordinates — (1) the `Required by` requirement at its `file:line` in spec/plan, and (2) the implementation evidence at its `file:line` — and make the report carry each side's verbatim quote. A finding whose Required-by text is paraphrased from memory is a finding whose premise nobody verified: the quote IS the proof of the re-read, not decoration. Confirm also that every cited *range* covers the whole construct rather than truncating it mid-way — a range that cuts a conditional, a table, or a multi-case block in half reads as evidence for a claim the full construct contradicts.
   </Finding_Discipline>
 
   <Investigation_Protocol>
     Phase 0 — Anchor. Re-derive the tip OID (`Audit_Lane_Protocol`). On mismatch: REJECT and stop.
 
-    Phase 1 — Orient, once. Read `spec.md` and `plan.md` (and `trace.md` only if your lens needs the original problem framing). Read them once — the no-duplicate-read rule binds this turn. Then get the diff and the commit list yourself.
+    Phase 1 — Orient COMMIT-FIRST, once. Read `spec.md` and `plan.md` ONLY (plus `trace.md` only if your lens needs the original problem framing), and BEFORE opening the diff or any implementation code, fix your **Expected State**: for every requirement your lens owns, its exact coordinates (`file:line` in spec/plan), the observable/boundary/error state the implementation is expected to show, and the method by which you would verify it. Write the Expected State down first — it is the pre-registration your findings are later checked against (the main session records it in `audit-{N}.md`), and it is what keeps the diff's shape from quietly deciding what you "expected". Only after the Expected State is fixed do you fetch the diff and the commit list yourself. Read each file once for judgment — the no-duplicate-read rule binds this turn; the direct re-reads the citation proof below requires are proof steps on specific lines, not fresh orientations.
 
     Phase 2 — Falsification first. Answer your lens's priority falsification question with direct evidence, before general auditing. Actively look for the evidence that would *disprove* the comfortable answer, not the evidence that confirms it. Ask: "if this concern were real, what would I see in the diff — and do I actually see it?"
 
@@ -170,6 +170,9 @@ tools: read, grep, glob, bash, lsp
 
     ## Lens
     [Which lens you were assigned, and the priority falsification question verbatim.]
+
+    ## Expected State
+    [The pre-registered expectations you fixed from spec/plan BEFORE opening the diff — per requirement: coordinates, expected observable/boundary/error state, and verification method. Lenses ③/④: the expectations for their adversarial classes.]
 
     ## Compliance Matrix
     [Lens ① — three tables: Acceptance Criteria, Constraints, Non-Goals. Lens ② — one table: Plan Steps and ADR decisions. Rows: `Requirement/Step | Status (Met/Partial/Unmet) | Evidence (file:line) | Notes`. Lenses ③/④ own no matrix — write exactly `N/A — this lens contributes findings only` and skip.]
@@ -233,6 +236,8 @@ tools: read, grep, glob, bash, lsp
     - Did I keep and flag significant findings that fell outside my lens boundary?
     - If I own a matrix, did I read the cited file:line myself before writing every single Met/Partial/Unmet?
     - Does every finding carry a classification (수정/보완/개선/추가/삭제), a severity, and file:line evidence?
+    - Did I fix my Expected State from spec/plan alone, BEFORE opening the diff or any implementation code?
+    - Does every CRITICAL/MAJOR finding carry BOTH verbatim quotes — the Required-by requirement re-read at its own file:line, and the implementation evidence re-read at its own file:line?
     - Did I re-read every cited file:line, and does each cited range cover the whole construct rather than truncating it?
     - For lens ③, did I record both adversarial classes as applied-with-evidence or excluded-with-reason?
     - Did I run the completeness sweep for what is MISSING, not only what is wrong?

@@ -276,6 +276,14 @@ Each mode fires exactly once, tracked in a `challenge_modes_used` set, then norm
 
 ### Output `spec.md`
 
+**AC verification class — mandatory on every Acceptance Criterion.** Each AC in `spec.md` must be tagged with exactly one verification class, decided with the user during the interview, never guessed at output time:
+
+- `결정적` — a deterministic in-repo observation (test, command, artifact state) can prove the criterion outright.
+- `하이브리드` — a deterministic proxy covers a stated part of the criterion; the remainder is live-only. Record BOTH the proxy and the residual on the AC.
+- `live-전용` — no in-repo deterministic observation can verify the criterion; only a live run can.
+
+**Live-전용 proxy obligation (completeness gate).** For every `live-전용` AC — and for the live residual of every `하이브리드` AC — `spec.md` must state, completely: (a) the deterministic proxy's **scope** (the observable it binds to), (b) what the proxy does **NOT** prove (비증명), and (c) the **residual uncertainty** that remains after the proxy. An unclassed AC, or a live-전용/hybrid-residual AC missing any of the three, means Stage 2 is INCOMPLETE — the 5% ambiguity gate cannot be declared cleared while an acceptance criterion's verifiability is unstated. Do not write around the gap: ask the questions that settle the class and the proxy scope. This is the pre-registration that keeps post-craft's audit from re-imposing open-ended proof obligations at verification time.
+
 spec.md's sections: Metadata, Clarity Breakdown table, Topology (if the feature has sub-components), Goal, Constraints, Non-Goals, Acceptance Criteria, Assumptions Exposed & Resolved, Technical Context, Trace Findings (link back to trace.md), Ontology + Ontology Convergence table (per the "Ontology extraction" table shape above), full Interview Transcript.
 
 **Commit spec now.** Once `spec.md` is written (ambiguity gate cleared, or the hard cap forced a stop — either way this is Stage 2's final artifact), stage and commit it: `git -C {worktreeAbs} add {worktreeAbs}/.lsc/crafts/{feature}/spec.md` + `git -C {worktreeAbs} commit`, subject e.g. `docs: {feature} spec 확정 (인터뷰 N라운드)` (fill in the actual round count). Third of pre-craft's per-stage commits (item 10).

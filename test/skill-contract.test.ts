@@ -654,11 +654,11 @@ describe("U3 — post-craft 리뷰 배치: lsc-explore + lens별 lsc-auditor", (
 			expect(postCraft).toContain("**`lsc-explore`'s report stays verbatim inline in this document, in full**");
 		});
 
-		it("narrows fix-verification to one auditor by lens succession, with explore only on a test-touching fix", () => {
-			expect(postCraft).toContain("lens 승계");
-			expect(postCraft).toContain("The full lens fan-out is **not** re-run for a fix verification.");
-			expect(postCraft).toContain("**Add `lsc-explore` to that batch only when the fix touched the tests or `check/run_check.sh`**");
-		});
+	it("routes fix-verification through §5's owner execution routing, not a single default lens", () => {
+		expect(postCraft).toContain("§5.2's owner execution routing");
+		expect(postCraft).toContain("The full four-lens fan-out is **not** re-run for a fix verification");
+		expect(postCraft).toContain("one auditor per exact lens and one explore per exact probe the Required Fix bundle names");
+	});
 
 		it("the two post-craft mirror documents name lsc-auditor's lens batch", () => {
 			expect(readme).toContain("lsc-auditor");
@@ -810,5 +810,372 @@ describe("lsc-test-engineer — 구현-후 저작자 역할 (AC7)", () => {
 		expect(lscTestEngineer).not.toContain("THE IRON LAW");
 		expect(lscTestEngineer).toContain("Post_Implementation_Authoring");
 		expect(lscTestEngineer).toContain("tautology");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// PR-4 (postcraft-14cycle-approval-failure) — 측정 위생·AC 사전 차단·multi-lens AWC.
+//
+// Heading-bounded contract tests: each block extracts ONE heading's body and
+// asserts the contract inside it, so a sentence migrating into the wrong
+// section fails even when the file as a whole still contains it. The craft ↔
+// post-craft green mirror, the eight incomplete reasons, the CheckEvidence
+// field rules, the 20-case product table, the §5 bundle normal form/invariants/
+// routing/normalizer, §4.2's precedence, §4.1's Expected State/Base Drift,
+// §6.3's periodic escalation, pre-craft's AC verification-class gate, and the
+// auditor's commit-first/both-sides-citation duties are each pinned here.
+// ---------------------------------------------------------------------------
+
+/** The body of one heading-bounded section: from the start heading (inclusive) to the next
+ * occurrence of the end heading (exclusive). Throws when either heading is missing — a test
+ * over a mistyped boundary must not silently pass against the whole file. */
+function section(content: string, startHeading: string, endHeading: string): string {
+	const start = content.indexOf(startHeading);
+	if (start === -1) throw new Error(`start heading not found: ${startHeading}`);
+	const end = content.indexOf(endHeading, start + startHeading.length);
+	if (end === -1) throw new Error(`end heading not found after start: ${endHeading}`);
+	return content.slice(start, end);
+}
+
+const craftHandoff = section(craft, "## 5. Handoff", "## 6. Context management");
+const postCraftS32 = section(postCraft, "### 3.2 Parallel spawn", "### 3.3 Compliance matrices");
+const postCraftS41 = section(postCraft, "### 4.1 Document structure", "### 4.2 Assigning the verdict");
+const postCraftS42 = section(postCraft, "### 4.2 Assigning the verdict", "## 5. Fix-verification shortcut");
+const postCraftS5 = section(postCraft, "## 5. Fix-verification shortcut", "## 6. Semi-automatic follow-up");
+const postCraftS61 = section(postCraft, "### 6.1 REJECT / APPROVE-WITH-CHANGE", "### 6.2 Spec/Plan amendments");
+const postCraftS63 = section(postCraft, "### 6.3 Cycle bounding", "## 7. Land");
+const preCraftSpecOut = section(preCraft, "### Output `spec.md`", "## 5. Stage 3");
+
+describe("PR-4 — craft §5 exit evidence: corrected Goal (C) conjunction + CheckEvidence union", () => {
+	it("permits [Craft Complete] only as the executor-complete × fresh-green conjunction, and forbids red completion declarations", () => {
+		expect(craftHandoff).toContain("is permitted ONLY when executor = `complete` AND the fresh check evidence is `green`");
+		expect(craftHandoff).toContain("Declaring completion with a red or not-run check is FORBIDDEN");
+		expect(craftHandoff).toContain("Executor success never outranks an `executed-red`/`infrastructure` observation");
+		expect(craftHandoff).toContain("green never covers an incomplete executor");
+	});
+
+	it("carries the CheckEvidence discriminated union verbatim (green/executed-red/infrastructure)", () => {
+		expect(craftHandoff).toContain('type CheckEvidence =');
+		expect(craftHandoff).toContain('| { state: "green"; details: RunCheckDetails & { passed: true }; logPath: string }');
+		expect(craftHandoff).toContain('state: "executed-red";');
+		expect(craftHandoff).toContain('repairHint: "implementation" | "test-check" | "unknown";');
+		expect(craftHandoff).toContain('state: "infrastructure";');
+		expect(craftHandoff).toContain("repairHint?: never;");
+	});
+
+	it("states the exact classification rules and the infrastructure field bans", () => {
+		expect(craftHandoff).toContain("`details.passed === true` is the ONLY `green`");
+		expect(craftHandoff).toContain("`passed === false`");
+		expect(craftHandoff).toContain("target refusal · execution exception · empty transcript");
+		expect(craftHandoff).toContain("REQUIRE the actual `details` and the tool-created `logPath`");
+		expect(craftHandoff).toContain("NEVER a synthetic path or a `repairHint`");
+		// Negative: the infrastructure branch must never gain a concrete repairHint type.
+		expect(craftHandoff).not.toMatch(/state:\s*"infrastructure";[\s\S]{0,200}?repairHint\??:\s*"(?:implementation|test-check|unknown)"/);
+		// Negative: no fabricated logPath rule — the only logPath in the infrastructure branch is optional.
+		expect(craftHandoff).not.toMatch(/infrastructure[\s\S]{0,120}?synthetic `logPath`/);
+	});
+
+	it("mandates the fresh run itself, with the first-time-craft boundary", () => {
+		expect(craftHandoff).toContain("run `lsc_run_check(feature_dir, timeout_ms: 600000)` yourself");
+		expect(craftHandoff).toContain("never reuse a log an earlier step or a prior cycle produced");
+		expect(craftHandoff).toContain("A FIRST-time craft has no post-craft-authored check script yet");
+	});
+
+	it("keeps the executed-red attribution a best-effort repairHint with the three exact hint definitions", () => {
+		expect(craftHandoff).toContain("best-effort `repairHint`, never an owner authority");
+		expect(craftHandoff).toContain("the prior OID's §3.0 test-authoring report is removed from the attribution inputs");
+		expect(craftHandoff).toContain("no per-step command identity");
+		expect(craftHandoff).toContain("multi-command ambiguity or a missing path/category closes as `unknown`");
+		expect(craftHandoff).toContain("never reused as the next cycle's authority");
+		for (const hint of ["`implementation`", "`test-check`", "`unknown`"] as const) {
+			expect(craftHandoff).toContain(`- ${hint} —`);
+		}
+	});
+});
+
+describe("PR-4 — craft §5: the 20-case product table, retry selectors, and the eight reasons", () => {
+	const TWENTY_ROWS = [
+		"| 1 | complete | green | false | 금지(필드 없음) | `COMPLETE` |",
+		"| 2 | complete | green | true | 금지(필드 없음) | `COMPLETE` |",
+		"| 3 | incomplete | green | false | 금지(필드 없음) | `EXEC-RETRY` |",
+		"| 4 | incomplete | green | true | 금지(필드 없음) | `RETRY-EXHAUSTED` |",
+		"| 5 | complete | executed-red | false | `implementation` | `IMPL-RETRY` |",
+		"| 6 | complete | executed-red | false | `test-check` | `CYCLE-RETURN` |",
+		"| 7 | complete | executed-red | false | `unknown` | `CYCLE-RETURN` |",
+		"| 8 | complete | executed-red | true | `implementation` | `CYCLE-RETURN` |",
+		"| 9 | complete | executed-red | true | `test-check` | `CYCLE-RETURN` |",
+		"| 10 | complete | executed-red | true | `unknown` | `CYCLE-RETURN` |",
+		"| 11 | incomplete | executed-red | false | `implementation` | `IMPL-RETRY` |",
+		"| 12 | incomplete | executed-red | false | `test-check` | `CYCLE-RETURN` |",
+		"| 13 | incomplete | executed-red | false | `unknown` | `CYCLE-RETURN` |",
+		"| 14 | incomplete | executed-red | true | `implementation` | `CYCLE-RETURN` |",
+		"| 15 | incomplete | executed-red | true | `test-check` | `CYCLE-RETURN` |",
+		"| 16 | incomplete | executed-red | true | `unknown` | `CYCLE-RETURN` |",
+		"| 17 | complete | infrastructure | false | 금지(필드 없음) | `CYCLE-RETURN` |",
+		"| 18 | complete | infrastructure | true | 금지(필드 없음) | `CYCLE-RETURN` |",
+		"| 19 | incomplete | infrastructure | false | 금지(필드 없음) | `CYCLE-RETURN` |",
+		"| 20 | incomplete | infrastructure | true | 금지(필드 없음) | `CYCLE-RETURN` |",
+	] as const;
+
+	it("carries all 20 reachable rows verbatim (green 4 + executed-red 12 + infrastructure 4)", () => {
+		for (const row of TWENTY_ROWS) {
+			expect(craftHandoff, `missing table row: ${row}`).toContain(row);
+		}
+		expect(craftHandoff).toContain("4 + 12 + 4 = 20");
+	});
+
+	it("opens the one-shot selector for EXEC-RETRY/IMPL-RETRY only, sharing ONE retryUsed", () => {
+		expect(craftHandoff).toContain("Only two rows of the table open the user's one-shot retry selector");
+		expect(craftHandoff).toContain("SINGLE boolean `retryUsed`");
+		expect(craftHandoff).toContain("**EXEC-RETRY** (rows 3–4");
+		expect(craftHandoff).toContain("**IMPL-RETRY** (rows 5 and 11");
+		expect(craftHandoff).toContain("BOTH the repairHint's specific defect AND the original executor's unfinished leftovers");
+		expect(craftHandoff).toContain("re-run the check EXACTLY once");
+		expect(craftHandoff).toContain("NO second production retry");
+		expect(craftHandoff).toContain("Deleted parallel lanes are never re-spawned");
+	});
+
+	it("names the eight incomplete reasons independently", () => {
+		for (const reason of [
+			"`retry-declined`",
+			"`retry-cancelled`",
+			"`retry-exhausted`",
+			"`re-red`",
+			"`repair-incomplete`",
+			"`test-check-red`",
+			"`red-attribution-unknown`",
+			"`check-infrastructure`",
+		] as const) {
+			expect(craftHandoff, `craft §5 must name ${reason}`).toContain(reason);
+		}
+	});
+
+	it("defines CYCLE-RETURN as the canonical NORMAL new post-craft cycle — no mode, no envelope", () => {
+		expect(craftHandoff).toContain("never a disguised `[Craft Complete]`");
+		expect(craftHandoff).toContain("NORMAL new post-craft cycle");
+		expect(craftHandoff).toContain("consuming the next audit cycle");
+		expect(craftHandoff).toContain("no §3.0-only entry mode, no durable handoff envelope, no resume token");
+		expect(craftHandoff).toContain("LIVE_AUDIT_ESCALATION_INTERVAL");
+		expect(craftHandoff).toContain("FIXTURE_AUDIT_ESCALATION_INTERVAL");
+		expect(craftHandoff).toContain("Do NOT precondition the return on a fresh green for `unknown`/`test-check`/`infrastructure` reds");
+	});
+});
+
+describe("PR-4 — post-craft §6.1 mirrors craft §5 exactly (green gate, reasons, evidence rules, continuation)", () => {
+	it("accepts a returning completion claim only under the same conjunction", () => {
+		expect(postCraftS61).toContain("executor `complete` AND fresh `lsc_run_check` green");
+		expect(postCraftS61).toContain("A red or not-run check NEVER counts as complete here");
+		expect(postCraftS61).toContain("the exact mirror of `skills/craft/SKILL.md` §5");
+	});
+
+	it("honors the eight exact reasons independently", () => {
+		for (const reason of [
+			"`retry-declined`",
+			"`retry-cancelled`",
+			"`retry-exhausted`",
+			"`re-red`",
+			"`repair-incomplete`",
+			"`test-check-red`",
+			"`red-attribution-unknown`",
+			"`check-infrastructure`",
+		] as const) {
+			expect(postCraftS61, `post-craft §6.1 must name ${reason}`).toContain(reason);
+		}
+	});
+
+	it("mirrors the union-branch evidence field rules, including the infrastructure bans", () => {
+		expect(postCraftS61).toContain("required `details`+`logPath`");
+		expect(postCraftS61).toContain("`executed-red` only: `repairHint`");
+		expect(postCraftS61).toContain("raw `diagnostic`");
+		expect(postCraftS61).toContain("never a fabricated one");
+		expect(postCraftS61).not.toContain("repairHint: \"implementation\" | \"test-check\" | \"unknown\""); // the union block lives in craft §5, not here
+	});
+
+	it("routes every non-complete return to the canonical continuation with no side-channel state", () => {
+		expect(postCraftS61).toContain("NORMAL new post-craft cycle");
+		expect(postCraftS61).toContain("§2.4's `lsc_audit_begin` → current-OID §3.0 → §3.1 check → audit");
+		expect(postCraftS61).toContain("no §3.0-only entry mode, no durable handoff envelope, no resume token, and no forced green");
+		expect(postCraftS61).toContain("shares §5.1's 정규형 and §4.2's precedence exactly");
+	});
+});
+
+describe("PR-4 — §5 bundle normal form, relational invariants, owner routing, normalizer", () => {
+	it("carries the ReviewerRef/RequiredFixItem/VerificationResult normal form verbatim", () => {
+		expect(postCraftS5).toContain("type ReviewerRef =");
+		expect(postCraftS5).toContain('| { kind: "auditor"; lens: "spec" | "plan" | "regression" | "infra" }');
+		expect(postCraftS5).toContain('| { kind: "explore"; probe: string; scope: NonEmpty<string>; successCriterion: string }');
+		expect(postCraftS5).toContain('| { kind: "post-craft-main"; procedure: string; successCriterion: string }');
+		expect(postCraftS5).toContain('| { kind: "test-authoring"; obligation: string; testPaths: NonEmpty<string> }');
+		expect(postCraftS5).toContain('| { kind: "deterministic-check"; checkIdentity: { command: string; cwd: string; successCriterion: string } };');
+		expect(postCraftS5).toContain("interface RequiredFixItem {");
+		expect(postCraftS5).toContain("fixCompleteness: \"apply-only\" | \"needs-redesign\";");
+		expect(postCraftS5).toContain("interface VerificationResult {");
+		expect(postCraftS5).toContain("status: \"PASS\" | \"FAIL\";");
+		expect(postCraftS5).toContain("Category strings are forbidden");
+	});
+
+	it("states the bundle relational invariants before any shortcut", () => {
+		expect(postCraftS5).toContain("unique within the bundle");
+		expect(postCraftS5).toContain("`originReviewer` exactly once");
+		expect(postCraftS5).toContain("Cartesian set of all `(itemId, verificationOwner)` pairs");
+		expect(postCraftS5).toContain("must equal it exactly");
+		expect(postCraftS5).toContain("Duplicate, extra, or missing pairs and blank payload/evidence REJECT");
+	});
+
+	it("binds every expected result to the current OID and audit cycle only", () => {
+		expect(postCraftS5).toContain("must exactly match the current implementation OID and the current audit cycle");
+		expect(postCraftS5).toContain("one audit cycle's Required Fix closure");
+		expect(postCraftS5).toContain("evidence prose never repairs it");
+		expect(postCraftS5).toContain("NOT applied to craft red attribution or to cross-cycle §3.0 report reuse");
+	});
+
+	it("routes owners by exact identity before any result synthesis", () => {
+		expect(postCraftS5).toContain("one `lsc-auditor` per exact lens");
+		expect(postCraftS5).toContain("one `lsc-explore` per exact `{probe, scope, successCriterion}`");
+		expect(postCraftS5).toContain("regardless of whether the fix touched test/check paths");
+		expect(postCraftS5).toContain("the ONE §3.0 `lsc-test-engineer` assignment");
+		expect(postCraftS5).toContain("structurally equal to the canonical `{command, cwd, successCriterion}`");
+		expect(postCraftS5).toContain("the main session performs each `{procedure, successCriterion}` itself");
+		expect(postCraftS5).toContain("freeze the current implementation OID");
+	});
+
+	it("normalizes owner output per the five-kind table — agents never invent PASS literals", () => {
+		for (const kind of ["`auditor`", "`explore`", "`post-craft-main`", "`test-authoring`", "`deterministic-check`"] as const) {
+			expect(postCraftS5, `normalizer table must row ${kind}`).toContain(`| ${kind} |`);
+		}
+		expect(postCraftS5).toContain("details.passed===true");
+		expect(postCraftS5).toContain("Test Health: HEALTHY");
+		expect(postCraftS5).toContain("different/stale identity, `passed===false`, killed, infrastructure/inconclusive");
+		expect(postCraftS5).toContain("No agent invents a PASS literal");
+	});
+
+	it("§3.2 shares the same normal form by explicit reference", () => {
+		expect(postCraftS32).toContain("§5.1의 정규형(`ReviewerRef` / `RequiredFixItem` / `VerificationResult`)을 그대로 공유한다");
+		expect(postCraftS32).toContain("category strings are forbidden and refs compare by structural equality");
+	});
+});
+
+describe("PR-4 — §4.2 fix-verification precedence (shared exact meaning with §3.2/§5/§6.1)", () => {
+	it("states the four-level precedence paragraph", () => {
+		expect(postCraftS42).toContain("a NEW `CRITICAL`, a broad/severe finding, a `needs-redesign` item, or an unheard/unroutable/mismatched/inconclusive owner is `REJECT`");
+		expect(postCraftS42).toContain("The bare fact of an owner `FAIL` or a new MAJOR is NOT by itself `REJECT`");
+		expect(postCraftS42).toContain("concrete `apply-only` remediation and a complete owner set → `APPROVE-WITH-CHANGE`");
+		expect(postCraftS42).toContain("closes at `APPROVE`/`APPROVE-WITH-COMMENT` only when every expected owner is a current-OID `PASS`");
+		expect(postCraftS42).toContain("A new MINOR stays as non-blocking evidence");
+	});
+
+	it("keeps the existing four-level correspondence and any-CRITICAL veto intact", () => {
+		expect(postCraftS42).toContain("결정적 체크 실패는 하드 게이트다");
+		expect(postCraftS42).toContain("Any lane `REJECT`, or any unresolved `CRITICAL` surviving layer 3 → audit `REJECT`.");
+	});
+});
+
+describe("PR-4 — §4.1 Expected State / Base Drift after an intact Header→verdict line", () => {
+	it("keeps the header and the canonical verdict line first, then adds Expected State and Base Drift", () => {
+		const iHeader = postCraftS41.indexOf("1. **Header**");
+		const iVerdict = postCraftS41.indexOf("**AUDIT VERDICT: APPROVE|APPROVE-WITH-COMMENT|APPROVE-WITH-CHANGE|REJECT**");
+		const iExpected = postCraftS41.indexOf("3. **Expected State**");
+		const iDrift = postCraftS41.indexOf("4. **Base Drift**");
+		expect(iHeader).toBeGreaterThan(-1);
+		expect(iVerdict).toBeGreaterThan(iHeader);
+		expect(iExpected).toBeGreaterThan(iVerdict);
+		expect(iDrift).toBeGreaterThan(iExpected);
+	});
+
+	it("defines Expected State as pre-registered requirement coordinates + observable/boundary/error state + verification method", () => {
+		expect(postCraftS41).toContain("the expectation fixed BEFORE the diff was opened");
+		expect(postCraftS41).toContain("expected observable/boundary/error state");
+		expect(postCraftS41).toContain("verification method");
+	});
+
+	it("defines Base Drift as the §2.4 base observation recorded verbatim and non-blocking", () => {
+		expect(postCraftS41).toContain("{baseBranch, baseTip, sourceTip, behindCount, status, authority}");
+		expect(postCraftS41).toContain("non-blocking WARN evidence");
+	});
+});
+
+describe("PR-4 — §6.3 periodic [Audit Escalation] replaces the old no-cap claim; TS symbols are the only authority", () => {
+	it("describes the gate via the PR-1 TS symbols, never independent numeric aliases", () => {
+		expect(postCraftS63).toContain("LIVE_AUDIT_ESCALATION_INTERVAL");
+		expect(postCraftS63).toContain("FIXTURE_AUDIT_ESCALATION_INTERVAL");
+		expect(postCraftS63).toContain("composeAuditEscalationQuestion");
+		expect(postCraftS63).toContain("Never restate those numbers here");
+		expect(postCraftS63).toContain("record-local `intervalCycles`");
+	});
+
+	it("wires the three canonical dispositions — Continue issues, Abort delegates, Preserve stops", () => {
+		expect(postCraftS63).toContain("`Continue auditing` / `Abort this craft` / `Preserve branch and stop`");
+		expect(postCraftS63).toContain('lsc_craft_abort({reason: "audit escalation: Abort this craft", feature_dir})');
+		expect(postCraftS63).toContain("Only `Continue auditing` ever issues the due cycle");
+		expect(postCraftS63).toContain("A free answer (`User provided free answer:` …) or a cancelled roundtrip is NOT a disposition");
+	});
+
+	it("no longer claims the loop has no upper bound", () => {
+		expect(postCraftS63).not.toContain("no upper bound");
+		expect(postCraft).not.toContain("### 6.3 No cycle cap");
+		// No independent numeric alias anywhere in the mirrored prose: the tool's own description
+		// (src/craft/verdict.ts, TS) may say "live 3 / fixture 2", the prose may not.
+		expect(postCraft).not.toMatch(/live\s*3\s*\/\s*fixture\s*2/i);
+		expect(readme).not.toMatch(/live\s*3\s*\/\s*fixture\s*2/i);
+		expect(readme).toContain("LIVE_AUDIT_ESCALATION_INTERVAL");
+		expect(readme).toContain("FIXTURE_AUDIT_ESCALATION_INTERVAL");
+	});
+});
+
+describe("PR-4 — pre-craft Stage 2 AC verification class + live-전용 proxy completeness gate", () => {
+	it("requires one of the three classes on every AC", () => {
+		for (const cls of ["`결정적`", "`하이브리드`", "`live-전용`"] as const) {
+			expect(preCraftSpecOut, `pre-craft must define class ${cls}`).toContain(`- ${cls} —`);
+		}
+		expect(preCraftSpecOut).toContain("mandatory on every Acceptance Criterion");
+	});
+
+	it("gates completeness on the proxy scope / non-proof / residual-uncertainty triple", () => {
+		expect(preCraftSpecOut).toContain("(a) the deterministic proxy's **scope**");
+		expect(preCraftSpecOut).toContain("**NOT** prove (비증명)");
+		expect(preCraftSpecOut).toContain("(c) the **residual uncertainty**");
+		expect(preCraftSpecOut).toContain("Stage 2 is INCOMPLETE");
+		expect(preCraftSpecOut).toContain("the 5% ambiguity gate cannot be declared cleared");
+	});
+});
+
+describe("PR-4 — lsc-auditor commit-first + both-sides citation proof", () => {
+	it("orients commit-first: Expected State fixed from spec/plan before the diff opens", () => {
+		expect(lscAuditor).toContain("Phase 1 — Orient COMMIT-FIRST, once");
+		expect(lscAuditor).toContain("BEFORE opening the diff or any implementation code");
+		expect(lscAuditor).toContain("it is the pre-registration your findings are later checked against");
+	});
+
+	it("requires the both-sides citation proof with verbatim quotes on both sides", () => {
+		expect(lscAuditor).toContain("**both-sides citation proof**");
+		expect(lscAuditor).toContain("(1) the `Required by` requirement at its `file:line` in spec/plan, and (2) the implementation evidence at its `file:line`");
+		expect(lscAuditor).toContain("the quote IS the proof of the re-read, not decoration");
+		expect(lscAuditor).toContain("A finding whose Required-by text is paraphrased from memory is a finding whose premise nobody verified");
+	});
+
+	it("adds the Expected State section to the report and the checklist", () => {
+		expect(lscAuditor).toContain("## Expected State");
+		expect(lscAuditor).toContain("Did I fix my Expected State from spec/plan alone, BEFORE opening the diff or any implementation code?");
+		expect(lscAuditor).toContain("BOTH verbatim quotes — the Required-by requirement re-read at its own file:line, and the implementation evidence re-read at its own file:line");
+	});
+});
+
+describe("PR-4 — README: abort caller, base handoff, escalation, red-cycle return, multi-source bundle", () => {
+	it("documents lsc_craft_abort's optional exact-root caller", () => {
+		expect(readme).toContain("optional `feature_dir`");
+		expect(readme).toContain("audit escalation의 `Abort this craft` 처분을 위임받는 fresh post-craft 프로세스");
+	});
+
+	it("documents the base authority handoff and the audit escalation in the post-craft overview", () => {
+		expect(readme).toContain("`lsc_audit_begin`의 `base_branch`");
+		expect(readme).toContain("audit-time canonical base authority");
+		expect(readme).toContain("`Continue auditing`");
+		expect(readme).toContain("`Preserve branch and stop`");
+	});
+
+	it("documents the canonical red cycle return and the multi-source Required Fix bundle", () => {
+		expect(readme).toContain("다중 출처 bundle");
+		expect(readme).toContain("red evidence를 동반한 `[Craft Incomplete]`");
+		expect(readme).toContain("정상적인 새 post-craft 사이클");
 	});
 });
