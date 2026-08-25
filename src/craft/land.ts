@@ -28,11 +28,10 @@
 // deterministically under this SAME production orchestrator (C3/rec2). There is deliberately no
 // override flag: the escape hatch is a human running git by hand, recorded durably by the skill
 // (spec constraint 3).
-import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { promisify } from "node:util";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { GitCommandError, runGit, splitNul } from "../utils/git.js";
 import { worktreePath, worktreesRootDir } from "../artifacts/paths.js";
 import {
 	type RemovalObservation,
@@ -56,7 +55,7 @@ import { validateLandAuditEvidence } from "./verdict.js";
 export const LAND_CONSUMABLE_TAGS: readonly DestructiveGateTag[] = ["[Land]"];
 
 /**
- * The public reason-code vocabulary lsc_land reports in its isError text (spec AC1/AC3 — 20 codes).
+ * The public reason-code vocabulary lsc_land reports in its isError text (spec AC1/AC3 — 22 codes).
  * `no-pending-approval` is deliberately NOT here: under the 2-phase rule a consume miss always folds
  * into `approval-required` (with the mismatch cause when one exists), so that code is unreachable.
  */
@@ -70,6 +69,8 @@ export const LAND_REASON_CODES = [
 	"evidence-mismatch",
 	"craft-aborted",
 	"terminal-disposition",
+	"added-path-overlap",
+	"added-path-unknown",
 	"approval-required",
 	"scope-mismatch",
 	"identity-mismatch",
@@ -128,11 +129,9 @@ export interface LandDetails {
 	mergeCommit?: string;
 }
 
-const execFileAsync = promisify(execFile);
-
-/** Async git runner — never a sync spawn: a blocked event loop starves the host (and, under vitest load, the worker↔main RPC). */
+/** Trimmed-stdout git convenience on the shared raw runner (postcraft-14cycle-approval-failure PR-3) — never a sync spawn: a blocked event loop starves the host (and, under vitest load, the worker↔main RPC). */
 async function gitIn(cwd: string, args: string[]): Promise<string> {
-	const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8" });
+	const { stdout } = await runGit(cwd, args);
 	return stdout.trim();
 }
 
@@ -395,6 +394,44 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 		);
 	}
 
+
+	// Added-path gate (postcraft-14cycle-approval-failure PR-3): F14-1-shaped double occupancy —
+	// both the approved source and the live target ADDing the same repo-relative path since their
+	// merge-base would silently overwrite base-side work at merge. Computed from the APPROVED
+	// scope's OIDs after the live target recheck, immediately before effects.merge, and ONLY for
+	// merge-and-clean (force-clean-only never merges, so the gate does not apply). Exact
+	// `--diff-filter=A --name-only -z --no-renames` sets — renames are adds of their destination —
+	// and any git failure here is a fail-closed refusal, never an empty-set assumption.
+	if (mode === "merge-and-clean") {
+		try {
+			const mergeBase = await gitIn(projectRoot, ["merge-base", operation.targetOID, operation.sourceOID]);
+			const targetAdded = splitNul((await runGit(projectRoot, ["diff", "--diff-filter=A", "--name-only", "-z", "--no-renames", mergeBase, operation.targetOID])).stdout);
+			const sourceAdded = splitNul((await runGit(projectRoot, ["diff", "--diff-filter=A", "--name-only", "-z", "--no-renames", mergeBase, operation.sourceOID])).stdout);
+			const sourceAddedSet = new Set(sourceAdded);
+			const overlap = targetAdded.filter(path => sourceAddedSet.has(path)).sort();
+			if (overlap.length > 0) {
+				return landError(
+					"added-path-overlap",
+					feature,
+					mode,
+					`both sides added the same path(s) since merge-base ${shortOID(mergeBase)} — a merge would silently overwrite base-side work. ` +
+						`Overlap: ${overlap.map(path => JSON.stringify(path)).join(", ")} (target ${shortOID(operation.targetOID)}, source ${shortOID(operation.sourceOID)}). ` +
+						`Resolve the double occupancy manually; the [Land] nonce was consumed and a fresh approval is required afterwards.`,
+				);
+			}
+		} catch (error) {
+			if (error instanceof GitCommandError) {
+				return landError(
+					"added-path-unknown",
+					feature,
+					mode,
+					`the added-path overlap could not be computed (git failure: ${error.message}) — refusing to merge rather than assuming no overlap. ` +
+						`The [Land] nonce was consumed; a fresh approval is required after resolving the git issue.`,
+				);
+			}
+			throw error;
+		}
+	}
 	let mergeCommit: string | undefined;
 	if (mode === "merge-and-clean") {
 		try {

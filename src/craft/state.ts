@@ -118,6 +118,42 @@ export interface CraftState {
 	 * "Preserve branch and stop" record.
 	 */
 	auditTerminalDisposition?: TerminalDecision;
+	/**
+	 * The audit-time base observation bound to the most recently BEGUN audit cycle
+	 * (postcraft-14cycle-approval-failure PR-3) — written atomically with that cycle's marker by
+	 * `applyAuditBeginOutcome`, never rewritten by a same-cycle replay. Optional/read-tolerant so
+	 * older v2 files parse; an absent value just means "no base evidence was recorded" (a legacy
+	 * direct `lsc_audit_begin` call, or a state written before PR-3).
+	 */
+	auditBaseSnapshot?: AuditBaseSnapshot;
+}
+
+/** How the audit-time base ref was determined (PR-3): explicitly passed by post-craft (it detected the real land target first), or the legacy attached-current-branch fallback. */
+export type AuditBaseAuthority = "explicit-base" | "legacy-current-branch";
+
+/**
+ * The audit-time base-drift observation (postcraft-14cycle-approval-failure PR-3) — non-blocking
+ * WARN evidence only: it records WHICH ref the audit measured and how far the feature source is
+ * behind it, so a checkout sitting on a third branch can never silently masquerade as the base.
+ * Land's own git computations stay fail-closed independently; an `unknown` snapshot never refuses
+ * an audit cycle.
+ */
+export interface AuditBaseSnapshot {
+	/** The ref this observation measured — the explicit input verbatim, or the detected attached branch ("", for a detached/unresolvable HEAD). */
+	baseBranch: string;
+	/** The resolved base commit OID; "" when the ref could not be resolved. */
+	baseTip: string;
+	/** The feature source tip (worktree HEAD) at observation; "" when it could not be resolved. */
+	sourceTip: string;
+	/** Commits in base not in source (`git rev-list --count <source>..<base>`); "unknown" when either tip is unresolvable. */
+	behindCount: number | "unknown";
+	/** "ok" iff baseTip/sourceTip/behindCount were all measured; "unknown" carries `error`. */
+	status: "ok" | "unknown";
+	authority: AuditBaseAuthority;
+	/** ISO timestamp of the observation. */
+	observedAt: string;
+	/** Present iff status === "unknown" — why the base could not be measured. */
+	error?: string;
 }
 
 /**
@@ -340,20 +376,25 @@ export function recordAuditCycleBegin(root: string, feature: string, auditCycle:
  * - `escalation-pending` — persist the exact open gate (the first cap call publishes the
  *   pending BEFORE returning isError, so a crash still leaves a consumable gate).
  * - `escalation-continue` — move the pending into the decision history, write the validated
- *   next-due mirror, and record the cycle's marker fields, all in ONE write (a crash between
- *   the decision and the cycle record is structurally impossible).
+ *   next-due mirror, and record the cycle's marker fields + audit-time base snapshot, all in ONE
+ *   write (a crash between the decision and the cycle record is structurally impossible).
  * - `escalation-terminal` — terminal decision into history + top-level mirror in ONE write;
  *   NO cycle is issued (an Abort/Preserve never begins an audit cycle).
  * - `audit-cycle` — the plain under-cap begin (same semantics as recordAuditCycleBegin).
+ *
+ * `baseSnapshot` (PR-3) is the audit-time base observation bound to the cycle this outcome
+ * begins; absent on `escalation-pending`/`escalation-terminal` because neither begins a cycle
+ * (and both leave any existing snapshot untouched). A begin without an observation writes
+ * `undefined` — clearing any previous cycle's snapshot rather than leaving stale base evidence.
  *
  * The POLICY decision is never re-derived here — the caller already validated it fail-closed.
  * Fails closed (throws) when no persisted state exists, mirroring recordAuditCycleBegin.
  */
 export type AuditBeginOutcome =
 	| { kind: "escalation-pending"; pending: AuditEscalationPending }
-	| { kind: "escalation-continue"; decision: ContinueDecision; auditCycle: number; checkLogAtCycleStart: number }
+	| { kind: "escalation-continue"; decision: ContinueDecision; auditCycle: number; checkLogAtCycleStart: number; baseSnapshot?: AuditBaseSnapshot }
 	| { kind: "escalation-terminal"; decision: TerminalDecision }
-	| { kind: "audit-cycle"; auditCycle: number; checkLogAtCycleStart: number };
+	| { kind: "audit-cycle"; auditCycle: number; checkLogAtCycleStart: number; baseSnapshot?: AuditBaseSnapshot };
 
 export function applyAuditBeginOutcome(root: string, feature: string, outcome: AuditBeginOutcome): CraftState {
 	const existing = readPersistedCraftState(root, feature);
@@ -374,6 +415,7 @@ export function applyAuditBeginOutcome(root: string, feature: string, outcome: A
 				auditCycle: outcome.auditCycle,
 				checkLogAtCycleStart: outcome.checkLogAtCycleStart,
 				auditValidated: undefined,
+				auditBaseSnapshot: outcome.baseSnapshot,
 			};
 			break;
 		case "escalation-terminal":
@@ -385,7 +427,7 @@ export function applyAuditBeginOutcome(root: string, feature: string, outcome: A
 			};
 			break;
 		case "audit-cycle":
-			next = { ...existing, auditCycle: outcome.auditCycle, checkLogAtCycleStart: outcome.checkLogAtCycleStart, auditValidated: undefined };
+			next = { ...existing, auditCycle: outcome.auditCycle, checkLogAtCycleStart: outcome.checkLogAtCycleStart, auditValidated: undefined, auditBaseSnapshot: outcome.baseSnapshot };
 			break;
 	}
 	const stamped = persist(next);
