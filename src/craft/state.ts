@@ -258,6 +258,27 @@ export function loadActiveCraft(projectRoot: string, feature: string): CraftStat
 	return restored;
 }
 
+
+/**
+ * Exact-root aborted writer (postcraft-14cycle-approval-failure PR-2) — the fresh-process
+ * counterpart of markCraftAborted: `lsc_craft_abort({feature_dir})` (post-craft's [Audit
+ * Escalation] "Abort this craft" delegation) holds no active-craft singleton, so it marks the
+ * feature's PERSISTED state at an exact root instead. Fails closed (throws) when no persisted
+ * state exists; invalidates any pending destructive approval (same as the singleton path) and
+ * keeps the in-memory singleton in sync when it happens to already be this exact craft.
+ */
+export function markCraftAbortedAt(root: string, feature: string): CraftState {
+	const existing = readPersistedCraftState(root, feature);
+	if (!existing) {
+		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — nothing to abort.`);
+	}
+	invalidatePendingApproval();
+	const stamped = persist({ ...existing, aborted: true });
+	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
+		activeCraft = stamped;
+	}
+	return stamped;
+}
 /** Mark the active craft as user-aborted (see CraftState.aborted). */
 export function markCraftAborted(): void {
 	if (!activeCraft) return;

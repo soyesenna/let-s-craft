@@ -56,7 +56,7 @@ import { validateLandAuditEvidence } from "./verdict.js";
 export const LAND_CONSUMABLE_TAGS: readonly DestructiveGateTag[] = ["[Land]"];
 
 /**
- * The public reason-code vocabulary lsc_land reports in its isError text (spec AC1/AC3 — 18 codes).
+ * The public reason-code vocabulary lsc_land reports in its isError text (spec AC1/AC3 — 20 codes).
  * `no-pending-approval` is deliberately NOT here: under the 2-phase rule a consume miss always folds
  * into `approval-required` (with the mismatch cause when one exists), so that code is unreachable.
  */
@@ -68,6 +68,8 @@ export const LAND_REASON_CODES = [
 	"stale-check-log",
 	"evidence-tamper",
 	"evidence-mismatch",
+	"craft-aborted",
+	"terminal-disposition",
 	"approval-required",
 	"scope-mismatch",
 	"identity-mismatch",
@@ -294,6 +296,22 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 		return landError(audit.reason, feature, mode, `strict land-time audit re-validation failed (evidence root: ${evidenceRoot}).${migrationHint}`);
 	}
 	const marker = state.auditValidated;
+	// ⑦b Abort/terminal block (postcraft-14cycle-approval-failure PR-2) — BEFORE any approval is
+	//     consumed or prepared: a user-aborted craft or a durable [Audit Escalation] terminal
+	//     disposition ("Abort this craft" / "Preserve branch and stop") can never land, and a live
+	//     [Land] nonce cannot bypass it (the check precedes Phase C/P entirely).
+	if (state.aborted) {
+		return landError("craft-aborted", feature, mode, `the persisted craft state for "${feature}" is marked aborted — a stopped run never lands. Re-invoking craft/post-craft requires clearing that record explicitly, not a [Land] approval.`);
+	}
+	if (state.auditTerminalDisposition) {
+		const terminal = state.auditTerminalDisposition;
+		return landError(
+			"terminal-disposition",
+			feature,
+			mode,
+			`the [Audit Escalation] disposition "${terminal.disposition}" (cycle ${terminal.dueCycle}, ${terminal.decidedAt}) durably ended this feature's audit loop — land is refused and no approval can override it.`,
+		);
+	}
 	const markerWarn =
 		marker === undefined
 			? "WARN: no auditValidated marker is persisted (best-effort trace absent — the strict re-validation above is the gate)."
