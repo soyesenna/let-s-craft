@@ -35,7 +35,7 @@ import {
 	invalidatePendingApproval,
 	peekPendingApproval,
 } from "../src/craft/destructive-approval";
-import { type CraftState, clearActiveCraft, recordAuditCycleBegin, recordAuditValidated } from "../src/craft/state";
+import { applyAuditBeginOutcome, type CraftState, clearActiveCraft, recordAuditCycleBegin, recordAuditValidated } from "../src/craft/state";
 import { performAuditValidate } from "../src/craft/verdict";
 
 // ── shared fixtures / helpers ───────────────────────────────────────────────
@@ -231,6 +231,65 @@ describe("§4 recordAuditCycleBegin clears a prior auditValidated, and the begin
 		expect(revalidated.auditValidated).toEqual({ cycle: 1, verdict: "APPROVE-WITH-COMMENT", at: "2026-07-17T11:00:00.000Z" });
 		const persisted = JSON.parse(readFileSync(craftStatePath(root, feature), "utf8"));
 		expect(persisted.auditValidated).toEqual({ cycle: 1, verdict: "APPROVE-WITH-COMMENT", at: "2026-07-17T11:00:00.000Z" });
+	});
+});
+
+// ============================================================================
+// §4b — postcraft-14cycle-approval-failure PR-1: a new audit cycle clears
+// ONLY auditValidated. The escalation ledger (pending/history/interval/
+// terminal evidence) must survive every begin-path write untouched, so a
+// cycle record can never erase the very evidence that bounds it.
+// ============================================================================
+
+describe("§4b begin-path writes clear only auditValidated — escalation evidence survives (PR-1)", () => {
+	const FIXED_AT = "2026-08-25T00:00:00.000Z";
+	const continueDecision = {
+		feature: "my-feature",
+		dueCycle: 3,
+		scheduledCycle: 3,
+		intervalCycles: 3,
+		createdAt: FIXED_AT,
+		disposition: "Continue auditing",
+		decidedAt: FIXED_AT,
+		nextDueCycle: 6,
+} as const;
+
+	it("recordAuditCycleBegin keeps pending/history/next-due/terminal evidence while clearing auditValidated", () => {
+		const root = tmpProject();
+		writePersistedState(root, "my-feature", {
+			...freshState(root),
+			auditCycle: 4,
+			auditValidated: { cycle: 4, verdict: "REJECT", at: FIXED_AT },
+			auditEscalations: [continueDecision],
+			nextAuditEscalationCycle: 6,
+			auditEscalationPending: { feature: "my-feature", dueCycle: 6, scheduledCycle: 6, intervalCycles: 3, createdAt: FIXED_AT },
+		});
+
+		const begun = recordAuditCycleBegin(root, "my-feature", 5, 9);
+
+		expect(begun.auditValidated).toBeUndefined();
+		expect(begun.auditEscalations).toEqual([continueDecision]);
+		expect(begun.nextAuditEscalationCycle).toBe(6);
+		expect(begun.auditEscalationPending?.dueCycle).toBe(6);
+	});
+
+	it("applyAuditBeginOutcome's plain cycle outcome preserves the same evidence", () => {
+		const root = tmpProject();
+		writePersistedState(root, "my-feature", {
+			...freshState(root),
+			auditCycle: 4,
+			auditValidated: { cycle: 4, verdict: "REJECT", at: FIXED_AT },
+			auditEscalations: [continueDecision],
+			nextAuditEscalationCycle: 6,
+		});
+
+		const stamped = applyAuditBeginOutcome(root, "my-feature", { kind: "audit-cycle", auditCycle: 5, checkLogAtCycleStart: 9 });
+
+		expect(stamped.auditValidated).toBeUndefined();
+		expect(stamped.auditEscalations).toEqual([continueDecision]);
+		expect(stamped.nextAuditEscalationCycle).toBe(6);
+		expect(stamped.auditCycle).toBe(5);
+		expect(stamped.checkLogAtCycleStart).toBe(9);
 	});
 });
 

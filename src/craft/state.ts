@@ -14,6 +14,7 @@ import { dirname } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftStatePath, worktreePath } from "../artifacts/paths.js";
 import { writeFileAtomicSync } from "../utils/atomic-write.js";
+import { type AuditEscalationDecision, type AuditEscalationPending, type ContinueDecision, type TerminalDecision } from "./audit-policy.js";
 import { type ApprovalCraftIdentity, invalidatePendingApproval } from "./destructive-approval.js";
 
 /**
@@ -94,6 +95,29 @@ export interface CraftState {
 	 * feature. Optional/read-tolerant, same backward-compat rationale as every other optional field.
 	 */
 	auditValidated?: AuditValidatedEvidence;
+	/**
+	 * An OPEN [Audit Escalation] gate (postcraft-14cycle-approval-failure PR-1) — the exact
+	 * candidate cycle (`dueCycle`) the user's disposition must bind to. While set, the gate's
+	 * consumption is the only way a new audit cycle may begin. Optional so older v2 files parse.
+	 */
+	auditEscalationPending?: AuditEscalationPending;
+	/**
+	 * The ordered, append-only decision history (PR-1). Keyed by `dueCycle` (strictly
+	 * increasing); validated fail-closed by audit-policy.ts before any write. Optional/read-tolerant.
+	 */
+	auditEscalations?: AuditEscalationDecision[];
+	/**
+	 * Validated mirror of the latest Continue decision's `nextDueCycle` (PR-1) — the schedule's
+	 * next due cycle. Undefined until the first Continue; a mismatch vs the history is
+	 * `invalid-state` at begin time, never auto-repaired.
+	 */
+	nextAuditEscalationCycle?: number;
+	/**
+	 * Exact mirror of the (at most one, last) terminal decision in `auditEscalations` (PR-1).
+	 * While set, `lsc_audit_begin` refuses every candidate — the durable "Abort this craft" /
+	 * "Preserve branch and stop" record.
+	 */
+	auditTerminalDisposition?: TerminalDecision;
 }
 
 /**
@@ -199,7 +223,10 @@ export function setActiveCraft(state: CraftState, options: SetActiveCraftOptions
 			if (state.auditCycle === undefined && existing.auditCycle !== undefined) preserved.auditCycle = existing.auditCycle;
 			if (state.checkLogAtCycleStart === undefined && existing.checkLogAtCycleStart !== undefined) preserved.checkLogAtCycleStart = existing.checkLogAtCycleStart;
 			if (state.auditValidated === undefined && existing.auditValidated !== undefined) preserved.auditValidated = existing.auditValidated;
-			if (state.releaseApproval === undefined && existing.releaseApproval !== undefined) preserved.releaseApproval = existing.releaseApproval;
+			if (state.auditEscalationPending === undefined && existing.auditEscalationPending !== undefined) preserved.auditEscalationPending = existing.auditEscalationPending;
+			if (state.auditEscalations === undefined && existing.auditEscalations !== undefined) preserved.auditEscalations = existing.auditEscalations;
+			if (state.nextAuditEscalationCycle === undefined && existing.nextAuditEscalationCycle !== undefined) preserved.nextAuditEscalationCycle = existing.nextAuditEscalationCycle;
+			if (state.auditTerminalDisposition === undefined && existing.auditTerminalDisposition !== undefined) preserved.auditTerminalDisposition = existing.auditTerminalDisposition;
 			if (Object.keys(preserved).length > 0) next = { ...state, ...preserved };
 		}
 	} catch {
@@ -276,6 +303,70 @@ export function recordAuditCycleBegin(root: string, feature: string, auditCycle:
 	// the undefined), so a stale marker can never remain re-citable across cycles — land's cycle-aware
 	// evidence check (validateLandAuditEvidence) relies on this.
 	const next: CraftState = { ...existing, auditCycle, checkLogAtCycleStart, auditValidated: undefined };
+	const stamped = persist(next);
+	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
+		activeCraft = stamped;
+	}
+	return stamped;
+}
+
+/**
+ * One begin outcome = ONE atomic durable write (postcraft-14cycle-approval-failure PR-1/PR-2).
+ * `lsc_audit_begin` runs audit-policy.ts's pure `evaluateAuditBeginGate` first and hands the
+ * winning branch here; each outcome maps to a single persist() so the ledger's arithmetic and
+ * the cycle/threshold fields can never diverge mid-transition:
+ *
+ * - `escalation-pending` — persist the exact open gate (the first cap call publishes the
+ *   pending BEFORE returning isError, so a crash still leaves a consumable gate).
+ * - `escalation-continue` — move the pending into the decision history, write the validated
+ *   next-due mirror, and record the cycle's marker fields, all in ONE write (a crash between
+ *   the decision and the cycle record is structurally impossible).
+ * - `escalation-terminal` — terminal decision into history + top-level mirror in ONE write;
+ *   NO cycle is issued (an Abort/Preserve never begins an audit cycle).
+ * - `audit-cycle` — the plain under-cap begin (same semantics as recordAuditCycleBegin).
+ *
+ * The POLICY decision is never re-derived here — the caller already validated it fail-closed.
+ * Fails closed (throws) when no persisted state exists, mirroring recordAuditCycleBegin.
+ */
+export type AuditBeginOutcome =
+	| { kind: "escalation-pending"; pending: AuditEscalationPending }
+	| { kind: "escalation-continue"; decision: ContinueDecision; auditCycle: number; checkLogAtCycleStart: number }
+	| { kind: "escalation-terminal"; decision: TerminalDecision }
+	| { kind: "audit-cycle"; auditCycle: number; checkLogAtCycleStart: number };
+
+export function applyAuditBeginOutcome(root: string, feature: string, outcome: AuditBeginOutcome): CraftState {
+	const existing = readPersistedCraftState(root, feature);
+	if (!existing) {
+		throw new Error(`lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — run craft before starting a post-craft audit cycle.`);
+	}
+	let next: CraftState;
+	switch (outcome.kind) {
+		case "escalation-pending":
+			next = { ...existing, auditEscalationPending: outcome.pending };
+			break;
+		case "escalation-continue":
+			next = {
+				...existing,
+				auditEscalations: [...(existing.auditEscalations ?? []), outcome.decision],
+				auditEscalationPending: undefined,
+				nextAuditEscalationCycle: outcome.decision.nextDueCycle,
+				auditCycle: outcome.auditCycle,
+				checkLogAtCycleStart: outcome.checkLogAtCycleStart,
+				auditValidated: undefined,
+			};
+			break;
+		case "escalation-terminal":
+			next = {
+				...existing,
+				auditEscalations: [...(existing.auditEscalations ?? []), outcome.decision],
+				auditEscalationPending: undefined,
+				auditTerminalDisposition: outcome.decision,
+			};
+			break;
+		case "audit-cycle":
+			next = { ...existing, auditCycle: outcome.auditCycle, checkLogAtCycleStart: outcome.checkLogAtCycleStart, auditValidated: undefined };
+			break;
+	}
 	const stamped = persist(next);
 	if (activeCraft && activeCraft.feature === feature && (activeCraft.worktreeRoot ?? activeCraft.projectRoot) === root) {
 		activeCraft = stamped;

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { craftStatePath, worktreePath } from "../src/artifacts/paths";
 import {
+	applyAuditBeginOutcome,
 	clearActiveCraft,
 	type CraftState,
 	findPersistedCraftState,
@@ -336,5 +337,101 @@ describe("loadActiveCraft / findPersistedCraftState — inactive-lookup readers 
 		const found = findPersistedCraftState(cwd, feature);
 
 		expect(found?.worktreeRoot).toBeUndefined();
+	});
+});
+
+// ===========================================================================
+// postcraft-14cycle-approval-failure PR-1 — the escalation ledger's exact-root
+// atomic writers (applyAuditBeginOutcome): pending/Continue/terminal round-trips,
+// the next-due mirror, evidence preservation across writes, and the
+// setActiveCraft re-registration preservation of every escalation field.
+// ===========================================================================
+
+describe("applyAuditBeginOutcome (PR-1 escalation ledger writers)", () => {
+	const FIXED_AT = "2026-08-25T00:00:00.000Z";
+
+	it("persists an exact pending gate in one atomic write and keeps every other field", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		const releaseApproval = { nonce: "n", tag: "[Land]", question: "q", response: "yes", issuedAt: FIXED_AT };
+		writePersistedState(root, feature, { ...freshState(root, feature), auditCycle: 2, releaseApproval });
+
+		const stamped = applyAuditBeginOutcome(root, feature, {
+			kind: "escalation-pending",
+			pending: { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: FIXED_AT },
+		});
+
+		expect(stamped.auditEscalationPending).toEqual({ feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: FIXED_AT });
+		expect(stamped.auditCycle).toBe(2); // cycle/threshold untouched by the gate itself
+		expect(stamped.releaseApproval).toEqual(releaseApproval); // existing evidence preserved
+		expect(JSON.parse(readFileSync(craftStatePath(root, feature), "utf8")).auditEscalationPending).toEqual(stamped.auditEscalationPending);
+	});
+
+	it("Continue moves the pending into history + validated next-due mirror + the cycle marker in ONE write, clearing auditValidated", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		writePersistedState(root, feature, {
+			...freshState(root, feature),
+			auditCycle: 2,
+			checkLogAtCycleStart: 1,
+			auditValidated: { cycle: 2, verdict: "REJECT", at: FIXED_AT },
+			auditEscalationPending: { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: FIXED_AT },
+		});
+
+		const stamped = applyAuditBeginOutcome(root, feature, {
+			kind: "escalation-continue",
+			decision: { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: FIXED_AT, disposition: "Continue auditing", decidedAt: FIXED_AT, nextDueCycle: 6 },
+			auditCycle: 3,
+			checkLogAtCycleStart: 4,
+		});
+
+		expect(stamped.auditEscalationPending).toBeUndefined();
+		expect(stamped.auditEscalations).toHaveLength(1);
+		expect(stamped.auditEscalations?.[0]).toMatchObject({ dueCycle: 3, disposition: "Continue auditing", nextDueCycle: 6, intervalCycles: 3 });
+		expect(stamped.nextAuditEscalationCycle).toBe(6);
+		expect(stamped.auditCycle).toBe(3);
+		expect(stamped.checkLogAtCycleStart).toBe(4);
+		expect(stamped.auditValidated).toBeUndefined();
+	});
+
+	it("Abort/Preserve terminal writes the decision + exact top-level mirror and issues NO cycle", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		writePersistedState(root, feature, {
+			...freshState(root, feature),
+			auditCycle: 2,
+			auditEscalationPending: { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: FIXED_AT },
+		});
+
+		const decision = { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: FIXED_AT, disposition: "Abort this craft" as const, decidedAt: FIXED_AT };
+		const stamped = applyAuditBeginOutcome(root, feature, { kind: "escalation-terminal", decision });
+
+		expect(stamped.auditCycle).toBe(2); // no cycle issued
+		expect(stamped.auditEscalationPending).toBeUndefined();
+		expect(stamped.auditEscalations).toEqual([decision]);
+		expect(stamped.auditTerminalDisposition).toEqual(decision);
+	});
+
+	it("fails closed (throws) when no persisted state exists at the exact root", () => {
+		const root = tmpProject();
+		expect(() => applyAuditBeginOutcome(root, "never-crafted", { kind: "audit-cycle", auditCycle: 0, checkLogAtCycleStart: 0 })).toThrow(/no persisted craft state/);
+	});
+
+	it("setActiveCraft re-registration preserves every escalation field the caller did not provide", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		const decision = { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: FIXED_AT, disposition: "Continue auditing" as const, decidedAt: FIXED_AT, nextDueCycle: 6 };
+		writePersistedState(root, feature, {
+			...freshState(root, feature),
+			auditCycle: 5,
+			auditEscalations: [decision],
+			nextAuditEscalationCycle: 6,
+		});
+
+		setActiveCraft(freshState(root, feature)); // a bare re-registration carrying none of the fields
+
+		expect(getActiveCraft()?.auditEscalations).toEqual([decision]);
+		expect(getActiveCraft()?.nextAuditEscalationCycle).toBe(6);
+		expect(getActiveCraft()?.auditCycle).toBe(5);
 	});
 });
