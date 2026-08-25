@@ -537,3 +537,186 @@ export function debugSummary(result: OmpRunResult): string {
 		`last messages:\n${lastTexts.join("\n")}`,
 	].join("\n\n");
 }
+
+// ---------------------------------------------------------------------------
+// PR-5 (postcraft-14cycle-approval-failure) — escalation / red-cycle E2E helpers.
+//
+// The escalation suite drives ONLY a post-craft subprocess against a seeded,
+// already-crafted feature (running pre-craft+craft for real three more times
+// would add hours of model time to assert a gate that fires before any of that
+// work). The seed reproduces exactly the on-disk shape a real prior cycle
+// leaves behind: worktree on a slug-carrying branch, tracked trace/spec/plan,
+// audit-N.md docs in the OLD format (no Expected State/Base Drift sections —
+// begin's candidate numbering only reads the numeric suffixes), and a v2
+// .craft-state.json with no escalation fields (the legacy bootstrap PR-1
+// allows). Branch-specific answers are written OUTSIDE the repo, next to the
+// base fixture file.
+// ---------------------------------------------------------------------------
+
+/** The three canonical [Audit Escalation] dispositions — verbatim from src/craft/audit-policy.ts's AUDIT_ESCALATION_DISPOSITIONS (load-bearing exact labels; never reword). */
+export const AUDIT_ESCALATION_LABELS = ["Continue auditing", "Abort this craft", "Preserve branch and stop"] as const;
+export type AuditEscalationLabel = (typeof AUDIT_ESCALATION_LABELS)[number];
+
+/**
+ * Write a branch-specific answers file next to the base fixture: the anchored
+ * `[Audit Escalation]` rule's selection is rewritten to `disposition`, everything
+ * else (including the generic confirmation default) is inherited verbatim from
+ * the canonical sample. Returns the new file's absolute path.
+ */
+export function writeEscalationAnswersVariant(fixtureDir: string, name: string, disposition: AuditEscalationLabel): string {
+	const base = JSON.parse(readFileSync(join(fixtureDir, "answers.json"), "utf8")) as {
+		answers: Array<Record<string, unknown>>;
+		default?: unknown;
+	};
+	const idx = base.answers.findIndex(rule => typeof rule.match === "string" && rule.match.includes("Audit Escalation"));
+	if (idx === -1) throw new Error("base answers.json carries no [Audit Escalation] rule — PR-5 requires it");
+	base.answers[idx] = { ...base.answers[idx], kind: "selection", selections: [disposition] };
+	const variantPath = join(fixtureDir, `${name}.answers.json`);
+	writeFileSync(variantPath, `${JSON.stringify(base, null, 2)}\n`);
+	return variantPath;
+}
+
+/** A feature's persisted craft state (plain JSON — no active-craft singleton involvement), or undefined when absent. */
+export function readCraftStateFile(worktreeRoot: string, feature: string): Record<string, unknown> | undefined {
+	const path = join(worktreeRoot, ".lsc", "crafts", feature, ".craft-state.json");
+	return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>) : undefined;
+}
+
+/**
+ * Seed a complete, already-crafted feature so a post-craft subprocess starts at the
+ * NEXT audit candidate. `seededAudits` REJECT verdict docs are written (old format —
+ * candidate numbering only reads suffixes), the state pins `auditCycle` to the latest
+ * seeded doc, and everything is committed on a slug-carrying implementation branch so
+ * §2's worktree/base/sanity checks pass without asking anything. `redCheckScript`,
+ * when given, is written as the feature's `check/run_check.sh` (the red-cycle suite's
+ * deterministic multi-command red).
+ */
+export function seedCraftedFeature(
+	projectDir: string,
+	feature: string,
+	opts: { seededAudits: number; redCheckScript?: string } = { seededAudits: 2 },
+): { worktreeRoot: string; craftDir: string; statePath: string; seedTip: string } {
+	const worktreeRoot = join(projectDir, ".lsc", "worktrees", feature);
+	execFileSync("git", ["worktree", "add", "-q", "-b", `lets-craft/${feature}`, worktreeRoot, "HEAD"], { cwd: projectDir });
+
+	// Same ignore rule lsc_scaffold registers, so the seeded worktree matches the real topology.
+	const gitignorePath = join(projectDir, ".gitignore");
+	const gitignore = existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
+	if (!/^\/?\.lsc\/worktrees\/?$/m.test(gitignore)) {
+		writeFileSync(gitignorePath, `${gitignore}${gitignore.endsWith("\n") || gitignore === "" ? "" : "\n"}.lsc/worktrees/\n`);
+		execFileSync("git", ["add", ".gitignore"], { cwd: projectDir });
+		execFileSync("git", ["commit", "-q", "-m", "chore: ignore .lsc/worktrees"], { cwd: projectDir });
+	}
+
+	const craftDir = join(worktreeRoot, ".lsc", "crafts", feature);
+	mkdirSync(join(craftDir, "audit"), { recursive: true });
+	writeFileSync(join(craftDir, "trace.md"), `# trace — ${feature}\n\nSeeded trace for the PR-5 escalation/red-cycle E2E. The slugify bug note in src/slugify.ts is the observed ground truth.\n`);
+	writeFileSync(join(craftDir, "spec.md"), `# spec — ${feature}\n\n## Goal\n\nFix slugify: collapse consecutive non-alphanumeric separators into one hyphen and trim leading/trailing hyphens.\n\n## Acceptance Criteria\n\n- AC1 (결정적): slugify("Hello   World!!!") === "hello-world" via node --test.\n\n## Constraints\n\n- Dependency-free (node --test only); public signatures unchanged.\n`);
+	writeFileSync(join(craftDir, "plan.md"), `# plan — ${feature}\n\n1. src/slugify.ts: collapse separator runs and trim. 2. Verify with node --test.\n`);
+	for (let n = 0; n < opts.seededAudits; n++) {
+		writeFileSync(join(craftDir, "audit", `audit-${n}.md`), `# Audit ${n}\n\n**AUDIT VERDICT: REJECT**\n\nSeeded REJECT (old-format audit doc — the PR-5 suites only need the candidate numbering).\n`);
+	}
+	if (opts.redCheckScript !== undefined) {
+		mkdirSync(join(craftDir, "check"), { recursive: true });
+		writeFileSync(join(craftDir, "check", "run_check.sh"), opts.redCheckScript);
+	}
+	const statePath = join(craftDir, ".craft-state.json");
+	const state = {
+		stateVersion: 2,
+		feature,
+		projectRoot: projectDir,
+		worktreeRoot,
+		aborted: false,
+		auditCycle: opts.seededAudits - 1,
+		checkLogAtCycleStart: 0,
+	};
+	writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+
+	execFileSync("git", ["add", "-A"], { cwd: worktreeRoot });
+	execFileSync("git", ["commit", "-q", "-m", `feat: seeded implementation + ${opts.seededAudits} prior audit(s)`], { cwd: worktreeRoot });
+	return { worktreeRoot, craftDir, statePath, seedTip: execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktreeRoot, encoding: "utf8" }).trim() };
+}
+
+/** Flattened `{isError, text}` summaries of every `tool_execution_end` for one tool name — the escalation suites assert on lsc_audit_begin/lsc_craft_abort/lsc_run_check through this. */
+export function toolCallSummaries(result: OmpRunResult, toolName: string): Array<{ isError: boolean; text: string }> {
+	return toolExecutions(result).filter(call => call.toolName === toolName).map(call => ({ isError: call.isError, text: call.text }));
+}
+
+// lsc plugin tools stream their tool_execution_end under a GENERIC omp tool name (observed:
+// an lsc_audit_validate call surfaced as toolName "write" — discoverable tools dispatch
+// through a proxy), so PR-5's stream predicates match on the TS-authored RESULT TEXT markers
+// instead of toolName. Every marker below is a literal from src/ production output.
+// Every marker MUST be free of double quotes: the raw NDJSON stream JSON-escapes them (`\"`),
+// so a quoted literal can never match raw stdout (observed in a real run — the escaped form
+// broke the first marker generation; these are the corrected, quote-free forms).
+export const AUDIT_BEGIN_ANY_MARKER = "lets-craft: audit "; // every lsc_audit_begin result (required/begun/refused/replay) starts here
+export const AUDIT_ESCALATION_REQUIRED_MARKER = "audit escalation required for";
+export const AUDIT_CYCLE_BEGUN_MARKER = (cycle: number) => `audit cycle ${cycle} begun for`; // (the feature name follows in quotes — deliberately excluded)
+export const AUDIT_ESCALATION_CONSUMED_MARKER = "escalation consumed: Continue auditing";
+export const AUDIT_TERMINAL_MARKER = () => "NO audit cycle was begun"; // unique to the consume-terminal success text
+export const CRAFT_ABORTED_MARKER = `marked aborted — `;
+export const RUN_CHECK_MARKER = "script sha256: "; // lsc_run_check's transcript header — only that tool emits it
+
+/** earlyExit predicate: the marker text has streamed back in the raw NDJSON (toolName-independent). */
+export function streamTextEarlyExit(marker: string): (accumulatedStdout: string) => boolean {
+	return (stdout: string) => stdout.includes(marker);
+}
+
+/** Count tool_execution_end RESULT TEXTS containing `marker` — the toolName-independent execution count. Raw-substring counting over-counts (partial/update events and the model quoting a result each repeat the text), so only completed tool results count. */
+export function streamMarkerCount(result: OmpRunResult | string, marker: string): number {
+	const stdout = typeof result === "string" ? result : result.stdout;
+	let count = 0;
+	for (const line of stdout.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed.startsWith("{")) continue;
+		try {
+			const event = JSON.parse(trimmed) as { type?: string; result?: { content?: Array<{ text?: string }> } };
+			if (event.type !== "tool_execution_end") continue;
+			const text = (event.result?.content ?? []).map(block => block.text ?? "").join("\n");
+			if (text.includes(marker)) count++;
+		} catch {
+			// unterminated NDJSON line
+		}
+	}
+	return count;
+}
+
+/** The result text of the LAST tool_execution_end whose text contains `marker`, or undefined. */
+export function lastToolResultWith(result: OmpRunResult, marker: string): string | undefined {
+	let last: string | undefined;
+	for (const line of result.stdout.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed.startsWith("{")) continue;
+		try {
+			const event = JSON.parse(trimmed) as { type?: string; result?: { content?: Array<{ text?: string }> } };
+			if (event.type !== "tool_execution_end") continue;
+			const text = (event.result?.content ?? []).map(block => block.text ?? "").join("\n");
+			if (text.includes(marker)) last = text;
+		} catch {
+			// unterminated NDJSON line
+		}
+	}
+	return last;
+}
+
+/** Count a prompt-stage spawn's `task` tool executions (e.g. the §3.0 lsc-test-engineer spawn of a red-cycle continuation). */
+export function taskSpawnCount(result: OmpRunResult): number {
+	return toolExecutions(result).filter(call => call.toolName === "task").length;
+}
+
+function parseToolEnds(stdout: string, toolName: string): Array<{ isError: boolean; text: string }> {
+	const calls: Array<{ isError: boolean; text: string }> = [];
+	for (const line of stdout.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		try {
+			const event = JSON.parse(trimmed) as { type?: string; toolName?: string; isError?: boolean; result?: { content?: Array<{ type?: string; text?: string }> } };
+			if (event.type !== "tool_execution_end" || event.toolName !== toolName) continue;
+			const text = (event.result?.content ?? []).map(block => block.text ?? "").join("\n");
+			calls.push({ isError: event.isError === true, text });
+		} catch {
+			// Partial/unterminated NDJSON line — not counted yet.
+		}
+	}
+	return calls;
+}
