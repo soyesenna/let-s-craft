@@ -236,7 +236,7 @@ craft는 plan.md의 Detailed TODOs를 읽고, 서로소 작업 단위 2개 이�
 npm test   # vitest run
 ```
 
-`test/**/*.test.ts`를 대상으로 하며, `node_modules/`, `dist/`, 벤더 트리, `fixtures/**`는 명시적으로 제외됩니다(`vitest.config.ts`). E2E 테스트 파일(`e2e-full-cycle.test.ts`, `e2e-preset-default.test.ts`)은 `LSC_E2E` 환경변수가 없으면 `describe.skipIf`로 전부 스킵되므로, `npm test`는 실제 omp 프로세스나 실제 토큰을 전혀 건드리지 않습니다.
+`test/**/*.test.ts`를 대상으로 하며, `node_modules/`, `dist/`, 벤더 트리, `fixtures/**`는 명시적으로 제외됩니다(`vitest.config.ts`). E2E 테스트 파일(`e2e-full-cycle.test.ts`, `e2e-preset-default.test.ts`, `e2e-audit-escalation.test.ts`, `e2e-red-cycle-continuation.test.ts`)은 `LSC_E2E` 환경변수가 없으면 `describe.skipIf`로 전부 스킵되므로, `npm test`는 실제 omp 프로세스나 실제 토큰을 전혀 건드리지 않습니다.
 
 ### `npm run e2e` — 실제 omp 통합 E2E
 
@@ -244,17 +244,20 @@ npm test   # vitest run
 npm run e2e
 # 내부적으로: npm run build && LSC_E2E=1 vitest run \
 #   test/e2e-full-cycle.test.ts test/e2e-preset-default.test.ts \
+#   test/e2e-audit-escalation.test.ts test/e2e-red-cycle-continuation.test.ts \
 #   --no-file-parallelism --testTimeout=10200000 --hookTimeout=120000
 ```
 
-**경고 — 실제 토큰을 소비합니다.** 이 2개 파일은 실제 `omp` 바이너리를 헤드리스(`-p --mode=json`)로 자식 프로세스로 구동하며, 실제로 인증된 provider에 대해 실제 API 호출을 발생시킵니다. `--no-file-parallelism`으로 파일 간 동시 실행을 막고, 테스트당 최대 170분(`testTimeout=10200000`ms), 훅당 최대 2분(`hookTimeout=120000`ms)의 타임아웃이 걸려 있습니다. 각 테스트 파일 내부에도 단계별(pre-craft/craft/post-craft) 독립적인 kill 타임아웃이 별도로 걸려 있어, 멈추거나 반복하는 모델이 하네시 전체를 무한정 붙잡지 못하도록 되어 있습니다.
+**경고 — 실제 토큰을 소비합니다.** 이 4개 파일은 실제 `omp` 바이너리를 헤드리스(`-p --mode=json`)로 자식 프로세스로 구동하며, 실제로 인증된 provider에 대해 실제 API 호출을 발생시킵니다. `--no-file-parallelism`으로 파일 간 동시 실행을 막고, 테스트당 최대 170분(`testTimeout=10200000`ms), 훅당 최대 2분(`hookTimeout=120000`ms)의 타임아웃이 걸려 있습니다. 각 테스트 파일 내부에도 단계별(pre-craft/craft/post-craft) 독립적인 kill 타임아웃이 별도로 걸려 있어, 멈추거나 반복하는 모델이 하네시 전체를 무한정 붙잡지 못하도록 되어 있습니다.
 
 - `test/e2e-full-cycle.test.ts`: 항상-워크트리 토폴로지로 pre-craft → craft(단발 실행) → post-craft(테스트 저작+감사) → land 전체를 픽스처 샘플에 대해 구동합니다. 워크트리 내부에 `trace.md → spec.md → plan.md`가 순서대로 생성되고 `test/` 트리는 만들어지지 않는지, base 브랜치가 그 동안 무오염임(산출물 커밋 0건)을 확인하고, pre-craft 단계별 커밋이 3개 이상 쌓였는지, post-craft가 저작한 회귀 테스트가 diff에 존재하고 `check/run_check.sh`와 통과하는 `check/logs/check-N.log`가 있는지, `audit-0.md`에 판정 라인이 기록되는지, 마지막으로 승인 가능한 판정에서 워크트리가 base 브랜치로 병합·제거되고 산출물·구현·체크·감사가 base에 나타나는지까지 단계별로 확인합니다. 트레이스 추론의 질이나 spec 모호도 계산의 정확성 같은 의미론적 판단은 검증하지 않고, 산출물 존재/작성 순서/커밋 위상/문자 그대로의 감사 판정 라인만 확인합니다.
 - `test/e2e-preset-default.test.ts`: 구조형 프리셋의 세션 default 모델이 세션 시작 시 실제로 적용되는지, 명시적 에이전트 오버라이드가 default보다 우선하는지를 실제 omp 세션으로 검증합니다.
+- `test/e2e-audit-escalation.test.ts`: 시드된 REJECT 감사 2개 뒤 candidate 2(픽스처 상한 주기)에서 실제 post-craft 서브프로세스가 `[Audit Escalation]` 게이트를 열고, 세 canonical 처분(`Continue auditing` / `Abort this craft` / `Preserve branch and stop`) 각각이 실제 selection-소비 경로를 통과하는지 검증합니다. Continue는 lsc_audit_begin 호출 총 2회(첫 호출 isError, success 1회)와 durable Continue/next-due 상태를 관측하는 즉시 종료하고, Abort/Preserve는 terminal 기록·audit/land/cleanup 부재·브랜치/워크트리 존치를 단언합니다.
+- `test/e2e-red-cycle-continuation.test.ts`: audit OID A의 Required Fix로 craft를 호출해 commit B를 만들고, 소유자를 특정할 수 없는 deterministic multi-command fresh check red가 `executed-red` 증거와 정확히 `reason=red-attribution-unknown`인 `[Craft Incomplete]`로 끝나며(별도 §3.0-only 모드/핸드오프 envelope 부재), 이어 같은 feature dir에서 환경변수 `LSC_FIXTURE`로 구동한 정상 post-craft 프로세스가 `lsc_audit_begin`으로 다음 사이클을 발행하고 §3.0이 B production snapshot을 입력으로 읽어 이후 test/check commit OID에서 실행하는지를 실제 서브프로세스 경계에서 검증합니다.
 
 ### `LSC_FIXTURE` 응답 주입 모드
 
-pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`lsc_select`/`lsc_confirm`을 거칩니다. `LSC_FIXTURE=<answers.json 경로>` 환경변수(또는 `--lsc-fixtures` 플래그)가 설정되면, 이 도구들은 대화형 UI 대신 스크립트된 응답을 반환해 파이프라인 전체를 무인(unattended)으로 실행할 수 있게 합니다.
+pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`lsc_select`/`lsc_confirm`을 거칩니다. `LSC_FIXTURE=<answers.json 경로>` 환경변수(또는 `--lsc-fixtures` 플래그)가 설정되면, 이 도구들은 대화형 UI 대신 스크립트된 응답을 반환해 파이프라인 전체를 무인(unattended)으로 실행할 수 있게 합니다. `--lsc-fixtures`는 대화형 invocation에서만 쓰는 bonus alias입니다 — 별도 프로세스 E2E의 continuation과 스킬 체이닝 억제 판정은 환경변수 `LSC_FIXTURE`만 권위로 사용합니다.
 
 `answers.json`는 fixture 스키마 **v2**입니다(v1 하위 호환 없음 — 구포맷은 parse 시 명확한 마이그레이션 에러). 각 규칙과 `default`는 응답의 **의미(kind)를 태깅한 body**를 가지며, 이 태깅 덕분에 "승인과 반대 의사가 한 body에 공존"하는 모순 조합이 parse 단계에서 원천 차단됩니다.
 

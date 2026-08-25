@@ -31,12 +31,16 @@
     {
       "match": "^\\[Consensus Escalation\\]",
       "kind": "selection",
-      "selections": ["Proceed with current version"]
+      "selections": [
+        "Proceed with current version"
+      ]
     },
     {
       "match": "^\\[Spec Change\\]|^\\[Plan Change\\]",
       "kind": "selection",
-      "selections": ["Accept — apply to spec.md/plan.md"]
+      "selections": [
+        "Accept — apply to spec.md/plan.md"
+      ]
     },
     {
       "match": "^\\[Parallel Lanes\\]",
@@ -47,6 +51,13 @@
       "match": "^\\[Craft Incomplete\\]",
       "kind": "confirmation",
       "confirm": false
+    },
+    {
+      "match": "^\\[Audit Escalation\\]",
+      "kind": "selection",
+      "selections": [
+        "Continue auditing"
+      ]
     },
     {
       "match": "proceed\\??$",

@@ -929,3 +929,64 @@ describe("performX fixture integration", () => {
 		expect(textOf(result)).toMatch(/Done.*reserved control-row|reserved control-row.*Done/i);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// PR-5 (postcraft-14cycle-approval-failure): the anchored [Audit Escalation]
+// selection rule. It must sit BEFORE the generic `proceed\??$` confirmation rule
+// in the canonical sample file, and each of the three canonical disposition
+// labels must flow through performSelect as the exact `User selected: <label>`
+// CONTENT the skill (and lsc_audit_begin's escalation_disposition contract)
+// branches on.
+// ---------------------------------------------------------------------------
+
+describe("sample answers.json — [Audit Escalation] selection rule (PR-5)", () => {
+	const ESCALATION_OPTIONS = [
+		{ label: "Continue auditing", description: "issue the due audit cycle and continue" },
+		{ label: "Abort this craft", description: "record the terminal disposition and delegate to lsc_craft_abort" },
+		{ label: "Preserve branch and stop", description: "record the terminal disposition, keep branch and worktree" },
+	] as const;
+
+	it("is declared before the generic proceed-confirmation rule (ordered rules, first match wins)", () => {
+		const file = loadFixtureAnswerFile(canonicalAnswersPath);
+		const escalationIndex = file.answers.findIndex(rule => matchesRule(rule.match, "[Audit Escalation] audit cycle 2 … continue?"));
+		const genericIndex = file.answers.findIndex(rule => matchesRule(rule.match, "[Craft Complete] craft is done … Proceed?"));
+		expect(escalationIndex, "the sample file must carry an [Audit Escalation] rule").toBeGreaterThan(-1);
+		expect(genericIndex, "the sample file must carry the generic proceed-confirmation rule").toBeGreaterThan(-1);
+		expect(escalationIndex, "[Audit Escalation] must be matched before the generic confirmation rule").toBeLessThan(genericIndex);
+		expect(file.answers[escalationIndex]).toMatchObject({ kind: "selection", selections: ["Continue auditing"] });
+	});
+
+	for (const label of ["Continue auditing", "Abort this craft", "Preserve branch and stop"] as const) {
+		it(`resolves the escalation select to the exact CONTENT "User selected: ${label}"`, async () => {
+			const channel: AskChannel = {
+				kind: "fixture",
+				answers: new FixtureAnswerSet(
+					parseFixtureAnswerFile(
+						{
+							version: 2,
+							answers: [{ match: "^\\[Audit Escalation\\]", kind: "selection", selections: [label] }],
+							default: { kind: "confirmation", confirm: true },
+						},
+						"fixture-escalation.json",
+					),
+				),
+			};
+			const result = await performSelect(channel, unreachableSelectUI, {
+				question: "[Audit Escalation] audit cycle 2 for this feature is at the periodic interval — continue auditing? Continue?",
+				options: [...ESCALATION_OPTIONS],
+			});
+			expect(result.isError).toBeFalsy();
+			expect(textOf(result)).toBe(`User selected: ${label}`);
+		});
+	}
+
+	it("the canonical sample rule itself resolves to Continue auditing through the full file", async () => {
+		const channel: AskChannel = { kind: "fixture", answers: new FixtureAnswerSet(loadFixtureAnswerFile(canonicalAnswersPath)) };
+		const result = await performSelect(channel, unreachableSelectUI, {
+			question: "[Audit Escalation] audit cycle 2 for this feature is at the periodic interval — continue auditing? Continue?",
+			options: [...ESCALATION_OPTIONS],
+		});
+		expect(result.isError).toBeFalsy();
+		expect(textOf(result)).toBe("User selected: Continue auditing");
+	});
+});
