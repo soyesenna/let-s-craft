@@ -6,34 +6,22 @@
 // helpers over the `git` CLI so pre-craft (add/reuse), craft (reads worktreeRoot
 // from craft state), and post-craft (remove+prune after a confirmed merge) can all
 // call them without needing the omp SDK.
-import { execFile } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { runGit } from "../utils/git.js";
 import { worktreePath } from "./paths.js";
 
-const execFileAsync = promisify(execFile);
-
-function stderrOf(error: unknown): string {
-	if (error && typeof error === "object" && "stderr" in error) {
-		const stderr = (error as { stderr?: unknown }).stderr;
-		if (typeof stderr === "string" && stderr.length > 0) return stderr;
-	}
-	return error instanceof Error ? error.message : String(error);
-}
-
 async function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-	try {
-		return await execFileAsync("git", args, { cwd });
-	} catch (error) {
-		throw new Error(`git ${args.join(" ")} failed: ${stderrOf(error)}`);
-	}
+	// The shared raw runner (postcraft-14cycle-approval-failure PR-3) — argv-only, untrimmed,
+	// NUL-preserving; its GitCommandError carries the command + first stderr line exactly the
+	// way this module's former private runner did.
+	return runGit(cwd, args);
 }
 
 async function localBranchExists(cwd: string, branch: string): Promise<boolean> {
 	try {
-		await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd });
+		await runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
 		return true;
 	} catch {
 		return false;

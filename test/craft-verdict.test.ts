@@ -1,14 +1,17 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as zod from "zod/v4";
-import { craftAuditDir, craftCheckLogsDir, craftStatePath } from "../src/artifacts/paths";
+import { craftAuditDir, craftCheckLogsDir, craftStatePath, worktreePath } from "../src/artifacts/paths";
+import { FIXTURE_AUDIT_ESCALATION_INTERVAL } from "../src/craft/audit-policy";
 import { type CraftState, clearActiveCraft, readPersistedCraftState, setActiveCraft } from "../src/craft/state";
 import {
 	AUDIT_VERDICTS,
 	CRITIC_VERDICTS,
 	isPassingCheckLog,
+	observeAuditBase,
 	parseAuditVerdict,
 	parseCriticVerdict,
 	parseVerdictLine,
@@ -685,6 +688,27 @@ describe("registerAuditBeginTool — fixture-mode interval injection (production
 		expect(result.details?.escalation).toMatchObject({ status: "escalation-required", dueCycle: 2 });
 	});
 
+
+	it("PR-3: the wrapper observes the explicit base_branch over real git and persists the snapshot with the begun cycle", async () => {
+		const { root, worktreeRoot, feature, mainTip } = tmpDriftProject();
+		persistOnly({ ...freshState(root, feature), worktreeRoot });
+		const execute = captureBeginExecute();
+
+		const result = await execute("t", { feature_dir: feature, base_branch: "main" }, undefined, undefined, { cwd: root });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		// The wrapper resolved the PASSED ref (main), not the checkout's HEAD ("third") — the same
+		// discriminator as observeAuditBase's own suite, observed through the production execute.
+		expect(readPersistedCraftState(worktreeRoot, feature)?.auditBaseSnapshot).toMatchObject({
+			baseBranch: "main",
+			baseTip: mainTip,
+			behindCount: 1,
+			status: "ok",
+			authority: "explicit-base",
+		});
+		// ...and this describe's own afterEach only restores env — clean the git fixture up inline.
+		rmSync(root, { recursive: true, force: true });
+	});
 	it("neither env nor flag leaves the LIVE interval — candidate 2 proceeds, candidate 3 gates", async () => {
 		const root = tmpProject();
 		seedCandidateTwo(root);
@@ -699,5 +723,196 @@ describe("registerAuditBeginTool — fixture-mode interval injection (production
 		const atCap = await execute("t", { feature_dir: "my-feature" }, undefined, undefined, { cwd: root });
 		expect(atCap.isError).toBe(true);
 		expect(atCap.details?.escalation).toMatchObject({ status: "escalation-required", dueCycle: 3 });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// PR-3 — audit-time base observation. `observeAuditBase` is the registration wrapper's one
+// read-only git seam; `performAuditBegin` persists the injected snapshot atomically with the
+// begun cycle. Real git fixtures prove: the authority is the PASSED ref (a project root parked
+// on a third branch can never masquerade as the base), explicit resolution is strict (no
+// fallback, even for option-looking refs), the legacy fallback is attached-current-branch only,
+// and drift/unknown are non-blocking WARN evidence — never a cycle refusal.
+// ---------------------------------------------------------------------------
+
+function gitIn(cwd: string, args: string[]): string {
+	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+const tempGitDirs: string[] = [];
+
+/**
+ * main (seed + exactly 1 base-ahead commit), a `lets-craft/{feature}` worktree branched at the
+ * seed with its own feature commit, and the project root parked on a THIRD branch carrying 3
+ * commits — so measuring the passed base (`main`) yields behind 1 while measuring HEAD (`third`)
+ * would yield 3: the assertions can tell exactly which ref was measured.
+ */
+function tmpDriftProject(opts: { advanceBase?: boolean } = {}): { root: string; worktreeRoot: string; feature: string; mainTip: string; seedTip: string } {
+	const root = mkdtempSync(join(tmpdir(), "lsc-base-obs-"));
+	tempGitDirs.push(root);
+	gitIn(root, ["init", "-q", "-b", "main"]);
+	gitIn(root, ["config", "user.email", "test@example.com"]);
+	gitIn(root, ["config", "user.name", "Test"]);
+	writeFileSync(join(root, "seed.txt"), "seed\n");
+	gitIn(root, ["add", "-A"]);
+	gitIn(root, ["commit", "-q", "-m", "seed"]);
+	const seedTip = gitIn(root, ["rev-parse", "HEAD"]);
+	const feature = "drift-feat";
+	const worktreeRoot = worktreePath(root, feature);
+	gitIn(root, ["worktree", "add", "-q", "-b", `lets-craft/${feature}`, worktreeRoot, seedTip]);
+	writeFileSync(join(worktreeRoot, "feature.txt"), "feature work\n");
+	gitIn(worktreeRoot, ["add", "-A"]);
+	gitIn(worktreeRoot, ["commit", "-q", "-m", "feat"]);
+	let mainTip = seedTip;
+	if (opts.advanceBase !== false) {
+		writeFileSync(join(root, "base-side.txt"), "base moved on\n");
+		gitIn(root, ["add", "-A"]);
+		gitIn(root, ["commit", "-q", "-m", "base ahead"]);
+		mainTip = gitIn(root, ["rev-parse", "HEAD"]);
+	}
+	// Park the project root on a THIRD branch with 3 of its own commits (HEAD ≠ detected base).
+	gitIn(root, ["checkout", "-q", "-b", "third", seedTip]);
+	for (let i = 0; i < 3; i++) {
+		writeFileSync(join(root, `third-${i}.txt`), `${i}\n`);
+		gitIn(root, ["add", "-A"]);
+		gitIn(root, ["commit", "-q", "-m", `third ${i}`]);
+	}
+	return { root, worktreeRoot, feature, mainTip, seedTip };
+}
+
+describe("observeAuditBase — real git authority/resolution/behind (PR-3)", () => {
+	afterEach(() => {
+		while (tempGitDirs.length > 0) {
+			const dir = tempGitDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("explicit base is measured even when the project root HEAD sits on a THIRD branch — behind counts the PASSED base, not HEAD", async () => {
+		const { root, worktreeRoot, mainTip } = tmpDriftProject();
+		const featureTip = gitIn(worktreeRoot, ["rev-parse", "HEAD"]);
+
+		const snapshot = await observeAuditBase(root, worktreeRoot, "main");
+
+		expect(snapshot).toMatchObject({ baseBranch: "main", baseTip: mainTip, sourceTip: featureTip, behindCount: 1, status: "ok", authority: "explicit-base" });
+		// Discriminator: measuring HEAD ("third", 3 commits past the seed) would have reported 3 —
+		// the snapshot must carry the passed base's ref and tip, never the checkout's.
+		expect(snapshot.behindCount).not.toBe(3);
+		expect(snapshot.baseTip).not.toBe(gitIn(root, ["rev-parse", "HEAD"]));
+	});
+
+	it("an explicit unresolvable ref is recorded unknown with NO fallback to any branch", async () => {
+		const { root, worktreeRoot } = tmpDriftProject();
+		const snapshot = await observeAuditBase(root, worktreeRoot, "no-such-branch");
+		expect(snapshot.status).toBe("unknown");
+		expect(snapshot.authority).toBe("explicit-base");
+		expect(snapshot.baseBranch).toBe("no-such-branch");
+		expect(snapshot.baseTip).toBe("");
+		expect(snapshot.behindCount).toBe("unknown");
+		expect(snapshot.error ?? "").not.toBe("");
+	});
+
+	it("an option-looking explicit ref is treated as a rev (--end-of-options argv), never re-parsed as an option", async () => {
+		const { root, worktreeRoot } = tmpDriftProject();
+		const snapshot = await observeAuditBase(root, worktreeRoot, "--help");
+		expect(snapshot).toMatchObject({ status: "unknown", authority: "explicit-base", baseBranch: "--help", baseTip: "", behindCount: "unknown" });
+	});
+
+	it("legacy caller (no base_branch) falls back to the attached project-root current branch", async () => {
+		const { root, worktreeRoot, mainTip } = tmpDriftProject();
+		gitIn(root, ["checkout", "-q", "main"]);
+		const snapshot = await observeAuditBase(root, worktreeRoot, undefined);
+		expect(snapshot).toMatchObject({ baseBranch: "main", baseTip: mainTip, behindCount: 1, status: "ok", authority: "legacy-current-branch" });
+	});
+
+	it("legacy fallback on a detached HEAD is unknown — the base is never guessed", async () => {
+		const { root, worktreeRoot, mainTip } = tmpDriftProject();
+		gitIn(root, ["checkout", "-q", "--detach", mainTip]);
+		const snapshot = await observeAuditBase(root, worktreeRoot, undefined);
+		expect(snapshot).toMatchObject({ status: "unknown", authority: "legacy-current-branch", behindCount: "unknown" });
+		expect(snapshot.error ?? "").toContain("detached");
+	});
+
+	it("legacy fallback on an unborn HEAD is unknown", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lsc-base-obs-unborn-"));
+		tempGitDirs.push(root);
+		gitIn(root, ["init", "-q", "-b", "main"]);
+		const snapshot = await observeAuditBase(root, root, undefined);
+		expect(snapshot).toMatchObject({ status: "unknown", authority: "legacy-current-branch", behindCount: "unknown" });
+		expect(snapshot.error ?? "").not.toBe("");
+	});
+});
+
+describe("performAuditBegin × baseSnapshot — persisted with the cycle, replay-stable (PR-3)", () => {
+	afterEach(() => {
+		while (tempGitDirs.length > 0) {
+			const dir = tempGitDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+		clearActiveCraft();
+	});
+
+	it("persists the injected snapshot atomically with the begun cycle and surfaces a non-blocking drift WARN", async () => {
+		const { root, worktreeRoot, feature } = tmpDriftProject();
+		persistOnly({ ...freshState(root, feature), worktreeRoot });
+
+		const snapshot = await observeAuditBase(root, worktreeRoot, "main");
+		const result = performAuditBegin(feature, root, { baseSnapshot: snapshot });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		expect(result.details?.base).toEqual(snapshot);
+		expect(result.details?.auditCycle).toBe(0);
+		expect(result.content[0]?.text).toContain("WARN: base drift");
+		expect(result.content[0]?.text).toContain('"main"');
+		expect(readPersistedCraftState(worktreeRoot, feature)?.auditBaseSnapshot).toEqual(snapshot);
+	});
+
+	it("behind 0 carries the in-sync line and no drift WARN", async () => {
+		const { root, worktreeRoot, feature } = tmpDriftProject({ advanceBase: false });
+		persistOnly({ ...freshState(root, feature), worktreeRoot });
+
+		const snapshot = await observeAuditBase(root, worktreeRoot, "main");
+		expect(snapshot).toMatchObject({ behindCount: 0, status: "ok" });
+		const result = performAuditBegin(feature, root, { baseSnapshot: snapshot });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		expect(result.content[0]?.text).toContain("0 behind (in sync)");
+		expect(result.content[0]?.text).not.toContain("WARN: base drift");
+	});
+
+	it("a same-cycle replay returns the PERSISTED snapshot and rewrites nothing — a freshly injected observation is ignored", async () => {
+		const { root, worktreeRoot, feature } = tmpDriftProject();
+		persistOnly({ ...freshState(root, feature), worktreeRoot });
+		const first = await observeAuditBase(root, worktreeRoot, "main");
+		performAuditBegin(feature, root, { baseSnapshot: first });
+		const statePath = craftStatePath(worktreeRoot, feature);
+		const bytesBefore = readFileSync(statePath, "utf8");
+
+		// Same candidate (audit-0.md still unwritten → candidate 0 === persisted auditCycle) with a
+		// DIFFERENT observation injected: replay must not touch the recorded evidence.
+		const second = await observeAuditBase(root, worktreeRoot, "third");
+		expect(second.baseBranch).not.toBe(first.baseBranch);
+		const replay = performAuditBegin(feature, root, { baseSnapshot: second });
+
+		expect(replay.isError, JSON.stringify(replay)).toBeFalsy();
+		expect(replay.content[0]?.text).toContain("idempotent replay");
+		expect(replay.details?.base).toEqual(first);
+		expect(readFileSync(statePath, "utf8")).toBe(bytesBefore);
+	});
+
+	it("an escalation-required call begins no cycle and records NO base snapshot", () => {
+		const { root, worktreeRoot, feature } = tmpDriftProject();
+		persistOnly({ ...freshState(root, feature), worktreeRoot, auditCycle: 1 });
+		writeAuditDoc(worktreeRoot, feature, 0, "REJECT");
+		writeAuditDoc(worktreeRoot, feature, 1, "REJECT");
+
+		const result = performAuditBegin(feature, root, {
+			activeInterval: FIXTURE_AUDIT_ESCALATION_INTERVAL,
+			baseSnapshot: { baseBranch: "main", baseTip: "0".repeat(40), sourceTip: "1".repeat(40), behindCount: 7, status: "ok", authority: "explicit-base", observedAt: new Date().toISOString() },
+		});
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.escalation).toMatchObject({ status: "escalation-required", dueCycle: 2 });
+		expect(readPersistedCraftState(worktreeRoot, feature)?.auditBaseSnapshot).toBeUndefined();
 	});
 });

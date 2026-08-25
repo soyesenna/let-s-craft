@@ -61,6 +61,8 @@ const EXPECTED_REASON_CODES = [
 	"evidence-mismatch",
 	"craft-aborted",
 	"terminal-disposition",
+	"added-path-overlap",
+	"added-path-unknown",
 	"approval-required",
 	"scope-mismatch",
 	"identity-mismatch",
@@ -687,6 +689,95 @@ describe("lsc_land — PR-2 abort/terminal preflight (before any approval is con
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PR-3 — added-path overlap gate (F14-1-shaped double occupancy at the merge boundary).
+// Exact `--diff-filter=A --name-only -z --no-renames` intersection of the approved scope's
+// target/source OIDs since their merge-base, computed after the live target recheck and
+// immediately before effects.merge. Disjoint adds land; a shared added path (including a
+// rename's destination) is fail-closed blocked with the nonce consumed; NUL-split keeps
+// whitespace/newline paths intact.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("lsc_land — PR-3 added-path overlap gate (exact A-path intersection, pre-merge)", () => {
+	/** Write one file and commit it on the current branch — argv-form `git add --` so even newline-carrying paths need no shell quoting. */
+	function commitFile(cwd: string, relPath: string, content: string, message: string): void {
+		writeFileSync(join(cwd, relPath), content);
+		git(cwd, ["add", "--", relPath]);
+		git(cwd, ["commit", "-q", "-m", message]);
+	}
+
+	it("disjoint A/A (each side adds a DIFFERENT path since merge-base) lands normally", async () => {
+		const tools = buildTools();
+		const fx = setupLandableFeature({ feature: "aa-disjoint" });
+		// Source already added feature.txt (setupLandableFeature); the target adds its own distinct path.
+		commitFile(fx.projectRoot, "target-side-only.txt", "target work\n", "chore: target-side add");
+
+		await issueLandApproval(tools, fx);
+		const land = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+
+		expect(land.isError, textOf(land)).toBeFalsy();
+		expect(isAncestor(fx.projectRoot, fx.sourceOID)).toBe(true);
+		expect(existsSync(fx.worktreeRoot)).toBe(false);
+	});
+
+	it("both sides adding the SAME path is blocked before the merge (added-path-overlap; nonce consumed, nothing merged)", async () => {
+		const tools = buildTools();
+		const fx = setupLandableFeature({ feature: "aa-same" });
+		// The source's feature.txt vs a target-side add of the identical repo-relative path.
+		commitFile(fx.projectRoot, "feature.txt", "target rewrote the same new path\n", "chore: target adds the same path");
+		const targetHeadBefore = git(fx.projectRoot, ["rev-parse", "HEAD"]);
+
+		await issueLandApproval(tools, fx);
+		const land = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+
+		expect(land.isError, textOf(land)).toBe(true);
+		expect(textOf(land)).toContain("added-path-overlap");
+		expect(textOf(land)).toContain(JSON.stringify("feature.txt"));
+		// The refusal is PRE-merge: HEAD unmoved, worktree untouched, and the single-use nonce is
+		// consumed — a re-call must demand a fresh approval, not reuse one.
+		expect(git(fx.projectRoot, ["rev-parse", "HEAD"])).toBe(targetHeadBefore);
+		expect(existsSync(fx.worktreeRoot)).toBe(true);
+		expect(peekPendingApproval()).toBeUndefined();
+		const again = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+		expect(textOf(again)).toContain("approval-required");
+	});
+
+	it("a rename's destination is an added path — source rename onto a target add of the destination is blocked", async () => {
+		const tools = buildTools();
+		const fx = setupLandableFeature({ feature: "aa-rename" });
+		// Source renames the seeded README.md away (its destination is an ADD under --no-renames)...
+		git(fx.worktreeRoot, ["mv", "README.md", "RENAMED.md"]);
+		git(fx.worktreeRoot, ["commit", "-q", "-m", "refactor: rename README"]);
+		// ...while the target independently adds that same destination path.
+		commitFile(fx.projectRoot, "RENAMED.md", "target's own new file\n", "chore: target adds the destination");
+
+		await issueLandApproval(tools, fx);
+		const land = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+
+		expect(land.isError, textOf(land)).toBe(true);
+		expect(textOf(land)).toContain("added-path-overlap");
+		expect(textOf(land)).toContain(JSON.stringify("RENAMED.md"));
+		expect(existsSync(fx.worktreeRoot)).toBe(true);
+	});
+
+	it("paths with spaces and newlines survive the NUL-split comparison verbatim", async () => {
+		const tools = buildTools();
+		const fx = setupLandableFeature({ feature: "aa-weird" });
+		const weirdPath = "fi le\nname.txt";
+		commitFile(fx.projectRoot, weirdPath, "target\n", "chore: target adds a weird path");
+		commitFile(fx.worktreeRoot, weirdPath, "source\n", "chore: source adds the same weird path");
+
+		await issueLandApproval(tools, fx);
+		const land = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+
+		expect(land.isError, textOf(land)).toBe(true);
+		expect(textOf(land)).toContain("added-path-overlap");
+		// The exact path (JSON-escaped in the message) proves the -z payload was never line-split
+		// or trimmed — a newline-carrying path arrived intact through the whole comparison.
+		expect(textOf(land)).toContain(JSON.stringify(weirdPath));
+		expect(existsSync(fx.worktreeRoot)).toBe(true);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // AC2/AC3 — replay, wrong-target roundtrip, and effect-path failure state machine
 // ═══════════════════════════════════════════════════════════════════════════
 describe("lsc_land — AC2/AC3 replay & wrong-target roundtrip", () => {
@@ -904,9 +995,9 @@ describe("lsc_land — AC3 effect-path failure state machine", () => {
 // LandEffects port (see "AC3 LandEffects port …" below) — no longer a vocab-only array-equality pin (C3/rec2).
 // ═══════════════════════════════════════════════════════════════════════════
 describe("lsc_land — public reason-code vocabulary", () => {
-	it("exports exactly the 20 documented reason codes", () => {
+	it("exports exactly the 22 documented reason codes", () => {
 		expect([...LAND_REASON_CODES].sort()).toEqual([...EXPECTED_REASON_CODES].sort());
-		expect(LAND_REASON_CODES.length).toBe(20);
+		expect(LAND_REASON_CODES.length).toBe(22);
 	});
 
 	it("does NOT retain the removed `no-pending-approval` code (unreachable under the 2-phase rule)", () => {

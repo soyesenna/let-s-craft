@@ -9,6 +9,7 @@
 // left over from before an AWC fix-verification cycle can never be re-cited to fake a fresh pass.
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { runGitText } from "../utils/git.js";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { craftAuditDir, craftAuditPath, craftCheckLogsDir, craftStatePath, resolveFeatureName } from "../artifacts/paths.js";
 import { detectFixturePath } from "../fixtures.js";
@@ -20,7 +21,7 @@ import {
 	evaluateAuditBeginGate,
 } from "./audit-policy.js";
 import { invalidatePendingApproval, invalidatePreparedOperation } from "./destructive-approval.js";
-import { type CraftState, applyAuditBeginOutcome, craftStateCandidates, readPersistedCraftState, recordAuditValidated } from "./state.js";
+import { type AuditBaseSnapshot, type CraftState, applyAuditBeginOutcome, craftStateCandidates, readPersistedCraftState, recordAuditValidated } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Verdict vocabularies + generic literal-only parser
@@ -165,7 +166,7 @@ export function validateAuditFreshness(verdict: AuditVerdict, checkLogAtCycleSta
 /**
  * Resolve the root to read/write a feature's audit artifacts against: the worktree when its
  * DIRECTORY exists (C6/R5's "always worktree" convention — post-craft's own artifact root,
- * SKILL.md §2.3), else the project root as the pre-R5/escape-hatch fallback. Named policy:
+ * SKILL.md §2.2), else the project root as the pre-R5/escape-hatch fallback. Named policy:
  * DIRECTORY-EXISTENCE only — it keys off the worktree candidate's `rootExists` and NEVER decodes a
  * state file, so a malformed `.craft-state.json` can never divert audit resolution (a DIFFERENT
  * authority than findPersistedCraftState's open-release arbitration, which is the decode owner).
@@ -272,6 +273,8 @@ export interface AuditBeginDetails {
 	question?: string;
 	/** Present on escalation-required: the three canonical disposition labels, in canonical order. */
 	options?: readonly string[];
+	/** Additive base-drift evidence (postcraft-14cycle-approval-failure PR-3) — the audit-time base observation bound to the cycle this call began; a same-cycle replay returns the persisted snapshot unchanged. */
+	base?: AuditBaseSnapshot;
 }
 
 type AuditBeginBlockedReasonText = "invalid-state" | "terminal" | "stale-pending" | "no-pending-escalation" | "invalid-disposition";
@@ -281,6 +284,98 @@ export interface AuditBeginOptions {
 	activeInterval?: AuditEscalationInterval;
 	/** The user's disposition label when answering an open escalation gate. */
 	escalationDisposition?: string;
+	/**
+	 * The audit-time base observation (PR-3), computed by the registration wrapper via
+	 * `observeAuditBase` and injected here — the sync core never spawns git itself (a sync spawn
+	 * blocks the host event loop; see land.ts's runner note). Persisted atomically WITH the cycle
+	 * record when this call begins a cycle; a same-cycle replay never rewrites it, and a blocked /
+	 * escalation-required / terminal call records none.
+	 */
+	baseSnapshot?: AuditBaseSnapshot;
+}
+
+// ---------------------------------------------------------------------------
+// Audit-time base observation (postcraft-14cycle-approval-failure PR-3) — the audit's
+// non-blocking WARN evidence about WHERE the feature stands relative to its real land target.
+// The base AUTHORITY is the ref post-craft detected before calling begin (passed as
+// `base_branch`); only a legacy direct caller that omitted it falls back to the attached
+// project-root current branch. Land's own fail-closed gates are a SEPARATE boundary — an
+// unknown snapshot here never refuses an audit cycle.
+// ---------------------------------------------------------------------------
+
+function gitErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function unknownBaseSnapshot(baseBranch: string, authority: AuditBaseSnapshot["authority"], observedAt: string, error: string): AuditBaseSnapshot {
+	return { baseBranch, baseTip: "", sourceTip: "", behindCount: "unknown", status: "unknown", authority, observedAt, error };
+}
+
+/** Anchor both tips and count how far the base has moved past the source (`git rev-list --count <source>..<base>`). Any measurement failure degrades to a non-blocking unknown — never a guess. */
+async function anchorBaseSnapshot(projectRoot: string, sourceRoot: string, baseBranch: string, baseTip: string, authority: AuditBaseSnapshot["authority"], observedAt: string): Promise<AuditBaseSnapshot> {
+	let sourceTip: string;
+	try {
+		sourceTip = await runGitText(sourceRoot, ["rev-parse", "HEAD"]);
+	} catch (error) {
+		return { baseBranch, baseTip, sourceTip: "", behindCount: "unknown", status: "unknown", authority, observedAt, error: `source tip unavailable: ${gitErrorMessage(error)}` };
+	}
+	try {
+		const count = await runGitText(projectRoot, ["rev-list", "--count", `${sourceTip}..${baseTip}`]);
+		const behind = Number(count);
+		if (!Number.isSafeInteger(behind) || behind < 0) {
+			return { baseBranch, baseTip, sourceTip, behindCount: "unknown", status: "unknown", authority, observedAt, error: `git rev-list --count returned non-integer "${count}"` };
+		}
+		return { baseBranch, baseTip, sourceTip, behindCount: behind, status: "ok", authority, observedAt };
+	} catch (error) {
+		return { baseBranch, baseTip, sourceTip, behindCount: "unknown", status: "unknown", authority, observedAt, error: `behind-count unavailable: ${gitErrorMessage(error)}` };
+	}
+}
+
+/**
+ * Observe the audit-time base (PR-3). `baseBranch` is the land-target ref post-craft detected
+ * BEFORE calling begin — when present it is resolved STRICTLY via argv
+ * `git rev-parse --verify --end-of-options <expr>^{commit}` (leading `-` can never re-parse as
+ * an option), and an unresolvable explicit ref NEVER falls back: it is recorded unknown with
+ * authority "explicit-base". Only a legacy direct caller that omitted the ref falls back to the
+ * attached project-root current branch; a detached/unborn/unresolvable HEAD there is recorded
+ * unknown with authority "legacy-current-branch" — the base is never guessed. Never throws.
+ */
+export async function observeAuditBase(projectRoot: string, sourceRoot: string, baseBranch: string | undefined): Promise<AuditBaseSnapshot> {
+	const observedAt = new Date().toISOString();
+	if (baseBranch !== undefined) {
+		try {
+			const baseTip = await runGitText(projectRoot, ["rev-parse", "--verify", "--end-of-options", `${baseBranch}^{commit}`]);
+			return await anchorBaseSnapshot(projectRoot, sourceRoot, baseBranch, baseTip, "explicit-base", observedAt);
+		} catch (error) {
+			return unknownBaseSnapshot(baseBranch, "explicit-base", observedAt, gitErrorMessage(error));
+		}
+	}
+	let currentBranch: string;
+	try {
+		currentBranch = await runGitText(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+	} catch (error) {
+		return unknownBaseSnapshot("", "legacy-current-branch", observedAt, gitErrorMessage(error));
+	}
+	if (currentBranch === "HEAD" || currentBranch === "") {
+		return unknownBaseSnapshot(currentBranch, "legacy-current-branch", observedAt, "detached HEAD — the attached project root has no current branch to measure");
+	}
+	try {
+		const baseTip = await runGitText(projectRoot, ["rev-parse", "--verify", "--end-of-options", `${currentBranch}^{commit}`]);
+		return await anchorBaseSnapshot(projectRoot, sourceRoot, currentBranch, baseTip, "legacy-current-branch", observedAt);
+	} catch (error) {
+		return unknownBaseSnapshot(currentBranch, "legacy-current-branch", observedAt, gitErrorMessage(error));
+	}
+}
+
+/** The non-blocking base line a begun cycle's success text carries — a WARN only when the base actually drifted or could not be measured. */
+function describeAuditBase(snapshot: AuditBaseSnapshot): string {
+	if (snapshot.status === "unknown") {
+		return `WARN: audit base could not be measured (${snapshot.authority} "${snapshot.baseBranch}"): ${snapshot.error} — non-blocking for the audit; land's own gates stay fail-closed.`;
+	}
+	if (snapshot.behindCount === 0) {
+		return `Base authority: ${snapshot.authority} "${snapshot.baseBranch}" @ ${snapshot.baseTip.slice(0, 12)} — source @ ${snapshot.sourceTip.slice(0, 12)}, 0 behind (in sync).`;
+	}
+	return `WARN: base drift — ${snapshot.authority} "${snapshot.baseBranch}" @ ${snapshot.baseTip.slice(0, 12)} is ${snapshot.behindCount} commit(s) ahead of the source @ ${snapshot.sourceTip.slice(0, 12)}. The audit proceeds (non-blocking); resolve the drift before land.`;
 }
 
 /**
@@ -376,6 +471,7 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 					decision: gate.decision,
 					auditCycle: gate.pending.dueCycle,
 					checkLogAtCycleStart,
+					baseSnapshot: options.baseSnapshot,
 				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -388,7 +484,8 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 						text:
 							`lets-craft: audit cycle ${gate.pending.dueCycle} begun for "${feature}" (escalation consumed: Continue auditing) — freshness threshold set at check-${checkLogAtCycleStart}.log ` +
 							`(a passing check-${checkLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict). ` +
-							`The escalation gate re-fires at cycle ${gate.decision.nextDueCycle}.`,
+							`The escalation gate re-fires at cycle ${gate.decision.nextDueCycle}.` +
+							(options.baseSnapshot ? ` ${describeAuditBase(options.baseSnapshot)}` : ""),
 					},
 				],
 				details: {
@@ -396,6 +493,7 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 					auditCycle: gate.pending.dueCycle,
 					checkLogAtCycleStart,
 					escalation: { status: "continued", dueCycle: gate.pending.dueCycle, disposition: "Continue auditing", intervalCycles: gate.pending.intervalCycles, nextDueCycle: gate.decision.nextDueCycle },
+					base: options.baseSnapshot,
 				},
 			};
 		}
@@ -433,24 +531,28 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 		}
 		case "replay": {
 			// Idempotent same-cycle replay: the persisted auditCycle / checkLogAtCycleStart / base
-			// snapshot bytes are NOT rewritten — the caller gets the recorded result back.
+			// snapshot bytes are NOT rewritten — the caller gets the recorded result back (any
+			// freshly observed snapshot injected this call is deliberately ignored in favor of the
+			// persisted one, so replay can never drift the recorded evidence).
 			const auditCycle = state.auditCycle ?? candidateCycle;
 			const threshold = state.checkLogAtCycleStart ?? checkLogAtCycleStart;
+			const base = state.auditBaseSnapshot;
 			return {
 				content: [
 					{
 						type: "text",
 						text:
 							`lets-craft: audit cycle ${auditCycle} for "${feature}" was already begun (idempotent replay — threshold stays at check-${threshold}.log; nothing was rewritten). ` +
-							`A passing check-${threshold + 1}.log or later is required to back an APPROVE-family verdict.`,
+							`A passing check-${threshold + 1}.log or later is required to back an APPROVE-family verdict.` +
+							(base ? ` ${describeAuditBase(base)}` : ""),
 					},
 				],
-				details: { feature, auditCycle, checkLogAtCycleStart: threshold },
+				details: { feature, auditCycle, checkLogAtCycleStart: threshold, base },
 			};
 		}
 		case "proceed": {
 			try {
-				applyAuditBeginOutcome(root, feature, { kind: "audit-cycle", auditCycle: candidateCycle, checkLogAtCycleStart });
+				applyAuditBeginOutcome(root, feature, { kind: "audit-cycle", auditCycle: candidateCycle, checkLogAtCycleStart, baseSnapshot: options.baseSnapshot });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart } };
@@ -461,10 +563,11 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 						type: "text",
 						text:
 							`lets-craft: audit cycle ${candidateCycle} begun for "${feature}" — freshness threshold set at check-${checkLogAtCycleStart}.log ` +
-							`(a passing check-${checkLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict).`,
+							`(a passing check-${checkLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict).` +
+							(options.baseSnapshot ? ` ${describeAuditBase(options.baseSnapshot)}` : ""),
 					},
 				],
-				details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart },
+				details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, base: options.baseSnapshot },
 			};
 		}
 	}
@@ -475,6 +578,14 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 	// Explicit type arguments (not left to inference) avoid TS2589 — see run-check.ts's module doc comment.
 	const parameters = z.object({
 		feature_dir: z.string().describe("Feature name or a path under .lsc/crafts/{feature}/, same as lsc_craft_init."),
+		base_branch: z
+			.string()
+			.optional()
+			.describe(
+				"The land-target base ref post-craft detected BEFORE calling this tool (skills/post-craft/SKILL.md §2.3) — the audit-time canonical base authority. " +
+					"Resolved strictly via `git rev-parse --verify --end-of-options <ref>^{commit}`; an unresolvable ref is recorded as an unknown observation with NO fallback. " +
+					"Omit only for legacy direct calls, which fall back to the attached project-root current branch (detached/unborn/unresolvable there is recorded unknown).",
+			),
 		escalation_disposition: z
 			.string()
 			.optional()
@@ -491,9 +602,10 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 		description:
 			"Record the current max check/logs/check-N.log index as this feature's new post-craft audit cycle's freshness " +
 			"threshold (B-1, cycle-freshness). Call this once per audit cycle, right after determining the cycle number N " +
-			"(skills/post-craft/SKILL.md §2.2) — before rendering the audit-N.md verdict. lsc_audit_validate later refuses " +
+			"(skills/post-craft/SKILL.md §2.4) — before rendering the audit-N.md verdict. lsc_audit_validate later refuses " +
 			"an APPROVE-family verdict unless a passing check-N.log exists with N strictly greater than this threshold, so a " +
 			"stale green log from before this cycle can never back a fresh approval. " +
+			"Pass the detected base ref as base_branch — the observed {baseBranch,baseTip,sourceTip,behindCount} snapshot is persisted with the cycle as non-blocking drift evidence. " +
 			"At the escalation interval's due cycle (live 3 / fixture 2, periodic) the call instead returns isError " +
 			"escalation-required with the exact [Audit Escalation] question; re-call with escalation_disposition to consume it — " +
 			"only \"Continue auditing\" begins the cycle.",
@@ -504,9 +616,16 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 			// plus the interactive --lsc-fixtures alias and injects the active interval into the pure
 			// policy. performAuditBegin itself never reads env/CLI flags.
 			const fixturePath = detectFixturePath(name => pi.getFlag(name));
+			// PR-3 base observation: read-only and async HERE (the sync core never spawns git — a
+			// blocked event loop starves the host); the resulting snapshot is injected like the
+			// interval. An explicit base_branch resolves strictly; omitting it is the legacy
+			// attached-current-branch fallback. Never throws — unknown is a non-blocking WARN.
+			const sourceRoot = resolveAuditRoot(ctx.cwd, feature);
+			const baseSnapshot = await observeAuditBase(ctx.cwd, sourceRoot, params.base_branch);
 			return performAuditBegin(feature, ctx.cwd, {
 				activeInterval: auditEscalationInterval(fixturePath !== undefined),
 				escalationDisposition: params.escalation_disposition,
+				baseSnapshot,
 			});
 		},
 	});
@@ -569,7 +688,7 @@ export function performAuditValidate(feature: string, cwd: string): AgentToolRes
 	// auditCycle mismatch (review LOW-3, functionalizing the field): a recorded auditCycle that
 	// doesn't match the audit-N.md actually being validated means the persisted
 	// checkLogAtCycleStart threshold was captured for a DIFFERENT cycle (most likely: a newer
-	// audit-N.md was written without calling lsc_audit_begin again — a skipped §2.2 step).
+	// audit-N.md was written without calling lsc_audit_begin again — a skipped §2.4 step).
 	// Trusting that threshold here would validate freshness against the wrong baseline, so this
 	// refuses (fail-closed) rather than silently degrading to "no threshold" — degrading would be
 	// fail-OPEN and reopen exactly the stale-evidence gap B-1 exists to close. Irrelevant for
