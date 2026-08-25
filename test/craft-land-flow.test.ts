@@ -32,7 +32,8 @@ import { OTHER_OPTION, type SelectUI, registerAskTools } from "../src/ask";
 import {
 	type ApprovalCraftIdentity,
 	consumePendingApproval,
-	type DestructiveGateTag,
+	createPendingApproval,
+	installPendingApproval,
 	invalidatePendingApproval,
 	// NEW (Step 3a prepared-operation issuance seam) — resolves to undefined until craft adds it.
 	invalidatePreparedOperation,
@@ -58,6 +59,8 @@ const EXPECTED_REASON_CODES = [
 	"stale-check-log",
 	"evidence-tamper",
 	"evidence-mismatch",
+	"craft-aborted",
+	"terminal-disposition",
 	"approval-required",
 	"scope-mismatch",
 	"identity-mismatch",
@@ -207,6 +210,7 @@ interface PersistedState {
 	auditCycle?: number;
 	checkLogAtCycleStart?: number;
 	auditValidated?: { cycle: number; verdict: string; at: string };
+	auditTerminalDisposition?: object;
 }
 
 const PersistedStateSchema = zod.object({
@@ -217,7 +221,6 @@ const PersistedStateSchema = zod.object({
 		.object({ nonce: zod.string(), tag: zod.string(), question: zod.string(), response: zod.string(), issuedAt: zod.string(), consumedAt: zod.string().optional(), operationScope: zod.record(zod.string(), zod.unknown()).optional() })
 		.optional(),
 });
-
 interface FeatureOpts {
 	feature?: string;
 	auditNumber?: number | null; // null => write no audit-N.md (no-audit-evidence)
@@ -231,6 +234,8 @@ interface FeatureOpts {
 	stateFeature?: string;
 	makeDirtyWorktree?: boolean; // add an untracked file so `git worktree remove` (no --force) fails
 	freshLogPassing?: boolean; // false => the post-threshold check-N.log is a FAILING transcript (exit 1) → stale-check-log
+	aborted?: boolean; // PR-2: mark the persisted state aborted up front
+	auditTerminalDisposition?: object; // PR-2: seed a durable escalation terminal record
 }
 
 interface LandFixture {
@@ -273,7 +278,7 @@ function setupLandableFeature(opts: FeatureOpts = {}): LandFixture {
 		feature: opts.stateFeature ?? feature,
 		projectRoot: opts.stateProjectRoot ?? projectRoot,
 		worktreeRoot: opts.stateWorktreeRoot ?? worktreeRoot,
-		aborted: false,
+		aborted: opts.aborted ?? false,
 		stateVersion: 2,
 	};
 	const auditCycle = opts.auditCycle === undefined ? 1 : opts.auditCycle;
@@ -281,6 +286,7 @@ function setupLandableFeature(opts: FeatureOpts = {}): LandFixture {
 	const threshold = opts.checkLogAtCycleStart === undefined ? 1 : opts.checkLogAtCycleStart;
 	if (threshold !== null) state.checkLogAtCycleStart = threshold;
 	if (opts.auditValidated) state.auditValidated = { ...opts.auditValidated, at: new Date().toISOString() };
+	if (opts.auditTerminalDisposition) state.auditTerminalDisposition = opts.auditTerminalDisposition;
 
 	mkdirSync(craftDir(worktreeRoot, feature), { recursive: true });
 	const stateFilePath = craftStatePath(worktreeRoot, feature);
@@ -630,6 +636,56 @@ describe("lsc_land — AC1 fail-closed rejection (Phase R, distinct reason codes
 	}
 });
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+describe("lsc_land — PR-2 abort/terminal preflight (before any approval is consumed or prepared)", () => {
+	const TERMINAL = {
+		feature: "terminal-feat",
+		dueCycle: 3,
+		scheduledCycle: 3,
+		intervalCycles: 3,
+		createdAt: "2026-08-25T00:00:00.000Z",
+		disposition: "Preserve branch and stop",
+		decidedAt: "2026-08-25T00:01:00.000Z",
+	};
+
+	it("refuses craft-aborted before approval — no approval-required roundtrip, no prepared envelope", async () => {
+		const tools = buildTools();
+		const fx = setupLandableFeature({ feature: "aborted-feat", aborted: true });
+
+		const result = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+
+		expect(result.isError, textOf(result)).toBe(true);
+		expect(textOf(result)).toContain("craft-aborted");
+		expect(peekPreparedOperation(LAND_TAG)).toBeUndefined();
+	});
+
+	it("refuses terminal-disposition and a live [Land] nonce cannot bypass it (the slot is never consulted)", async () => {
+		const tools = buildTools();
+		const fx = setupLandableFeature({ feature: "terminal-feat", auditTerminalDisposition: TERMINAL });
+
+		const first = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+		expect(textOf(first)).toContain("terminal-disposition");
+		expect(peekPreparedOperation(LAND_TAG)).toBeUndefined();
+
+		// Even a directly-installed, scope-matching single-use approval changes nothing: the
+		// terminal check precedes Phase C/P, so the nonce is neither consumed nor burned.
+		installPendingApproval(
+			createPendingApproval({
+				prepareId: "nonce-terminal-1",
+				tag: LAND_TAG,
+				identity: { feature: fx.feature, projectRoot: fx.projectRoot, worktreeRoot: fx.worktreeRoot },
+				operationScope: { sourceBranch: fx.sourceBranch, sourceOID: fx.sourceOID, targetBranch: "main", targetOID: fx.targetOID, mode: "merge-and-clean" },
+				response: "yes",
+				question: "[Land] Merge? Merge?",
+			}),
+		);
+		const second = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+		expect(textOf(second)).toContain("terminal-disposition");
+		expect(peekPendingApproval()?.tag).toBe(LAND_TAG); // untouched, never consumed
+	});
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // AC2/AC3 — replay, wrong-target roundtrip, and effect-path failure state machine
 // ═══════════════════════════════════════════════════════════════════════════
@@ -848,9 +904,9 @@ describe("lsc_land — AC3 effect-path failure state machine", () => {
 // LandEffects port (see "AC3 LandEffects port …" below) — no longer a vocab-only array-equality pin (C3/rec2).
 // ═══════════════════════════════════════════════════════════════════════════
 describe("lsc_land — public reason-code vocabulary", () => {
-	it("exports exactly the 18 documented reason codes", () => {
+	it("exports exactly the 20 documented reason codes", () => {
 		expect([...LAND_REASON_CODES].sort()).toEqual([...EXPECTED_REASON_CODES].sort());
-		expect(LAND_REASON_CODES.length).toBe(18);
+		expect(LAND_REASON_CODES.length).toBe(20);
 	});
 
 	it("does NOT retain the removed `no-pending-approval` code (unreachable under the 2-phase rule)", () => {

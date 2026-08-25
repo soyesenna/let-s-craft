@@ -10,8 +10,17 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { craftAuditDir, craftAuditPath, craftCheckLogsDir, resolveFeatureName } from "../artifacts/paths.js";
-import { type CraftState, craftStateCandidates, readPersistedCraftState, recordAuditCycleBegin, recordAuditValidated } from "./state.js";
+import { craftAuditDir, craftAuditPath, craftCheckLogsDir, craftStatePath, resolveFeatureName } from "../artifacts/paths.js";
+import { detectFixturePath } from "../fixtures.js";
+import {
+	AUDIT_ESCALATION_DISPOSITIONS,
+	type AuditEscalationInterval,
+	LIVE_AUDIT_ESCALATION_INTERVAL,
+	auditEscalationInterval,
+	evaluateAuditBeginGate,
+} from "./audit-policy.js";
+import { invalidatePendingApproval, invalidatePreparedOperation } from "./destructive-approval.js";
+import { type CraftState, applyAuditBeginOutcome, craftStateCandidates, readPersistedCraftState, recordAuditValidated } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // Verdict vocabularies + generic literal-only parser
@@ -250,48 +259,215 @@ export interface AuditBeginDetails {
 	feature: string;
 	auditCycle: number;
 	checkLogAtCycleStart: number;
+	/** Additive escalation evidence (postcraft-14cycle-approval-failure PR-2) — present only when this call touched the escalation ledger. */
+	escalation?: {
+		status: "escalation-required" | "continued" | "terminal" | AuditBeginBlockedReasonText;
+		dueCycle?: number;
+		scheduledCycle?: number;
+		intervalCycles?: AuditEscalationInterval;
+		disposition?: string;
+		nextDueCycle?: number;
+	};
+	/** Present on escalation-required: the EXACT [Audit Escalation] question the skill must ask via lsc_select. */
+	question?: string;
+	/** Present on escalation-required: the three canonical disposition labels, in canonical order. */
+	options?: readonly string[];
+}
+
+type AuditBeginBlockedReasonText = "invalid-state" | "terminal" | "stale-pending" | "no-pending-escalation" | "invalid-disposition";
+
+export interface AuditBeginOptions {
+	/** The run's active interval, injected by the registration wrapper (env-first LSC_FIXTURE + the interactive --lsc-fixtures alias). performAuditBegin itself never reads env/flags. */
+	activeInterval?: AuditEscalationInterval;
+	/** The user's disposition label when answering an open escalation gate. */
+	escalationDisposition?: string;
 }
 
 /**
  * Core `lsc_audit_begin` logic, extracted from the registerTool wrapper so it's directly
  * unit-testable with real temp directories (no ExtensionAPI/pi.zod mocking — mirrors abort.ts/
  * release.ts's performX pattern, review MEDIUM tool-level test request).
+ *
+ * PR-2: the escalation gate runs AFTER the candidate is computed and BEFORE any cycle/threshold
+ * write — the old fail-open cycleWarn is gone. Every refusal (invalid-state / terminal /
+ * stale-pending / no-pending-escalation / invalid-disposition) and the first cap call (pending
+ * persist → isError) leaves the cycle marker untouched; only a Continue consumption or an
+ * under-cap proceed records the cycle, in ONE atomic write each (applyAuditBeginOutcome).
  */
-export function performAuditBegin(feature: string, cwd: string): AgentToolResult<AuditBeginDetails> {
+export function performAuditBegin(feature: string, cwd: string, options: AuditBeginOptions = {}): AgentToolResult<AuditBeginDetails> {
 	const root = resolveAuditRoot(cwd, feature);
 
 	const logsDir = craftCheckLogsDir(root, feature);
 	const checkLogAtCycleStart = latestCheckNumber(existsSync(logsDir) ? readdirSync(logsDir) : []);
 
 	const auditDir = craftAuditDir(root, feature);
-	const auditCycle = (latestAuditNumber(existsSync(auditDir) ? readdirSync(auditDir) : []) ?? -1) + 1;
+	const candidateCycle = (latestAuditNumber(existsSync(auditDir) ? readdirSync(auditDir) : []) ?? -1) + 1;
 
+	let state: CraftState | undefined;
 	try {
-		recordAuditCycleBegin(root, feature, auditCycle, checkLogAtCycleStart);
+		state = readPersistedCraftState(root, feature);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		return { isError: true, content: [{ type: "text", text: message }] };
+		return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
+	}
+	if (!state) {
+		return {
+			isError: true,
+			content: [{ type: "text", text: `lets-craft: no persisted craft state at ${craftStatePath(root, feature)} — run craft before starting a post-craft audit cycle.` }],
+			details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart },
+		};
 	}
 
-	// S3: a minimal, informational restoration of the retired contract's no-progress observation
-	// at the cycle level — never gates the result (판정 무영향), just flags a feature that keeps
-	// re-entering audit (REJECT/AWC accumulating).
-	const cycleWarn =
-		auditCycle >= 3
-			? `\n\n[WARN] 이 feature는 감사 사이클 ${auditCycle}회차다 (3회 이상) — 반복 REJECT/AWC가 누적되고 있는지 검토하라.`
-			: "";
+	const activeInterval = options.activeInterval ?? LIVE_AUDIT_ESCALATION_INTERVAL;
+	const gate = evaluateAuditBeginGate({
+		feature,
+		candidateCycle,
+		activeInterval,
+		persisted: state,
+		disposition: options.escalationDisposition,
+	});
 
-	return {
-		content: [
-			{
-				type: "text",
-				text:
-					`lets-craft: audit cycle ${auditCycle} begun for "${feature}" — freshness threshold set at check-${checkLogAtCycleStart}.log ` +
-					`(a passing check-${checkLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict).${cycleWarn}`,
-			},
-		],
-		details: { feature, auditCycle, checkLogAtCycleStart },
-	};
+	switch (gate.type) {
+		case "blocked": {
+			return {
+				isError: true,
+				content: [{ type: "text", text: `lets-craft: audit cycle ${candidateCycle} for "${feature}" refused (${gate.reason}) — ${gate.message}` }],
+				details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: gate.reason } },
+			};
+		}
+		case "escalation-required": {
+			// First cap call: publish the exact pending BEFORE returning isError (crash-durable),
+			// then keep asking the same question until a canonical disposition consumes it.
+			if (!state.auditEscalationPending) {
+				try {
+					applyAuditBeginOutcome(root, feature, { kind: "escalation-pending", pending: gate.pending });
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
+				}
+			}
+			const options_ = AUDIT_ESCALATION_DISPOSITIONS;
+			return {
+				isError: true,
+				content: [
+					{
+						type: "text",
+						text:
+							`lets-craft: audit escalation required for "${feature}" at cycle ${gate.pending.dueCycle} (schedule ${gate.pending.scheduledCycle}, interval ${gate.pending.intervalCycles}) — ` +
+							`no audit cycle may begin until a disposition consumes this gate.\n\n` +
+							`Ask the user this EXACT question via lsc_select (options: ${options_.join(" / ")}):\n${gate.question}\n` +
+							`Then re-call lsc_audit_begin with escalation_disposition set to the selected label (CONTENT exactly "User selected: <label>").`,
+					},
+				],
+				details: {
+					feature,
+					auditCycle: candidateCycle,
+					checkLogAtCycleStart,
+					escalation: { status: "escalation-required", dueCycle: gate.pending.dueCycle, scheduledCycle: gate.pending.scheduledCycle, intervalCycles: gate.pending.intervalCycles },
+					question: gate.question,
+					options: options_,
+				},
+			};
+		}
+		case "consume-continue": {
+			try {
+				applyAuditBeginOutcome(root, feature, {
+					kind: "escalation-continue",
+					decision: gate.decision,
+					auditCycle: gate.pending.dueCycle,
+					checkLogAtCycleStart,
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
+			}
+			return {
+				content: [
+					{
+						type: "text",
+						text:
+							`lets-craft: audit cycle ${gate.pending.dueCycle} begun for "${feature}" (escalation consumed: Continue auditing) — freshness threshold set at check-${checkLogAtCycleStart}.log ` +
+							`(a passing check-${checkLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict). ` +
+							`The escalation gate re-fires at cycle ${gate.decision.nextDueCycle}.`,
+					},
+				],
+				details: {
+					feature,
+					auditCycle: gate.pending.dueCycle,
+					checkLogAtCycleStart,
+					escalation: { status: "continued", dueCycle: gate.pending.dueCycle, disposition: "Continue auditing", intervalCycles: gate.pending.intervalCycles, nextDueCycle: gate.decision.nextDueCycle },
+				},
+			};
+		}
+		case "consume-terminal": {
+			try {
+				applyAuditBeginOutcome(root, feature, { kind: "escalation-terminal", decision: gate.decision });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
+			}
+			// A terminal disposition invalidates any pending approval/prepared operation — it ended
+			// the loop; no live destructive capability may survive it.
+			invalidatePendingApproval();
+			invalidatePreparedOperation();
+			const nextStep =
+				gate.decision.disposition === "Abort this craft"
+					? 'Delegate the abort to lsc_craft_abort({reason: "audit escalation: Abort this craft", feature_dir}) — it owns the aborted transition.'
+					: "Preserve branch and stop: leave the worktree and branch exactly as they are; this feature's audit loop is over.";
+			return {
+				content: [
+					{
+						type: "text",
+						text:
+							`lets-craft: escalation disposition "${gate.decision.disposition}" recorded for "${feature}" at cycle ${gate.decision.dueCycle} — NO audit cycle was begun (cycle marker untouched at ${state.auditCycle ?? candidateCycle - 1}). ` +
+							`Subsequent lsc_audit_begin and lsc_land calls are refused for this feature. ${nextStep}`,
+					},
+				],
+				details: {
+					feature,
+					auditCycle: state.auditCycle ?? candidateCycle - 1,
+					checkLogAtCycleStart: state.checkLogAtCycleStart ?? checkLogAtCycleStart,
+					escalation: { status: "terminal", dueCycle: gate.decision.dueCycle, disposition: gate.decision.disposition, intervalCycles: gate.decision.intervalCycles },
+				},
+			};
+		}
+		case "replay": {
+			// Idempotent same-cycle replay: the persisted auditCycle / checkLogAtCycleStart / base
+			// snapshot bytes are NOT rewritten — the caller gets the recorded result back.
+			const auditCycle = state.auditCycle ?? candidateCycle;
+			const threshold = state.checkLogAtCycleStart ?? checkLogAtCycleStart;
+			return {
+				content: [
+					{
+						type: "text",
+						text:
+							`lets-craft: audit cycle ${auditCycle} for "${feature}" was already begun (idempotent replay — threshold stays at check-${threshold}.log; nothing was rewritten). ` +
+							`A passing check-${threshold + 1}.log or later is required to back an APPROVE-family verdict.`,
+					},
+				],
+				details: { feature, auditCycle, checkLogAtCycleStart: threshold },
+			};
+		}
+		case "proceed": {
+			try {
+				applyAuditBeginOutcome(root, feature, { kind: "audit-cycle", auditCycle: candidateCycle, checkLogAtCycleStart });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart } };
+			}
+			return {
+				content: [
+					{
+						type: "text",
+						text:
+							`lets-craft: audit cycle ${candidateCycle} begun for "${feature}" — freshness threshold set at check-${checkLogAtCycleStart}.log ` +
+							`(a passing check-${checkLogAtCycleStart + 1}.log or later is required to back an APPROVE-family verdict).`,
+					},
+				],
+				details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart },
+			};
+		}
+	}
 }
 
 function registerAuditBeginTool(pi: ExtensionAPI): void {
@@ -299,6 +475,13 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 	// Explicit type arguments (not left to inference) avoid TS2589 — see run-check.ts's module doc comment.
 	const parameters = z.object({
 		feature_dir: z.string().describe("Feature name or a path under .lsc/crafts/{feature}/, same as lsc_craft_init."),
+		escalation_disposition: z
+			.string()
+			.optional()
+			.describe(
+				`The user's [Audit Escalation] disposition, ONLY when answering an open gate (the prior call returned escalation-required). ` +
+					`Must be exactly one of: ${AUDIT_ESCALATION_DISPOSITIONS.join(" / ")}. Any other value (including a free answer) is refused without consuming the gate.`,
+			),
 	});
 
 	pi.registerTool<typeof parameters, AuditBeginDetails>({
@@ -310,11 +493,21 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 			"threshold (B-1, cycle-freshness). Call this once per audit cycle, right after determining the cycle number N " +
 			"(skills/post-craft/SKILL.md §2.2) — before rendering the audit-N.md verdict. lsc_audit_validate later refuses " +
 			"an APPROVE-family verdict unless a passing check-N.log exists with N strictly greater than this threshold, so a " +
-			"stale green log from before this cycle can never back a fresh approval.",
+			"stale green log from before this cycle can never back a fresh approval. " +
+			"At the escalation interval's due cycle (live 3 / fixture 2, periodic) the call instead returns isError " +
+			"escalation-required with the exact [Audit Escalation] question; re-call with escalation_disposition to consume it — " +
+			"only \"Continue auditing\" begins the cycle.",
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<AuditBeginDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
-			return performAuditBegin(feature, ctx.cwd);
+			// The wrapper is the ONLY interval owner: detectFixturePath reads the env-first LSC_FIXTURE
+			// plus the interactive --lsc-fixtures alias and injects the active interval into the pure
+			// policy. performAuditBegin itself never reads env/CLI flags.
+			const fixturePath = detectFixturePath(name => pi.getFlag(name));
+			return performAuditBegin(feature, ctx.cwd, {
+				activeInterval: auditEscalationInterval(fixturePath !== undefined),
+				escalationDisposition: params.escalation_disposition,
+			});
 		},
 	});
 }

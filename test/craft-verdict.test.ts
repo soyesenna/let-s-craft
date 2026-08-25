@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import * as zod from "zod/v4";
 import { craftAuditDir, craftCheckLogsDir, craftStatePath } from "../src/artifacts/paths";
 import { type CraftState, clearActiveCraft, readPersistedCraftState, setActiveCraft } from "../src/craft/state";
 import {
@@ -11,6 +12,7 @@ import {
 	parseAuditVerdict,
 	parseCriticVerdict,
 	parseVerdictLine,
+	registerAuditValidateTools,
 	performAuditBegin,
 	performAuditValidate,
 	validateAuditFreshness,
@@ -255,7 +257,11 @@ describe("performAuditBegin (tool-execute-level)", () => {
 		expect(result.details).toEqual({ feature, auditCycle: 0, checkLogAtCycleStart: 0 });
 	});
 
-	it("appends the S3 cycle≥3 WARN once the audit cycle reaches 3, without affecting the recorded details", () => {
+	// -------------------------------------------------------------------------
+	// PR-2: the fail-open cycle≥3 WARN is REPLACED by the fail-closed escalation gate.
+	// -------------------------------------------------------------------------
+
+	it("live candidate 3 refuses with escalation-required, persists the exact pending, and leaves the cycle marker untouched", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		persistOnly(freshState(root, feature));
@@ -263,12 +269,85 @@ describe("performAuditBegin (tool-execute-level)", () => {
 
 		const result = performAuditBegin(feature, root);
 
-		expect(result.isError).toBeFalsy();
-		expect(result.details).toEqual({ feature, auditCycle: 3, checkLogAtCycleStart: 0 });
-		expect((result.content[0] as { text: string }).text).toContain("감사 사이클 3회차");
+		expect(result.isError).toBe(true);
+		expect(result.details?.escalation?.status).toBe("escalation-required");
+		expect(result.details?.escalation?.dueCycle).toBe(3);
+		expect(result.details?.question?.startsWith("[Audit Escalation] ")).toBe(true);
+		expect(result.details?.question?.endsWith("continue?")).toBe(true);
+		expect(result.details?.options).toEqual(["Continue auditing", "Abort this craft", "Preserve branch and stop"]);
+		const persisted = readPersistedCraftState(root, feature);
+		expect(persisted?.auditEscalationPending).toMatchObject({ feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3 });
+		// Cycle-invariant: the gate consumed NO cycle — marker/threshold stay absent for this legacy state.
+		expect(persisted?.auditCycle).toBeUndefined();
+		expect(persisted?.checkLogAtCycleStart).toBeUndefined();
 	});
 
-	it("omits the S3 WARN below cycle 3", () => {
+	it("an unconsumed re-call at the same due cycle is idempotent — the same question, no state change", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly(freshState(root, feature));
+		for (let n = 0; n < 3; n++) writeAuditDoc(root, feature, n, "REJECT");
+		performAuditBegin(feature, root);
+		const before = readFileSync(craftStatePath(root, feature), "utf8");
+
+		const retry = performAuditBegin(feature, root);
+
+		expect(retry.isError).toBe(true);
+		expect(retry.details?.escalation?.status).toBe("escalation-required");
+		expect(readFileSync(craftStatePath(root, feature), "utf8")).toBe(before); // byte-stable retry
+	});
+
+	it("\"Continue auditing\" consumes the pending, records cycle 3 exactly once, and mirrors the next due cycle 6", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly(freshState(root, feature));
+		for (let n = 0; n < 3; n++) writeAuditDoc(root, feature, n, "REJECT");
+		writeCheckLog(root, feature, 2, passingLog());
+		performAuditBegin(feature, root); // open the gate
+
+		const consumed = performAuditBegin(feature, root, { escalationDisposition: "Continue auditing" });
+
+		expect(consumed.isError).toBeFalsy();
+		expect(consumed.details).toMatchObject({ feature, auditCycle: 3, checkLogAtCycleStart: 2 });
+		expect(consumed.details?.escalation).toMatchObject({ status: "continued", nextDueCycle: 6 });
+		const persisted = readPersistedCraftState(root, feature);
+		expect(persisted?.auditCycle).toBe(3);
+		expect(persisted?.checkLogAtCycleStart).toBe(2);
+		expect(persisted?.auditEscalationPending).toBeUndefined();
+		expect(persisted?.nextAuditEscalationCycle).toBe(6);
+		expect(persisted?.auditEscalations).toHaveLength(1);
+		// audit-3.md does not exist yet, so a crash-retry replays idempotently at cycle 3 (byte-stable).
+		const bytes = readFileSync(craftStatePath(root, feature), "utf8");
+		const replay = performAuditBegin(feature, root);
+		expect(replay.isError).toBeFalsy();
+		expect(replay.details?.auditCycle).toBe(3);
+		expect(readFileSync(craftStatePath(root, feature), "utf8")).toBe(bytes);
+	});
+
+	it("a terminal disposition (Abort/Preserve) consumes the gate WITHOUT issuing a cycle; later begins are refused", () => {
+		for (const disposition of ["Abort this craft", "Preserve branch and stop"] as const) {
+			const root = tmpProject();
+			const feature = "my-feature";
+			persistOnly({ ...freshState(root, feature), auditCycle: 2 });
+			for (let n = 0; n < 3; n++) writeAuditDoc(root, feature, n, "REJECT");
+
+			const opening = performAuditBegin(feature, root);
+			expect(opening.isError).toBe(true);
+			const consumed = performAuditBegin(feature, root, { escalationDisposition: disposition });
+
+			expect(consumed.isError).toBeFalsy();
+			expect(consumed.details?.escalation).toMatchObject({ status: "terminal", disposition });
+			const persisted = readPersistedCraftState(root, feature);
+			expect(persisted?.auditCycle).toBe(2); // NO cycle issued
+			expect(persisted?.auditTerminalDisposition).toMatchObject({ disposition, dueCycle: 3 });
+
+			const later = performAuditBegin(feature, root);
+			expect(later.isError).toBe(true);
+			expect(later.details?.escalation?.status).toBe("terminal");
+		}
+	});
+
+	it("below-cap begins carry no escalation evidence and no WARN", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		persistOnly(freshState(root, feature));
@@ -276,7 +355,80 @@ describe("performAuditBegin (tool-execute-level)", () => {
 
 		const result = performAuditBegin(feature, root);
 
+		expect(result.isError).toBeFalsy();
+		expect(result.details?.escalation).toBeUndefined();
 		expect((result.content[0] as { text: string }).text).not.toContain("감사 사이클");
+	});
+
+	it("fixture interval 2 gates at candidate 2 (injected via options) and Continue re-arms at 4", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 1 });
+		writeAuditDoc(root, feature, 0, "REJECT");
+		writeAuditDoc(root, feature, 1, "REJECT");
+
+		const gate = performAuditBegin(feature, root, { activeInterval: 2 });
+		expect(gate.isError).toBe(true);
+		expect(gate.details?.escalation).toMatchObject({ status: "escalation-required", dueCycle: 2, intervalCycles: 2 });
+
+		const consumed = performAuditBegin(feature, root, { activeInterval: 2, escalationDisposition: "Continue auditing" });
+		expect(consumed.isError).toBeFalsy();
+		expect(consumed.details?.auditCycle).toBe(2);
+		expect(readPersistedCraftState(root, feature)?.nextAuditEscalationCycle).toBe(4);
+	});
+
+	it("a persisted fixture ledger read under the live interval is refused invalid-state with no write", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({
+			...freshState(root, feature),
+			auditCycle: 1,
+			auditEscalationPending: { feature, dueCycle: 2, scheduledCycle: 2, intervalCycles: 2, createdAt: "2026-08-25T00:00:00.000Z" },
+		});
+		writeAuditDoc(root, feature, 0, "REJECT");
+		writeAuditDoc(root, feature, 1, "REJECT");
+
+		const result = performAuditBegin(feature, root); // live interval 3 by default
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.escalation?.status).toBe("invalid-state");
+	});
+
+	it("legacy overdue: field-less cycle-14 state gates candidate 15 once; Continue re-arms at 18", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 14 });
+		for (let n = 0; n < 15; n++) writeAuditDoc(root, feature, n, "REJECT");
+
+		const gate = performAuditBegin(feature, root);
+		expect(gate.isError).toBe(true);
+		expect(gate.details?.escalation).toMatchObject({ status: "escalation-required", dueCycle: 15, scheduledCycle: 3, intervalCycles: 3 });
+
+		const consumed = performAuditBegin(feature, root, { escalationDisposition: "Continue auditing" });
+		expect(consumed.isError).toBeFalsy();
+		expect(consumed.details?.auditCycle).toBe(15);
+		const persisted = readPersistedCraftState(root, feature);
+		expect(persisted?.nextAuditEscalationCycle).toBe(18);
+		expect(persisted?.auditEscalations?.[0]).toMatchObject({ dueCycle: 15, scheduledCycle: 3, nextDueCycle: 18 });
+	});
+
+	it("candidate backward/forward gaps around the persisted marker are refused before any write", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 5 });
+		// Only cycles 0..3 exist on disk (TWO+ completed artifacts removed) — candidate 4 < marker 5.
+		for (let n = 0; n < 4; n++) writeAuditDoc(root, feature, n, "REJECT");
+		const backward = performAuditBegin(feature, root);
+		expect(backward.isError).toBe(true);
+		expect(backward.details?.escalation?.status).toBe("invalid-state");
+
+		// Forward gap: marker 5 but audits jump to 7 → candidate 7 > marker+1.
+		const root2 = tmpProject();
+		persistOnly({ ...freshState(root2, feature), auditCycle: 5 });
+		for (let n = 0; n < 8; n++) writeAuditDoc(root2, feature, n, "REJECT");
+		const forward = performAuditBegin(feature, root2);
+		expect(forward.isError).toBe(true);
+		expect(forward.details?.escalation?.status).toBe("invalid-state");
 	});
 });
 
@@ -460,4 +612,92 @@ describe("multi-auditor first-match fail-open (U1 load-bearing FACT-LOCK, CN-2 r
 			expect(readPersistedCraftState(root, feature)?.auditValidated?.verdict).toBe("APPROVE");
 		},
 	);
+});
+
+// ---------------------------------------------------------------------------
+// PR-2 registration wrapper: `registerAuditBeginTool` is the ONLY interval owner — it reads
+// detectFixturePath(name => pi.getFlag(name)) (env-first LSC_FIXTURE + the interactive
+// --lsc-fixtures alias) and injects the active interval into the pure policy. performAuditBegin
+// itself never reads env/flags, so the seam is observable exactly here.
+// ---------------------------------------------------------------------------
+
+describe("registerAuditBeginTool — fixture-mode interval injection (production registration capture)", () => {
+	type BeginExecute = (id: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: { cwd: string }) => Promise<{ isError?: boolean; content: Array<{ type: string; text: string }>; details?: { escalation?: { status?: string; dueCycle?: number } } }>;
+	let beginExecute: BeginExecute | undefined;
+	let flagValue: string | undefined;
+	let savedFixtureEnv: string | undefined;
+
+	beforeEach(() => {
+		savedFixtureEnv = process.env.LSC_FIXTURE;
+		delete process.env.LSC_FIXTURE;
+		beginExecute = undefined;
+		flagValue = undefined;
+	});
+	afterEach(() => {
+		if (savedFixtureEnv === undefined) delete process.env.LSC_FIXTURE;
+		else process.env.LSC_FIXTURE = savedFixtureEnv;
+	});
+
+	function captureBeginExecute(): BeginExecute {
+		const pi = {
+			zod,
+			getFlag: (name: string) => (name === "lsc-fixtures" ? flagValue : undefined),
+			registerTool(definition: unknown): void {
+				if (typeof definition === "object" && definition !== null && "name" in definition && (definition as { name?: string }).name === "lsc_audit_begin" && "execute" in definition && typeof (definition as { execute?: unknown }).execute === "function") {
+					beginExecute = (definition as { execute: BeginExecute }).execute;
+				}
+			},
+		};
+		registerAuditValidateTools(pi as unknown as Parameters<typeof registerAuditValidateTools>[0]);
+		if (!beginExecute) throw new Error("lsc_audit_begin was not registered");
+		return beginExecute;
+	}
+
+	/** Two prior cycles (audit-0/1) → candidate 2: gates under the FIXTURE interval, proceeds under live. */
+	function seedCandidateTwo(root: string): void {
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 1 });
+		writeAuditDoc(root, feature, 0, "REJECT");
+		writeAuditDoc(root, feature, 1, "REJECT");
+	}
+
+	it("env-only LSC_FIXTURE (no flag) injects the fixture interval — candidate 2 gates", async () => {
+		const root = tmpProject();
+		seedCandidateTwo(root);
+		process.env.LSC_FIXTURE = "/tmp/does-not-need-to-exist-answers.json";
+		const execute = captureBeginExecute();
+
+		const result = await execute("t", { feature_dir: "my-feature" }, undefined, undefined, { cwd: root });
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.escalation).toMatchObject({ status: "escalation-required", dueCycle: 2 });
+	});
+
+	it("flag-only --lsc-fixtures (env unset) also injects the fixture interval", async () => {
+		const root = tmpProject();
+		seedCandidateTwo(root);
+		flagValue = "/tmp/flag-only-answers.json";
+		const execute = captureBeginExecute();
+
+		const result = await execute("t", { feature_dir: "my-feature" }, undefined, undefined, { cwd: root });
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.escalation).toMatchObject({ status: "escalation-required", dueCycle: 2 });
+	});
+
+	it("neither env nor flag leaves the LIVE interval — candidate 2 proceeds, candidate 3 gates", async () => {
+		const root = tmpProject();
+		seedCandidateTwo(root);
+		const execute = captureBeginExecute();
+
+		const underCap = await execute("t", { feature_dir: "my-feature" }, undefined, undefined, { cwd: root });
+		expect(underCap.isError).toBeFalsy();
+		expect(underCap.details?.escalation).toBeUndefined();
+
+		// Advance to candidate 3 (cycle 2 begun, audit-2.md not yet written → replay window; write it to move on).
+		writeAuditDoc(root, "my-feature", 2, "REJECT");
+		const atCap = await execute("t", { feature_dir: "my-feature" }, undefined, undefined, { cwd: root });
+		expect(atCap.isError).toBe(true);
+		expect(atCap.details?.escalation).toMatchObject({ status: "escalation-required", dueCycle: 3 });
+	});
 });
