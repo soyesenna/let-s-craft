@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { craftStatePath } from "../src/artifacts/paths";
+import { evaluateAuditBeginGate } from "../src/craft/audit-policy";
 import {
+	applyAuditBeginOutcome,
 	CRAFT_STATE_VERSION,
 	clearActiveCraft,
 	type CraftState,
@@ -276,5 +278,58 @@ describe("every durable mutator stamps stateVersion when it rewrites a legacy (u
 		expectStampedToCurrent(root);
 		// …and it actually wrote the evidence (not a silent no-op that would trivially "not regress" the version).
 		expect(JSON.parse(readFileSync(craftStatePath(root, feature), "utf8")).releaseApproval?.tag).toBe("[Land]");
+	});
+});
+
+describe("escalation ledger fields (PR-1) — optional v2, read-tolerant, writer-stamped", () => {
+	const feature = "my-feature";
+
+	function seedLegacy(root: string, extra: object = {}): void {
+		writePersistedState(root, feature, { feature, projectRoot: root, aborted: false, ...extra });
+	}
+
+	it("a version 2 state with NO escalation field and a cycle-14 legacy marker both decode tolerantly", () => {
+		const root = tmpProject();
+		writePersistedState(root, feature, { stateVersion: 2, feature, projectRoot: root, aborted: false, auditCycle: 14 });
+		expect(readPersistedCraftState(root, feature)?.auditCycle).toBe(14);
+		expect(readPersistedCraftState(root, feature)?.auditEscalations).toBeUndefined();
+
+		const root2 = tmpProject();
+		writePersistedState(root2, feature, { feature, projectRoot: root2, aborted: false, auditCycle: 14 }); // pre-escalation v2
+		expect(readPersistedCraftState(root2, feature)?.auditTerminalDisposition).toBeUndefined();
+	});
+
+	it("applyAuditBeginOutcome stamps stateVersion when it rewrites a legacy (unversioned) file", () => {
+		const root = tmpProject();
+		seedLegacy(root, { auditCycle: 2 });
+		applyAuditBeginOutcome(root, feature, {
+			kind: "escalation-pending",
+			pending: { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: "2026-08-25T00:00:00.000Z" },
+		});
+		const persisted = JSON.parse(readFileSync(craftStatePath(root, feature), "utf8"));
+		expect(persisted.stateVersion).toBe(CRAFT_STATE_VERSION);
+		expect(persisted.auditEscalationPending?.intervalCycles).toBe(3);
+	});
+
+	it("a persisted escalation record missing/invalid intervalCycles is invalid-state at policy validation (the reader still parses it)", () => {
+		const root = tmpProject();
+		writePersistedState(root, feature, {
+			stateVersion: 2,
+			feature,
+			projectRoot: root,
+			aborted: false,
+			auditCycle: 2,
+			auditEscalationPending: { feature, dueCycle: 3, scheduledCycle: 3, createdAt: "2026-08-25T00:00:00.000Z" },
+		});
+		const decoded = readPersistedCraftState(root, feature); // tolerant read — no throw
+		expect(decoded?.auditEscalationPending?.dueCycle).toBe(3);
+		const decision = evaluateAuditBeginGate({
+			feature,
+			candidateCycle: 3,
+			activeInterval: 3,
+			persisted: decoded ?? {},
+		});
+		expect(decision.type).toBe("blocked");
+		if (decision.type === "blocked") expect(decision.reason).toBe("invalid-state");
 	});
 });

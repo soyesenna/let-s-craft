@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { craftAuditDir, craftStatePath, worktreePath } from "../src/artifacts/paths";
-import { clearActiveCraft, type CraftState, craftStateCandidates, findPersistedCraftState, readPersistedCraftState } from "../src/craft/state";
+import { evaluateAuditBeginGate } from "../src/craft/audit-policy";
+import { applyAuditBeginOutcome, clearActiveCraft, type CraftState, craftStateCandidates, findPersistedCraftState, readPersistedCraftState } from "../src/craft/state";
 import { performAuditBegin } from "../src/craft/verdict";
 
 // ===========================================================================
@@ -152,5 +153,52 @@ describe("resolveAuditRoot — worktree by directory existence only (rootExists,
 
 		expect(result.isError).toBeFalsy();
 		expect(readPersistedCraftState(wt, feature)?.auditCycle).toBe(0);
+	});
+});
+
+// ===========================================================================
+// postcraft-14cycle-approval-failure PR-1 — the escalation ledger rides the
+// SAME root-resolution seam: an exact-root begin outcome at the resolved
+// (worktree) root never touches the base checkout's state, and the persisted
+// mode-mismatch/candidate-gap refusals key off the state at that resolved
+// root, not a state at the project root.
+// ===========================================================================
+
+describe("escalation ledger (PR-1) rides the same root-resolution seam", () => {
+	it("an escalation pending written at the worktree root never creates/updates a base-checkout state file", () => {
+		const cwd = tmpProject();
+		const feature = "my-feature";
+		const wt = worktreePath(cwd, feature);
+		writePersistedState(wt, feature, { ...freshState(cwd), worktreeRoot: wt, auditCycle: 2 });
+
+		applyAuditBeginOutcome(wt, feature, {
+			kind: "escalation-pending",
+			pending: { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: "2026-08-25T00:00:00.000Z" },
+		});
+
+		expect(readPersistedCraftState(wt, feature)?.auditEscalationPending?.dueCycle).toBe(3);
+		expect(readPersistedCraftState(cwd, feature)).toBeUndefined();
+	});
+
+	it("a persisted fixture-interval ledger under the live interval is refused off the state at the resolved root", () => {
+		const cwd = tmpProject();
+		const feature = "my-feature";
+		const wt = worktreePath(cwd, feature);
+		writePersistedState(wt, feature, {
+			...freshState(cwd),
+			worktreeRoot: wt,
+			auditCycle: 1,
+			auditEscalationPending: { feature, dueCycle: 2, scheduledCycle: 2, intervalCycles: 2, createdAt: "2026-08-25T00:00:00.000Z" },
+		});
+
+		const decision = evaluateAuditBeginGate({
+			feature,
+			candidateCycle: 2,
+			activeInterval: 3,
+			persisted: readPersistedCraftState(wt, feature) ?? {},
+		});
+
+		expect(decision.type).toBe("blocked");
+		if (decision.type === "blocked") expect(decision.reason).toBe("invalid-state");
 	});
 });
