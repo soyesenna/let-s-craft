@@ -19,6 +19,7 @@ import {
 	LIVE_AUDIT_ESCALATION_INTERVAL,
 	auditEscalationInterval,
 	evaluateAuditBeginGate,
+	parseAuditBaseSnapshot,
 } from "./audit-policy.js";
 import { invalidatePendingApproval, invalidatePreparedOperation } from "./destructive-approval.js";
 import { type AuditBaseSnapshot, type CraftState, applyAuditBeginOutcome, craftStateCandidates, readPersistedCraftState, recordAuditValidated } from "./state.js";
@@ -380,6 +381,14 @@ function describeAuditBase(snapshot: AuditBaseSnapshot): string {
 }
 
 /**
+ * audit-2 RF-26 — the replay-path line for a persisted base snapshot that fails canonical
+ * parsing (parseAuditBaseSnapshot): a CONSTANT diagnostic carrying no byte of the raw record,
+ * so forged control-carrying state can never reshape this tool text.
+ */
+const INVALID_PERSISTED_BASE_TEXT =
+	" The persisted audit base snapshot is not in the canonical shape (invalid-state) — its bytes are preserved untouched and never interpolated; land's own gates stay fail-closed.";
+
+/**
  * Core `lsc_audit_begin` logic, extracted from the registerTool wrapper so it's directly
  * unit-testable with real temp directories (no ExtensionAPI/pi.zod mocking — mirrors abort.ts/
  * release.ts's performX pattern, review MEDIUM tool-level test request).
@@ -545,7 +554,15 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 			// persisted one, so replay can never drift the recorded evidence).
 			const auditCycle = state.auditCycle ?? candidateCycle;
 			const threshold = state.checkLogAtCycleStart ?? checkLogAtCycleStart;
-			const base = state.auditBaseSnapshot;
+			// audit-2 RF-26: the persisted snapshot is untrusted state bytes — runtime-parse it
+			// before ANY describeAuditBase interpolation. A non-canonical record is never
+			// interpolated and never echoed in details; the bytes stay untouched, and land's own
+			// gates remain the separate fail-closed boundary (an unknown snapshot never refuses
+			// an audit cycle).
+			const rawBase = state.auditBaseSnapshot;
+			const base = parseAuditBaseSnapshot(rawBase);
+			const baseLine =
+				rawBase === undefined ? "" : base !== undefined ? ` ${describeAuditBase(base)}` : INVALID_PERSISTED_BASE_TEXT;
 			return {
 				content: [
 					{
@@ -553,7 +570,7 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 						text:
 							`lets-craft: audit cycle ${auditCycle} for "${feature}" was already begun (idempotent replay — threshold stays at check-${threshold}.log; nothing was rewritten). ` +
 							`A passing check-${threshold + 1}.log or later is required to back an APPROVE-family verdict.` +
-							(base ? ` ${describeAuditBase(base)}` : ""),
+							baseLine,
 					},
 				],
 				details: { feature, auditCycle, checkLogAtCycleStart: threshold, base },
@@ -628,6 +645,16 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 				return { isError: true, content: [{ type: "text", text: controlChars }] };
 			}
 			const feature = resolveFeatureName(params.feature_dir);
+			// audit-2 RF-25: the shared slug boundary (the SSOT FEATURE_SLUG_RE, audit-0 RF-13) must
+			// hold at the WRAPPER too — the resolved name reaches detectFixturePath (env/flag reads),
+			// resolveAuditRoot (fs), observeAuditBase (git argv), and the core verbatim, so a non-slug
+			// is refused BEFORE any of those effects, not only inside performAuditBegin.
+			if (!FEATURE_SLUG_RE.test(feature)) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+				};
+			}
 			// The wrapper is the ONLY interval owner: detectFixturePath reads the env-first LSC_FIXTURE
 			// plus the interactive --lsc-fixtures alias and injects the active interval into the pure
 			// policy. performAuditBegin itself never reads env/CLI flags.

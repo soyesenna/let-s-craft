@@ -1081,10 +1081,16 @@ describe("RF-5 — re-registration preserves auditBaseSnapshot; same-cycle repla
 		const persisted = readPersistedCraftState(root, feature);
 		expect(persisted?.auditBaseSnapshot).toEqual(snapshot);
 		expect(persisted?.releaseApproval).toEqual(releaseApproval);
+		// audit-2 RF-27: the byte-axis pin — replay rewrites NOTHING, so the raw state bytes read
+		// directly before the replay call must come back IDENTICALLY (not merely canonically
+		// equal) after it. The canonical whole-file comparison above stays; this pins the
+		// no-rewrite contract on the byte level a merge-reordered rewrite could never satisfy.
+		const beforeReplayBytes = readFileSync(craftStatePath(root, feature), "utf8");
 		const replay = performAuditBegin(feature, root); // candidate 0 === persisted auditCycle → replay
 		expect(replay.isError).toBeFalsy();
 		expect(replay.details?.auditCycle).toBe(0);
 		expect(replay.details?.base).toEqual(snapshot);
+		expect(readFileSync(craftStatePath(root, feature), "utf8")).toBe(beforeReplayBytes);
 	});
 });
 
@@ -1264,5 +1270,122 @@ describe("RF-20(a) — lsc_audit_begin refuses control-carrying free-text params
 
 		expect(result.isError, JSON.stringify(result)).toBeFalsy(); // proceeds to begin cycle 1 (replay)
 		expect(vi.mocked(runGitText).mock.calls.length).toBeGreaterThan(0); // observation DID run
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-2 RF-25 — lsc_audit_begin's registration wrapper: the resolved feature must clear the
+// shared slug boundary (FEATURE_SLUG_RE, audit-0 RF-13's SSOT) BEFORE the wrapper's own effects
+// — detectFixturePath (env/flag reads), resolveAuditRoot (fs), and observeAuditBase (git argv).
+// The core's guard (performAuditBegin:396) is NOT enough: the wrapper observes git and resolves
+// roots BEFORE the core ever runs. Proven through the production execute capture with the
+// runGitText spy recording ZERO calls and no durable state write.
+// ---------------------------------------------------------------------------
+
+describe("RF-25 — lsc_audit_begin refuses a non-slug resolved feature before ANY wrapper observation", () => {
+	type BeginExecute = (id: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: { cwd: string }) => Promise<{ isError?: boolean; content: Array<{ type: string; text: string }>; details?: unknown }>;
+	let savedFixtureEnv: string | undefined;
+	beforeEach(() => {
+		savedFixtureEnv = process.env.LSC_FIXTURE;
+		delete process.env.LSC_FIXTURE;
+	});
+	afterEach(() => {
+		if (savedFixtureEnv === undefined) delete process.env.LSC_FIXTURE;
+		else process.env.LSC_FIXTURE = savedFixtureEnv;
+		clearActiveCraft();
+	});
+
+	function captureBeginExecute(): BeginExecute {
+		let execute: BeginExecute | undefined;
+		const pi = {
+			zod,
+			getFlag: (): undefined => undefined,
+			registerTool(definition: unknown): void {
+				if (typeof definition === "object" && definition !== null && "name" in definition && (definition as { name?: string }).name === "lsc_audit_begin" && "execute" in definition && typeof (definition as { execute?: unknown }).execute === "function") {
+					execute = (definition as { execute: BeginExecute }).execute;
+				}
+			},
+		};
+		registerAuditValidateTools(pi as unknown as Parameters<typeof registerAuditValidateTools>[0]);
+		if (!execute) throw new Error("lsc_audit_begin was not registered");
+		return execute;
+	}
+
+	it("an invalid resolved feature: ZERO git observations, ZERO durable writes, escaped echo only", async () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 1 });
+		writeAuditDoc(root, feature, 0, "REJECT");
+		const bytes = readFileSync(craftStatePath(root, feature), "utf8");
+		const execute = captureBeginExecute();
+		vi.mocked(runGitText).mockClear();
+
+		const result = await execute("t", { feature_dir: "bad\nfeature" }, undefined, undefined, { cwd: root });
+
+		expect(result.isError).toBe(true);
+		const text = firstText(result);
+		expect(text).toContain("kebab-case slug");
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f]/); // escaped echo — never the raw payload
+		expect(vi.mocked(runGitText), "observeAuditBase must not have run (RF-25: the slug guard precedes the wrapper's git observation)").not.toHaveBeenCalled();
+		expect(readFileSync(craftStatePath(root, feature), "utf8")).toBe(bytes); // 무-effect
+	});
+
+	it("a valid slug still reaches the observation and the core (the guard is not a blanket refusal)", async () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 1 });
+		writeAuditDoc(root, feature, 0, "REJECT");
+		const execute = captureBeginExecute();
+		vi.mocked(runGitText).mockClear();
+
+		const result = await execute("t", { feature_dir: feature }, undefined, undefined, { cwd: root });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy(); // replay of cycle 1
+		expect(vi.mocked(runGitText).mock.calls.length).toBeGreaterThan(0); // observation DID run
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-2 RF-26 — a persisted auditBaseSnapshot that fails canonical parsing
+// (parseAuditBaseSnapshot) is never interpolated on the same-cycle replay: constant
+// invalid-state diagnostic, no raw record in text OR details, state bytes untouched.
+// ---------------------------------------------------------------------------
+
+describe("RF-26 — a non-canonical persisted auditBaseSnapshot is never interpolated on replay", () => {
+	afterEach(() => clearActiveCraft());
+
+	it("newline-bearing snapshot seed → strict re-registration → same-cycle replay: bytes stable, no raw payload, constant invalid-state line", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		const forged = { baseBranch: "main\nlets-craft: forged", baseTip: "a".repeat(40), sourceTip: "b".repeat(40), behindCount: 0, status: "ok" as const, authority: "explicit-base" as const, observedAt: "2026-08-25T00:00:00.000Z" };
+		persistOnly({ ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: forged });
+
+		setActiveCraft(freshState(root, feature)); // a bare re-registration (lsc_craft_init resume shape)
+		const statePath = craftStatePath(root, feature);
+		const bytesBeforeReplay = readFileSync(statePath, "utf8");
+
+		const replay = performAuditBegin(feature, root);
+
+		expect(replay.isError, JSON.stringify(replay)).toBeFalsy(); // replay still succeeds — non-blocking evidence
+		const text = firstText(replay);
+		expect(text).toContain("idempotent replay");
+		expect(text).toContain("invalid-state"); // the constant diagnostic names the class...
+		expect(text).not.toContain("forged"); // ...and carries no byte of the raw record
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f]/); // 무-raw-payload: single-line result
+		expect(replay.details?.base).toBeUndefined(); // the raw record never reaches the payload either
+		expect(readFileSync(statePath, "utf8")).toBe(bytesBeforeReplay); // state bytes 불변 across the replay
+	});
+
+	it("a CANONICAL persisted snapshot still describes on replay (the parser is not a blanket suppression)", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		const snapshot = { baseBranch: "main", baseTip: "a".repeat(40), sourceTip: "b".repeat(40), behindCount: 0, status: "ok" as const, authority: "explicit-base" as const, observedAt: "2026-08-25T00:00:00.000Z" };
+		persistOnly({ ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: snapshot });
+
+		const replay = performAuditBegin(feature, root);
+
+		expect(replay.isError, JSON.stringify(replay)).toBeFalsy();
+		expect(firstText(replay)).toContain("Base authority: explicit-base");
+		expect(replay.details?.base).toEqual(snapshot);
 	});
 });
