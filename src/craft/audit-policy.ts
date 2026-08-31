@@ -49,9 +49,9 @@ export const AUDIT_ESCALATION_DISPOSITIONS = ["Continue auditing", "Abort this c
 
 export type AuditEscalationDisposition = (typeof AUDIT_ESCALATION_DISPOSITIONS)[number];
 
-/** True iff `value` is exactly one of the three canonical disposition labels (trimmed — a blank/free answer is not a disposition). */
+/** True iff `value` is EXACTLY one of the three canonical disposition labels — no trimming (audit-0 RF-1): a whitespace-padded/blank/free answer is not a disposition and must never reach a durable TerminalDecision, whose disposition is compared raw downstream. */
 export function isAuditEscalationDisposition(value: unknown): value is AuditEscalationDisposition {
-	return typeof value === "string" && (AUDIT_ESCALATION_DISPOSITIONS as readonly string[]).includes(value.trim());
+	return typeof value === "string" && (AUDIT_ESCALATION_DISPOSITIONS as readonly string[]).includes(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +154,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * True iff `value` round-trips through `Date#toISOString()` EXACTLY (audit-0 RF-13): the only
+ * timestamp shape lets-craft persists, so a forged/localized/newline-carrying `createdAt`/
+ * `decidedAt` — a field later interpolated verbatim into command-shaped tool text — is invalid
+ * evidence rather than trusted prose.
+ */
+function isCanonicalIsoTimestamp(value: string): boolean {
+	const parsed = new Date(value);
+	return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
 /** Parse one pending-shaped record. Returns a distinct invalid-state message per violated invariant. */
 function parsePendingRecord(raw: unknown, feature: string, where: string): AuditEscalationPending | { error: string } {
 	if (!isPlainObject(raw)) return { error: `${where}: not an object` };
@@ -162,7 +173,7 @@ function parsePendingRecord(raw: unknown, feature: string, where: string): Audit
 	if (!isSafeNonNegativeCycle(dueCycle)) return { error: `${where}: dueCycle is not a non-negative safe integer (${String(dueCycle)})` };
 	if (!isSafeNonNegativeCycle(scheduledCycle)) return { error: `${where}: scheduledCycle is not a non-negative safe integer (${String(scheduledCycle)})` };
 	if (!isAuditEscalationInterval(intervalCycles)) return { error: `${where}: intervalCycles is not a declared escalation interval (${String(intervalCycles)})` };
-	if (typeof raw.createdAt !== "string" || raw.createdAt.trim() === "") return { error: `${where}: createdAt is missing/blank` };
+	if (typeof raw.createdAt !== "string" || !isCanonicalIsoTimestamp(raw.createdAt)) return { error: `${where}: createdAt is not a canonical ISO-8601 timestamp (${JSON.stringify(raw.createdAt)}) — every record lets-craft persists is Date#toISOString()-shaped` };
 	if (dueCycle < scheduledCycle) return { error: `${where}: dueCycle (${dueCycle}) precedes scheduledCycle (${scheduledCycle})` };
 	return { feature, dueCycle, scheduledCycle, intervalCycles, createdAt: raw.createdAt };
 }
@@ -174,7 +185,7 @@ function parseDecisionRecord(raw: unknown, feature: string, where: string): Pars
 	const pending = parsePendingRecord(raw, feature, where);
 	if ("error" in pending) return pending;
 	const { disposition, decidedAt } = raw;
-	if (typeof decidedAt !== "string" || decidedAt.trim() === "") return { error: `${where}: decidedAt is missing/blank` };
+	if (typeof decidedAt !== "string" || !isCanonicalIsoTimestamp(decidedAt)) return { error: `${where}: decidedAt is not a canonical ISO-8601 timestamp (${JSON.stringify(decidedAt)}) — every record lets-craft persists is Date#toISOString()-shaped` };
 	if (disposition === "Continue auditing") {
 		const { nextDueCycle } = raw;
 		if (!isSafeNonNegativeCycle(nextDueCycle)) return { error: `${where}: nextDueCycle is not a non-negative safe integer (${String(nextDueCycle)})` };
@@ -219,7 +230,6 @@ export function validateEscalationLedger(
 	const hasTerminal = persisted.auditTerminalDisposition !== undefined;
 	const legacy = !hasPending && !hasHistory && !hasNextDue && !hasTerminal;
 	if (legacy) return { legacy: true, history: [], interval: activeInterval, nextDue: activeInterval };
-
 	// -- history shape + per-record invariants ------------------------------------------------
 	const historyRaw = persisted.auditEscalations;
 	if (historyRaw !== undefined && !Array.isArray(historyRaw)) return { error: `auditEscalations is not an array` };
@@ -298,6 +308,12 @@ export function validateEscalationLedger(
 	if (hasPending) {
 		const parsedPending = parsePendingRecord(persisted.auditEscalationPending, feature, "auditEscalationPending");
 		if ("error" in parsedPending) return { error: parsedPending.error };
+		// (c) for the pending too (audit-0 RF-2): every record — history AND the open gate — carries
+		// the SAME persisted interval. With history present the interval comes from history[0], so a
+		// forged pending under a different interval is mixed-interval evidence, not a schedule.
+		if (parsedPending.intervalCycles !== interval) {
+			return { error: `auditEscalationPending.intervalCycles ${parsedPending.intervalCycles} differs from the persisted interval ${interval} — mixed-interval evidence` };
+		}
 		if (terminalInHistory) return { error: `auditEscalationPending is set after a terminal decision — no gate may open on a terminated feature` };
 		// Conflict: a pending PLUS a same-(feature,dueCycle) decision is a same-key fork.
 		if (history.some(record => record.dueCycle === parsedPending.dueCycle)) {
@@ -387,9 +403,17 @@ export function evaluateAuditBeginGate(input: AuditBeginGateInput): AuditBeginGa
 		};
 	}
 
-	// Exact pending reuse/consume — the schedule does not advance while a gate stands open.
 	if (ledger.pending) {
 		const pending = ledger.pending;
+		// audit-0 RF-3: a naturally-opened gate is always marker+1 (the gate opens at candidate
+		// marker+1 and never writes the marker itself), so with a persisted auditCycle an open
+		// pending at any other dueCycle — including dueCycle === auditCycle, which would otherwise
+		// let an equality candidate CONSUME a gate instead of replaying — is forged state.
+		if (persistedAuditCycle !== undefined && pending.dueCycle !== persistedAuditCycle + 1) {
+			return invalid(
+				`an open escalation gate is bound to dueCycle ${pending.dueCycle} but the persisted auditCycle is ${persistedAuditCycle} — a naturally-opened gate is always auditCycle+1; an equality candidate can only be an idempotent replay, never a consumption`,
+			);
+		}
 		if (candidateCycle !== pending.dueCycle) {
 			return {
 				type: "blocked",
