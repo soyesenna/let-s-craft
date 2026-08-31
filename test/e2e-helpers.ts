@@ -24,15 +24,51 @@
 // list`) — same model for both roles per explicit user direction, still on the `:low` effort tier
 // (glm-5.2 supports minimal/low/medium/high/xhigh).
 import { execFileSync } from "node:child_process";
-import { type ChildProcess, spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
 import { LSC_AGENT_NAMES } from "../src/preset/models-file";
 
 export const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+/** omp's global plugin-link slot for lets-craft — the ONE load path its plugin/skill discovery uses (`skill://post-craft` text included; probed: `--plugin-dir` does NOT pin skills). */
+const GLOBAL_PLUGIN_LINK = join(homedir(), ".omp", "plugins", "node_modules", "lets-craft");
+
+/**
+ * audit-0 RF-4 — pin the lets-craft plugin every E2E child process loads to THIS repo, then
+ * fail fast BEFORE the first model turn if the exposed build is not the repo's current HEAD.
+ *
+ * (a) Per-run link re-set: `omp plugin link {REPO_ROOT}` re-points the global slot at the repo
+ *     under test (idempotent when already pointing here). The implicit dependency on whatever
+ *     the developer's link happened to target is gone — during the audit it pointed at the BASE
+ *     checkout, so every "worktree" E2E child was actually validating the base build.
+ * (b) Preflight: the child resolves the plugin through the link, so the build identity it will
+ *     load is exactly `{REPO_ROOT}/dist/generated/version.js`'s BUILD_INFO.gitHash — it must
+ *     equal `git -C REPO_ROOT rev-parse --short HEAD`, else THROW (suite abort; `npm run e2e`
+ *     runs `npm run build` first, so a mismatch means a stale or foreign build).
+ */
+export function pinLetsCraftPluginToRepo(): void {
+	if (readlinkSync(GLOBAL_PLUGIN_LINK) !== REPO_ROOT) {
+		execFileSync("omp", ["plugin", "link", REPO_ROOT], { stdio: "pipe" });
+	}
+	if (realpathSync(GLOBAL_PLUGIN_LINK) !== realpathSync(REPO_ROOT)) {
+		throw new Error(`lets-craft E2E harness: omp's plugin link (${GLOBAL_PLUGIN_LINK}) does not resolve to this repo (${REPO_ROOT}) even after \`omp plugin link\` — refusing to spawn children against an unknown plugin build (audit-0 RF-4).`);
+	}
+	const versionJs = join(REPO_ROOT, "dist", "generated", "version.js");
+	if (!existsSync(versionJs)) {
+		throw new Error(`lets-craft E2E harness: no built plugin at ${versionJs} — run \`npm run build\` in ${REPO_ROOT} first (audit-0 RF-4 preflight).`);
+	}
+	const builtHash = /gitHash:\s*"([0-9a-f]+)"/.exec(readFileSync(versionJs, "utf8"))?.[1];
+	const head = execFileSync("git", ["-C", REPO_ROOT, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+	if (builtHash !== head) {
+		throw new Error(
+			`lets-craft E2E harness: plugin-build/HEAD mismatch — the children would load BUILD_INFO.gitHash=${builtHash ?? "(unparsed)"} but ${REPO_ROOT} HEAD is ${head}. ` +
+				`Re-run \`npm run build\` (the e2e script does this first) so the linked build is the code under test (audit-0 RF-4 preflight).`,
+		);
+	}
+}
 export const FIXTURE_SAMPLE_DIR = join(REPO_ROOT, "fixtures", "sample-ts-cli");
 
 // `task` spawns run as background jobs by default (`async.enabled = true`, confirmed via
@@ -230,29 +266,31 @@ export function runOmpPrint(args: {
 	extraArgs?: string[];
 	earlyExit?: (accumulatedStdout: string) => boolean;
 }): Promise<OmpRunResult> {
-	return new Promise(resolve => {
-		const ompArgs = [
-			"-p",
-			"--model",
-			args.model ?? E2E_MAIN_MODEL,
-			"--mode=json",
-			"--no-title",
-			"--auto-approve",
-			"--session-dir",
-			args.sessionDir,
-			"--config",
-			syncModeConfigPath(),
-			...(args.extraArgs ?? []),
-			args.prompt,
-		];
+	const { promise, resolve } = Promise.withResolvers<OmpRunResult>();
+	// audit-0 RF-4: pin + preflight BEFORE the child spawns (fail fast, never mid-model-turn).
+	pinLetsCraftPluginToRepo();
+	const ompArgs = [
+		"-p",
+		"--model",
+		args.model ?? E2E_MAIN_MODEL,
+		"--mode=json",
+		"--no-title",
+		"--auto-approve",
+		"--session-dir",
+		args.sessionDir,
+		"--config",
+		syncModeConfigPath(),
+		...(args.extraArgs ?? []),
+		args.prompt,
+	];
 
-		const child: ChildProcess = spawn("omp", ompArgs, {
-			cwd: args.cwd,
-			env: { ...process.env, ...args.env },
-		});
-
-		attachOmpRunHandlers(child as unknown as RunnableChild, args, resolve);
+	const child: ChildProcess = spawn("omp", ompArgs, {
+		cwd: args.cwd,
+		env: { ...process.env, ...args.env },
 	});
+
+	attachOmpRunHandlers(child as unknown as RunnableChild, args, resolve);
+	return promise;
 }
 
 function parseNdjson(text: string): OmpEvent[] {
@@ -608,6 +646,22 @@ export function seedCraftedFeature(
 		execFileSync("git", ["commit", "-q", "-m", "chore: ignore .lsc/worktrees"], { cwd: projectDir });
 	}
 
+	// audit-0 RF-9: the FEATURE WORKTREE's own .gitignore must ignore the two runtime sidecars
+	// (.craft-state.json, check/logs/) — same globs as src/artifacts/gitignore.ts — and it must
+	// be committed BEFORE the state file exists: a linked worktree reads only its OWN working
+	// tree's .gitignore, so without this the seed's `git add -A` below tracked the sidecar onto
+	// the feature branch (audit-0 lens ③ probe: the seeded worktree branch carried it).
+	const worktreeGitignorePath = join(worktreeRoot, ".gitignore");
+	const worktreeGitignore = existsSync(worktreeGitignorePath) ? readFileSync(worktreeGitignorePath, "utf8") : "";
+	const sidecarEntries = [".lsc/crafts/*/.craft-state.json", ".lsc/crafts/*/check/logs/"].filter(
+		entry => !worktreeGitignore.split(/\r?\n/).some(line => line.trim() === entry || line.trim() === `/${entry}`),
+	);
+	if (sidecarEntries.length > 0) {
+		writeFileSync(worktreeGitignorePath, `${worktreeGitignore}${worktreeGitignore.endsWith("\n") || worktreeGitignore === "" ? "" : "\n"}${sidecarEntries.join("\n")}\n`);
+		execFileSync("git", ["add", ".gitignore"], { cwd: worktreeRoot });
+		execFileSync("git", ["commit", "-q", "-m", "chore: ignore craft-state and check-log sidecars"], { cwd: worktreeRoot });
+	}
+
 	const craftDir = join(worktreeRoot, ".lsc", "crafts", feature);
 	mkdirSync(join(craftDir, "audit"), { recursive: true });
 	writeFileSync(join(craftDir, "trace.md"), `# trace — ${feature}\n\nSeeded trace for the PR-5 escalation/red-cycle E2E. The slugify bug note in src/slugify.ts is the observed ground truth.\n`);
@@ -634,6 +688,12 @@ export function seedCraftedFeature(
 
 	execFileSync("git", ["add", "-A"], { cwd: worktreeRoot });
 	execFileSync("git", ["commit", "-q", "-m", `feat: seeded implementation + ${opts.seededAudits} prior audit(s)`], { cwd: worktreeRoot });
+	// audit-0 RF-9: prove the sidecar is untracked AND matched by an ignore rule — the seeded
+	// branch must never carry .craft-state.json (a later lsc_craft_init/audit run rewrites it,
+	// which would leave the worktree dirty against its own committed evidence).
+	const trackedSidecar = execFileSync("git", ["ls-files", "--", statePath], { cwd: worktreeRoot, encoding: "utf8" }).trim();
+	if (trackedSidecar !== "") throw new Error(`lets-craft E2E seed: ${statePath} was TRACKED by the seeded worktree branch — the sidecar gitignore entries did not take effect.`);
+	execFileSync("git", ["check-ignore", "-q", statePath, join(craftDir, "check", "logs", "check-0.log")], { cwd: worktreeRoot });
 	return { worktreeRoot, craftDir, statePath, seedTip: execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktreeRoot, encoding: "utf8" }).trim() };
 }
 
