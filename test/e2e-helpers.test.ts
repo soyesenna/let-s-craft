@@ -9,8 +9,9 @@
 // Also covers runToCompletionWith/preCraftArtifactsComplete (the pre-craft headless-early-stop
 // resume logic) — same no-real-process, `npm test`-runs philosophy: the loop control is exercised
 // against a fake `spawn` function, never a real `omp` child.
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,6 +21,7 @@ import {
 	auditBeginOutcomes,
 	completedTaskSpawnSeen,
 	type OmpRunResult,
+	pinLetsCraftPluginToRepo,
 	preCraftArtifactsComplete,
 	type RunnableChild,
 	runToCompletionWith,
@@ -406,5 +408,155 @@ describe("completedTaskSpawnSeen (RF-8)", () => {
 			JSON.stringify({ type: "tool_execution_end", toolName: "task", isError: false, result: { content: [{ type: "text", text: "spawn delivered" }] } }),
 		].join("\n");
 		expect(completedTaskSpawnSeen(stdout)).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-1 RF-18 — pinLetsCraftPluginToRepo's link-slot boundary shapes. The seams
+// (linkPath/repoRoot/linkPlugin) let these run against a temp git repo and a temp link slot
+// with a FAKE `omp plugin link` (a symlink writer), so the three boundaries (missing → created
+// / wrong-target → re-pointed / correct → no-op) and every fail-closed refusal branch are
+// covered without the real global slot, the omp binary, or LSC_E2E — same `npm test`-runs
+// philosophy as the rest of this file.
+// ---------------------------------------------------------------------------
+
+describe("pinLetsCraftPluginToRepo (RF-18 — link-slot boundaries)", () => {
+	const tempDirs: string[] = [];
+	afterEach(() => {
+		while (tempDirs.length > 0) {
+			const dir = tempDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function tmpDir(prefix: string): string {
+		const dir = mkdtempSync(join(tmpdir(), prefix));
+		tempDirs.push(dir);
+		return dir;
+	}
+
+	function gitIn(cwd: string, args: string[]): string {
+		return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+	}
+
+	/** A real git repo with one commit — the repo under test whose HEAD the build hash must match. */
+	function tmpPluginRepo(): { repoRoot: string; head: string } {
+		const repoRoot = tmpDir("lsc-pin-repo-");
+		gitIn(repoRoot, ["init", "-q", "-b", "main"]);
+		gitIn(repoRoot, ["config", "user.email", "t@t"]);
+		gitIn(repoRoot, ["config", "user.name", "t"]);
+		writeFileSync(join(repoRoot, "seed.txt"), "x\n");
+		gitIn(repoRoot, ["add", "-A"]);
+		gitIn(repoRoot, ["commit", "-q", "-m", "seed"]);
+		return { repoRoot, head: gitIn(repoRoot, ["rev-parse", "--short", "HEAD"]) };
+	}
+
+	/** Write a dist/generated/version.js carrying (or omitting) BUILD_INFO.gitHash. */
+	function writeVersionJs(repoRoot: string, gitHash?: string): void {
+		mkdirSync(join(repoRoot, "dist", "generated"), { recursive: true });
+		writeFileSync(
+			join(repoRoot, "dist", "generated", "version.js"),
+			gitHash === undefined ? "export const BUILD_INFO = { builtBy: 'not-a-hash' };\n" : `export const BUILD_INFO = { gitHash: "${gitHash}" };\n`,
+		);
+	}
+
+	it("missing link slot (ENOENT) → takes the omp re-point, then the link resolves to the repo (missing → created)", () => {
+		const { repoRoot, head } = tmpPluginRepo();
+		writeVersionJs(repoRoot, head);
+		const linkPath = join(tmpDir("lsc-pin-slot-"), "lets-craft");
+		let linkCalls = 0;
+		const linkPlugin = (root: string): void => {
+			linkCalls += 1;
+			symlinkSync(root, linkPath);
+		};
+
+		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin })).not.toThrow();
+		expect(linkCalls).toBe(1);
+		expect(readlinkSync(linkPath)).toBe(repoRoot);
+	});
+
+	it("a symlink pointing at ANOTHER target is not pinned → re-pointed to the repo (wrong-target → 재지정)", () => {
+		const { repoRoot, head } = tmpPluginRepo();
+		writeVersionJs(repoRoot, head);
+		const slotDir = tmpDir("lsc-pin-slot-");
+		const linkPath = join(slotDir, "lets-craft");
+		symlinkSync(tmpDir("lsc-pin-other-"), linkPath); // a dangling-elsewhere or foreign-target link
+		let linkCalls = 0;
+		const linkPlugin = (root: string): void => {
+			linkCalls += 1;
+			rmSync(linkPath, { force: true });
+			symlinkSync(root, linkPath);
+		};
+
+		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin })).not.toThrow();
+		expect(linkCalls).toBe(1);
+		expect(readlinkSync(linkPath)).toBe(repoRoot);
+	});
+
+	it("a NON-symlink occupying the slot (EINVAL from readlinkSync) is not pinned → re-pointed the same way", () => {
+		const { repoRoot, head } = tmpPluginRepo();
+		writeVersionJs(repoRoot, head);
+		const slotDir = tmpDir("lsc-pin-slot-");
+		const linkPath = join(slotDir, "lets-craft");
+		writeFileSync(linkPath, "a regular file, not a symlink\n");
+		let linkCalls = 0;
+		const linkPlugin = (root: string): void => {
+			linkCalls += 1;
+			rmSync(linkPath, { force: true });
+			symlinkSync(root, linkPath);
+		};
+
+		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin })).not.toThrow();
+		expect(linkCalls).toBe(1);
+		expect(readlinkSync(linkPath)).toBe(repoRoot);
+	});
+
+	it("an already-correct link is a no-op — the omp re-point never runs (correct → no-op)", () => {
+		const { repoRoot, head } = tmpPluginRepo();
+		writeVersionJs(repoRoot, head);
+		const linkPath = join(tmpDir("lsc-pin-slot-"), "lets-craft");
+		symlinkSync(repoRoot, linkPath);
+		const linkPlugin = (): void => {
+			throw new Error("omp plugin link must not run when the slot already resolves to the repo");
+		};
+
+		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin })).not.toThrow();
+		expect(readlinkSync(linkPath)).toBe(repoRoot);
+	});
+
+	it("a re-point that leaves the link unresolved fails closed — the descriptive refusal, never a raw ENOENT leak", () => {
+		const { repoRoot } = tmpPluginRepo();
+		const linkPath = join(tmpDir("lsc-pin-slot-"), "lets-craft");
+		const linkPlugin = (): void => {
+			// simulates `omp plugin link` failing without creating the slot
+		};
+
+		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin })).toThrow("does not resolve to this repo");
+	});
+
+	it("no built dist/generated/version.js fails closed before any spawn (dist 부재 throw)", () => {
+		const { repoRoot } = tmpPluginRepo();
+		const linkPath = join(tmpDir("lsc-pin-slot-"), "lets-craft");
+		symlinkSync(repoRoot, linkPath);
+
+		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin: () => {} })).toThrow("no built plugin");
+	});
+
+	it("a BUILD_INFO.gitHash that is not the repo HEAD fails closed (해시 불일치 throw)", () => {
+		const { repoRoot } = tmpPluginRepo();
+		writeVersionJs(repoRoot, "deadbee");
+		const linkPath = join(tmpDir("lsc-pin-slot-"), "lets-craft");
+		symlinkSync(repoRoot, linkPath);
+
+		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin: () => {} })).toThrow("plugin-build/HEAD mismatch");
+	});
+
+	it("a version.js whose hash the regex cannot parse is reported as (unparsed), never as a pass (unparsed arm)", () => {
+		const { repoRoot } = tmpPluginRepo();
+		writeVersionJs(repoRoot); // BUILD_INFO without a gitHash field
+		const linkPath = join(tmpDir("lsc-pin-slot-"), "lets-craft");
+		symlinkSync(repoRoot, linkPath);
+
+		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin: () => {} })).toThrow("(unparsed)");
 	});
 });

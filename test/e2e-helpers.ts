@@ -23,7 +23,7 @@
 // `zai/glm-5.2` (same authenticated provider, same low-cost intent, confirmed via `omp models
 // list`) — same model for both roles per explicit user direction, still on the `:low` effort tier
 // (glm-5.2 supports minimal/low/medium/high/xhigh).
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -48,23 +48,64 @@ const GLOBAL_PLUGIN_LINK = join(homedir(), ".omp", "plugins", "node_modules", "l
  *     load is exactly `{REPO_ROOT}/dist/generated/version.js`'s BUILD_INFO.gitHash — it must
  *     equal `git -C REPO_ROOT rev-parse --short HEAD`, else THROW (suite abort; `npm run e2e`
  *     runs `npm run build` first, so a mismatch means a stale or foreign build).
+ *
+ * audit-1 RF-18: a missing / dangling / non-symlink link slot is simply "not pinned" — the old
+ * unguarded `readlinkSync` died with ENOENT on a clean machine BEFORE the link command could
+ * ever run, killing all four E2E files at setup. Every not-pinned shape now takes the same
+ * `omp plugin link` re-point, and the fail-closed re-verification below decides. The optional
+ * seams exist so the three boundaries (missing → created / wrong-target → re-pointed /
+ * correct → no-op) and every refusal branch are unit-testable without the real global slot or
+ * the `omp` binary.
  */
-export function pinLetsCraftPluginToRepo(): void {
-	if (readlinkSync(GLOBAL_PLUGIN_LINK) !== REPO_ROOT) {
-		execFileSync("omp", ["plugin", "link", REPO_ROOT], { stdio: "pipe" });
+export interface PluginPinSeams {
+	/** omp's global plugin-link slot to inspect/re-point (default: GLOBAL_PLUGIN_LINK). */
+	linkPath: string;
+	/** The repo under test whose build the children must load (default: REPO_ROOT). */
+	repoRoot: string;
+	/** `omp plugin link <repoRoot>` — injectable so unit tests never shell out to omp. */
+	linkPlugin: (repoRoot: string) => void;
+}
+
+export function pinLetsCraftPluginToRepo(seams: Partial<PluginPinSeams> = {}): void {
+	const linkPath = seams.linkPath ?? GLOBAL_PLUGIN_LINK;
+	const repoRoot = seams.repoRoot ?? REPO_ROOT;
+	const linkPlugin =
+		seams.linkPlugin ??
+		(root => {
+			execFileSync("omp", ["plugin", "link", root], { stdio: "pipe" });
+		});
+	let pinned = false;
+	try {
+		pinned = readlinkSync(linkPath) === repoRoot;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		// ENOENT: the slot does not exist yet (a clean machine). EINVAL: something other than a
+		// symlink occupies the slot. Both are "not pinned" — anything else is a real error.
+		if (code !== "ENOENT" && code !== "EINVAL") throw error;
 	}
-	if (realpathSync(GLOBAL_PLUGIN_LINK) !== realpathSync(REPO_ROOT)) {
-		throw new Error(`lets-craft E2E harness: omp's plugin link (${GLOBAL_PLUGIN_LINK}) does not resolve to this repo (${REPO_ROOT}) even after \`omp plugin link\` — refusing to spawn children against an unknown plugin build (audit-0 RF-4).`);
+	if (!pinned) {
+		linkPlugin(repoRoot);
 	}
-	const versionJs = join(REPO_ROOT, "dist", "generated", "version.js");
+	// Fail-closed re-verification for EVERY branch (created / re-pointed / already correct):
+	// if the link still does not resolve to this repo after the re-point, never spawn children.
+	let linkReal: string;
+	try {
+		linkReal = realpathSync(linkPath);
+	} catch {
+		linkReal = "";
+	}
+	if (linkReal !== realpathSync(repoRoot)) {
+		throw new Error(`lets-craft E2E harness: omp's plugin link (${linkPath}) does not resolve to this repo (${repoRoot}) even after \`omp plugin link\` — refusing to spawn children against an unknown plugin build (audit-0 RF-4, audit-1 RF-18).`);
+	}
+	const versionJs = join(repoRoot, "dist", "generated", "version.js");
 	if (!existsSync(versionJs)) {
-		throw new Error(`lets-craft E2E harness: no built plugin at ${versionJs} — run \`npm run build\` in ${REPO_ROOT} first (audit-0 RF-4 preflight).`);
+		throw new Error(`lets-craft E2E harness: no built plugin at ${versionJs} — run \`npm run build\` in ${repoRoot} first (audit-0 RF-4 preflight).`);
 	}
 	const builtHash = /gitHash:\s*"([0-9a-f]+)"/.exec(readFileSync(versionJs, "utf8"))?.[1];
-	const head = execFileSync("git", ["-C", REPO_ROOT, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+	const head = execFileSync("git", ["-C", repoRoot, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
 	if (builtHash !== head) {
 		throw new Error(
-			`lets-craft E2E harness: plugin-build/HEAD mismatch — the children would load BUILD_INFO.gitHash=${builtHash ?? "(unparsed)"} but ${REPO_ROOT} HEAD is ${head}. ` +
+			`lets-craft E2E harness: plugin-build/HEAD mismatch — the children would load BUILD_INFO.gitHash=${builtHash ?? "(unparsed)"} but ${repoRoot} HEAD is ${head}. ` +
 				`Re-run \`npm run build\` (the e2e script does this first) so the linked build is the code under test (audit-0 RF-4 preflight).`,
 		);
 	}
@@ -693,7 +734,12 @@ export function seedCraftedFeature(
 	// which would leave the worktree dirty against its own committed evidence).
 	const trackedSidecar = execFileSync("git", ["ls-files", "--", statePath], { cwd: worktreeRoot, encoding: "utf8" }).trim();
 	if (trackedSidecar !== "") throw new Error(`lets-craft E2E seed: ${statePath} was TRACKED by the seeded worktree branch — the sidecar gitignore entries did not take effect.`);
-	execFileSync("git", ["check-ignore", "-q", statePath, join(craftDir, "check", "logs", "check-0.log")], { cwd: worktreeRoot });
+	// audit-1 RF-17: `git check-ignore -q` accepts exactly ONE path (a multi-path `-q` call is a
+	// git fatal), so each sidecar's ignore invariant is asserted in its own invocation —
+	// execFileSync throws on the non-zero exit a "not ignored" path would produce.
+	for (const sidecarPath of [statePath, join(craftDir, "check", "logs", "check-0.log")]) {
+		execFileSync("git", ["check-ignore", "-q", "--", sidecarPath], { cwd: worktreeRoot });
+	}
 	return { worktreeRoot, craftDir, statePath, seedTip: execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktreeRoot, encoding: "utf8" }).trim() };
 }
 
