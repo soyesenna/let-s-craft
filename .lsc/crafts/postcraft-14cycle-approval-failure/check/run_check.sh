@@ -8,11 +8,18 @@
 #
 # Manifest (package.json) scripts:
 #   build      — present; run below (also typechecks: `tsc` is inside `npm run build`)
-#   test       — present; run below (`vitest run`)
+#   test       — present; run below (`vitest run`). E2E files are describe.skipIf(!LSC_E2E)
+#                here, so this step is NOT AC-8 evidence (audit-0 RF-10).
+#   test:bun   — present; run below (`bun test test-bun`)
+#   e2e        — present; run below. package.json `e2e` itself re-runs `npm run build` and
+#                sets LSC_E2E=1; this script only invokes that script as-is (RF-10).
 #   lint       — omitted: package.json has no "lint" script
 #   typecheck  — omitted as a separate step: no dedicated script; `npm run build` already runs `tsc`
-#   test:bun   — omitted: bun-only extra suite, not the primary `test` command
-#   e2e        — omitted: hours-long subprocess suite (`npm run e2e`); not the primary `test` command
+#
+# Expected wall-clock (for §3.1 timeout_ms; that knob is the main session's, not this script's):
+#   `npm run e2e` runs 4 files with --no-file-parallelism and --testTimeout=10200000
+#   (10200000ms × 4 files, sequential). Worst-case budget is therefore on the order of
+#   4 × 10200s plus hookTimeout=120000 per file; size timeout_ms to that, not to `npm test`.
 #
 # Commands go through `npm run` so the package.json scripts stay the SSOT
 # (tokens `npm` satisfy evaluateCheckScriptShape's package.json runner check).
@@ -25,7 +32,11 @@ cd "$ROOT"
 status=0
 echo "==> build (includes tsc typecheck)"
 npm run build || status=1
-echo "==> test (vitest run)"
+echo "==> test (vitest run; e2e files skip without LSC_E2E — not AC-8 evidence)"
 npm test || status=1
+echo "==> test:bun (bun test test-bun)"
+npm run test:bun || status=1
+echo "==> e2e (package.json e2e: rebuild + LSC_E2E=1, 4 files, no-file-parallelism, testTimeout=10200000ms)"
+npm run e2e || status=1
 echo "==> summary status=${status}"
 exit "$status"
