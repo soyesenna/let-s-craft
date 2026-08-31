@@ -1179,3 +1179,94 @@ describe("PR-4 — README: abort caller, base handoff, escalation, red-cycle ret
 		expect(readme).toContain("정상적인 새 post-craft 사이클");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// audit-0 RF-6 — craft §5.2 EXEC-RETRY: decline/cancel reason mapping (the §5.3
+// table and plan.md:325-326, not the superseded no→retry-exhausted sentence),
+// the integrated-worktree single repair spawn, and the lane ban's application
+// to BOTH retry selectors. The post-craft §6.1 mirror carries the same
+// semantics.
+// ---------------------------------------------------------------------------
+
+describe("audit-0 RF-6 — craft §5.2 EXEC-RETRY reason mapping and retry topology", () => {
+	it("maps no → retry-declined and cancelled → retry-cancelled, reserving retry-exhausted for the retryUsed=true green-incomplete row", () => {
+		expect(craftHandoff).toContain("`no` → `reason=retry-declined`; a cancelled roundtrip → `reason=retry-cancelled`");
+		expect(craftHandoff).toContain("`reason=retry-exhausted` is reserved for row 4 alone — `retryUsed=true` with the executor still `incomplete` on green evidence");
+		expect(craftHandoff).toContain("a declined or cancelled selector never sets `retryUsed`");
+		// The superseded mapping (a `no` ending at row 4's retry-exhausted) must not survive.
+		expect(craftHandoff).not.toContain("ending at row 4 with `reason=retry-exhausted`");
+	});
+
+	it("runs the EXEC-RETRY repair as ONE single production-repair executor against the integrated worktree — the same topology IMPL-RETRY uses, never a per-lane re-spawn", () => {
+		expect(craftHandoff).not.toContain("re-spawn that executor");
+		const integratedSpawnWording = "ONE single production-repair `lsc-executor` spawn against the integrated `{worktreeAbs}`";
+		const occurrences = craftHandoff.split(integratedSpawnWording).length - 1;
+		expect(occurrences, "both EXEC-RETRY and IMPL-RETRY must carry the identical integrated single-spawn wording").toBe(2);
+	});
+
+	it("binds the never-re-spawn lane ban to BOTH retry paths", () => {
+		expect(craftHandoff).toContain("Deleted parallel lanes are never re-spawned");
+		expect(craftHandoff).toContain("this lane ban binds BOTH retry selectors, EXEC-RETRY and IMPL-RETRY alike");
+		expect(craftHandoff).toContain("the same lane ban that binds EXEC-RETRY above applies to this selector identically");
+	});
+
+	it("post-craft §6.1 mirror carries the same selector semantics", () => {
+		expect(postCraftS61).toContain("The retry-selector semantics mirror craft §5.2 exactly");
+		expect(postCraftS61).toContain("ONE single production-repair `lsc-executor` spawn against the integrated `{worktreeAbs}`");
+		expect(postCraftS61).toContain("`no` → `reason=retry-declined`; a cancelled roundtrip → `reason=retry-cancelled`");
+		expect(postCraftS61).toContain("`reason=retry-exhausted` is reserved for row 4 alone — `retryUsed=true` with the executor still `incomplete` on green evidence");
+		expect(postCraftS61).toContain("Deleted parallel lanes are never re-spawned");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-0 RF-14 — plan.md:389's named case matrix, stated in the post-craft
+// §4.2/§5 fix-verification contract and pinned case-by-case. Each case gets
+// its OWN heading-bounded `it`, so a single case being dropped from the
+// matrix (or drifting out of the §4.2/§5.4 boundary) fails exactly that case.
+// ---------------------------------------------------------------------------
+
+/** plan.md:389's named cases, each with the expected four-level result the contract fixes. */
+const FIX_VERIFICATION_CASES = [
+	{ name: "`partial original apply-only`", verdict: "`APPROVE-WITH-CHANGE`" },
+	{ name: "`new unrelated apply-only MAJOR`", verdict: "`APPROVE-WITH-CHANGE`" },
+	{ name: "`origin omitted`", verdict: "`REJECT`" },
+	{ name: "`duplicate itemId`", verdict: "`REJECT`" },
+	{ name: "`duplicate owner`", verdict: "`REJECT`" },
+	{ name: "`extra result`", verdict: "`REJECT`" },
+	{ name: "`blank criterion/evidence`", verdict: "`REJECT`" },
+	{ name: "`owner inconclusive`", verdict: "`REJECT`" },
+	{ name: "`new needs-redesign MAJOR`", verdict: "`REJECT`" },
+	{ name: "`new CRITICAL`", verdict: "`REJECT`" },
+] as const;
+
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+describe("audit-0 RF-14 — §4.2 named case matrix: each case independently pinned with its fixed four-level result", () => {
+	it("introduces the named case matrix inside §4.2, after the precedence paragraph", () => {
+		expect(postCraftS42).toContain("**Named case matrix");
+		expect(postCraftS42.indexOf("Fix-verification precedence")).toBeLessThan(postCraftS42.indexOf("Named case matrix"));
+	});
+
+	for (const c of FIX_VERIFICATION_CASES) {
+		it(`fixes ${c.name} → ${c.verdict} as its own matrix row`, () => {
+			// The case name and its expected verdict must share ONE table row: | `name` … | `verdict` … |
+			const row = new RegExp(`\\|\\s*${escapeRegExp(c.name)}[^|]*\\|\\s*${escapeRegExp(c.verdict)}`);
+			expect(postCraftS42, `§4.2 must carry a matrix row fixing ${c.name} → ${c.verdict}`).toMatch(row);
+		});
+	}
+
+	it("keeps the two positive rows the only AWC rows and binds the invariant rows to §5.1's REJECT-before-the-shortcut rule", () => {
+		expect(postCraftS42).toContain("the only cases that may close at `APPROVE-WITH-CHANGE` with blocking findings still surviving");
+		expect(postCraftS42).toContain("REJECT before the shortcut is attempted");
+	});
+
+	it("routes §5.4's synthesis through the same named cases (§5 side of the shared contract)", () => {
+		expect(postCraftS5).toContain("§4.2's named case matrix");
+		for (const c of FIX_VERIFICATION_CASES) {
+			expect(postCraftS5, `§5 must name ${c.name}`).toContain(c.name);
+		}
+	});
+});
