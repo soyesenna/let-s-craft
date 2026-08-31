@@ -14,7 +14,7 @@
 // abort also invalidates every prepared destructive operation — nothing staged may survive a
 // user-terminated run.
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { resolveFeatureName } from "../artifacts/paths.js";
+import { FEATURE_SLUG_RE, resolveFeatureName } from "../artifacts/paths.js";
 import { invalidatePreparedOperation } from "./destructive-approval.js";
 import { findPersistedCraftState, getActiveCraft, markCraftAborted, markCraftAbortedAt } from "./state.js";
 
@@ -36,6 +36,14 @@ export interface CraftAbortDetails {
 export function performCraftAbort(reason: string, featureDir?: string, cwd: string = process.cwd()): AgentToolResult<CraftAbortDetails> {
 	if (featureDir !== undefined) {
 		const feature = resolveFeatureName(featureDir);
+		// audit-0 RF-13: refuse a non-slug resolved feature (traversal/newline/control chars) before
+		// ANY fs access — the name reaches the durable state and the result text verbatim.
+		if (!FEATURE_SLUG_RE.test(feature)) {
+			return {
+				isError: true,
+				content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+			};
+		}
 		const persisted = findPersistedCraftState(cwd, feature);
 		if (!persisted) {
 			return {

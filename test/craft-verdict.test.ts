@@ -2,8 +2,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as zod from "zod/v4";
+import type * as GitModule from "../src/utils/git";
+import { runGitText } from "../src/utils/git";
 import { craftAuditDir, craftCheckLogsDir, craftStatePath, worktreePath } from "../src/artifacts/paths";
 import { FIXTURE_AUDIT_ESCALATION_INTERVAL } from "../src/craft/audit-policy";
 import { type CraftState, clearActiveCraft, readPersistedCraftState, setActiveCraft } from "../src/craft/state";
@@ -20,6 +22,15 @@ import {
 	performAuditValidate,
 	validateAuditFreshness,
 } from "../src/craft/verdict";
+
+// audit-0 RF-15①: the git runner is wrapped in a spy that delegates to the REAL implementation
+// by default, so exactly one test (anchorBaseSnapshot's non-integer count degradation — a branch
+// real git cannot produce, `rev-list --count` always prints an integer) can script the runner's
+// return value without affecting any other test in this file.
+vi.mock("../src/utils/git", async importOriginal => {
+	const actual = await importOriginal<typeof GitModule>();
+	return { ...actual, runGitText: vi.fn(actual.runGitText) };
+});
 
 // ---------------------------------------------------------------------------
 // B-1: verdict literal parser (shared generic implementation) + cycle-freshness.
@@ -953,5 +964,192 @@ describe("performAuditBegin × baseSnapshot — persisted with the cycle, replay
 		expect(result.isError).toBe(true);
 		expect(result.details?.escalation).toMatchObject({ status: "escalation-required", dueCycle: 2 });
 		expect(readPersistedCraftState(worktreeRoot, feature)?.auditBaseSnapshot).toBeUndefined();
+	});
+});
+
+/** First content block's text via `in`-narrowing — no inline `as { text }` member access. */
+function firstText(result: { content?: Array<Record<string, unknown>> }): string {
+	const first = result.content?.[0];
+	return first !== undefined && "text" in first && typeof first.text === "string" ? first.text : "";
+}
+
+// ---------------------------------------------------------------------------
+// audit-0 RF-13 — lifecycle tool boundary: the resolved feature name is validated against the
+// kebab-slug SSOT (src/artifacts/paths.ts FEATURE_SLUG_RE) BEFORE any fs access, because the
+// name is interpolated verbatim into command-shaped tool text (the [Audit Escalation] question)
+// and durable state. Newline/traversal/separator payloads must be refused, never echoed.
+// ---------------------------------------------------------------------------
+
+describe("RF-13 — kebab-slug boundary guard on the audit lifecycle tools", () => {
+	const INJECTIONS = ["bad\nfeature", "weird/../traversal", "Shout Case", "feature;", "tab\tfeature"];
+
+	it("performAuditBegin refuses every non-slug feature before touching the filesystem", () => {
+		const root = tmpProject();
+		for (const forged of INJECTIONS) {
+			const result = performAuditBegin(forged, root);
+			expect(result.isError, `feature ${JSON.stringify(forged)} must be refused`).toBe(true);
+			expect(firstText(result)).toContain("kebab-case slug");
+		}
+	});
+
+	it("performAuditValidate refuses every non-slug feature before touching the filesystem", () => {
+		const root = tmpProject();
+		for (const forged of INJECTIONS) {
+			const result = performAuditValidate(forged, root);
+			expect(result.isError, `feature ${JSON.stringify(forged)} must be refused`).toBe(true);
+			expect(firstText(result)).toContain("kebab-case slug");
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-0 RF-3 — the equality+pending forgery at the performAuditBegin seam: a persisted
+// {auditCycle: 3, pending.dueCycle: 3} plus candidate 3 and a Continue disposition must be
+// refused invalid-state with the state file byte-stable (a naturally-opened gate is always
+// marker+1; an equality candidate can only ever be an idempotent replay).
+// ---------------------------------------------------------------------------
+
+describe("RF-3 — equality candidate + open pending is invalid-state with zero writes (performAuditBegin seam)", () => {
+	it("blocks {auditCycle:3, pending.dueCycle:3} + candidate 3 + Continue before any write", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({
+			...freshState(root, feature),
+			auditCycle: 3,
+			checkLogAtCycleStart: 1,
+			auditBaseSnapshot: { baseBranch: "main", baseTip: "a".repeat(40), sourceTip: "b".repeat(40), behindCount: 0, status: "ok", authority: "explicit-base", observedAt: "2026-08-25T00:00:00.000Z" },
+			auditEscalationPending: { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: "2026-08-25T00:00:00.000Z" },
+		});
+		for (let n = 0; n < 3; n++) writeAuditDoc(root, feature, n, "REJECT"); // candidate 3 === marker
+		const bytes = readFileSync(craftStatePath(root, feature), "utf8");
+
+		const result = performAuditBegin(feature, root, { escalationDisposition: "Continue auditing" });
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.escalation?.status).toBe("invalid-state");
+		expect(firstText(result)).toContain("auditCycle+1");
+		// cycle / checkLogAtCycleStart / base snapshot / every ledger byte — unchanged.
+		expect(readFileSync(craftStatePath(root, feature), "utf8")).toBe(bytes);
+		const persisted = readPersistedCraftState(root, feature);
+		expect(persisted?.auditCycle).toBe(3);
+		expect(persisted?.checkLogAtCycleStart).toBe(1);
+		expect(persisted?.auditEscalations).toBeUndefined();
+		expect(persisted?.auditBaseSnapshot?.baseBranch).toBe("main");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-0 RF-5 — re-registration (a bare lsc_craft_init resume) must preserve the persisted
+// auditBaseSnapshot and releaseApproval, and a same-cycle replay afterwards must return THAT
+// persisted snapshot (not undefined, not a freshly injected observation).
+// ---------------------------------------------------------------------------
+
+describe("RF-5 — re-registration preserves auditBaseSnapshot; same-cycle replay returns the persisted snapshot", () => {
+	afterEach(() => clearActiveCraft());
+
+	it("a bare setActiveCraft keeps releaseApproval and auditBaseSnapshot byte-equivalent, and replay serves the persisted base", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		const snapshot = { baseBranch: "main", baseTip: "a".repeat(40), sourceTip: "b".repeat(40), behindCount: 0, status: "ok" as const, authority: "explicit-base" as const, observedAt: "2026-08-25T00:00:00.000Z" };
+		const releaseApproval = { nonce: "n1", tag: "[Land]", question: "q", response: "yes", issuedAt: "2026-08-25T00:00:00.000Z" };
+		persistOnly({ ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: snapshot, releaseApproval });
+
+		setActiveCraft(freshState(root, feature)); // a bare re-registration carrying none of the fields
+
+		const persisted = readPersistedCraftState(root, feature);
+		expect(persisted?.auditBaseSnapshot).toEqual(snapshot);
+		expect(persisted?.releaseApproval).toEqual(releaseApproval);
+		const replay = performAuditBegin(feature, root); // candidate 0 === persisted auditCycle → replay
+		expect(replay.isError).toBeFalsy();
+		expect(replay.details?.auditCycle).toBe(0);
+		expect(replay.details?.base).toEqual(snapshot);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-0 RF-15① — anchorBaseSnapshot's three unknown-degradation branches, each observed
+// through the public observeAuditBase seam: (1) an unresolvable SOURCE tip (sourceRoot not a
+// git repo), (2) a failing behind-count (the source tip is a FOREIGN repo's OID, so
+// `rev-list --count <foreign>..<base>` cannot resolve it in the project root), and (3) a
+// non-integer count (scripted via the runGitText spy — real git always prints an integer).
+// ---------------------------------------------------------------------------
+
+describe("RF-15① — anchorBaseSnapshot unknown-degradation branches (source tip / rev-list / non-integer count)", () => {
+	afterEach(() => {
+		while (tempGitDirs.length > 0) {
+			const dir = tempGitDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("an unresolvable source tip degrades to unknown with 'source tip unavailable'", async () => {
+		const { root } = tmpDriftProject({ advanceBase: false });
+		const notARepo = mkdtempSync(join(tmpdir(), "lsc-not-a-repo-"));
+		tempGitDirs.push(notARepo);
+
+		const snapshot = await observeAuditBase(root, notARepo, "main");
+
+		expect(snapshot.status).toBe("unknown");
+		expect(snapshot.sourceTip).toBe("");
+		expect(snapshot.behindCount).toBe("unknown");
+		expect(snapshot.error ?? "").toContain("source tip unavailable");
+	});
+
+	it("a foreign-repo source tip makes the behind-count unresolvable — 'behind-count unavailable', never a guess", async () => {
+		const { root } = tmpDriftProject({ advanceBase: false });
+		const foreignSource = mkdtempSync(join(tmpdir(), "lsc-foreign-repo-"));
+		tempGitDirs.push(foreignSource);
+		gitIn(foreignSource, ["init", "-q", "-b", "main"]);
+		gitIn(foreignSource, ["config", "user.email", "t@t"]);
+		gitIn(foreignSource, ["config", "user.name", "t"]);
+		writeFileSync(join(foreignSource, "foreign.txt"), "x\n");
+		gitIn(foreignSource, ["add", "-A"]);
+		gitIn(foreignSource, ["commit", "-q", "-m", "foreign"]);
+		const foreignTip = gitIn(foreignSource, ["rev-parse", "HEAD"]);
+
+		const snapshot = await observeAuditBase(root, foreignSource, "main");
+
+		expect(snapshot.status).toBe("unknown");
+		expect(snapshot.sourceTip).toBe(foreignTip); // the source tip itself resolved...
+		expect(snapshot.behindCount).toBe("unknown"); // ...but the count against it cannot
+		expect(snapshot.error ?? "").toContain("behind-count unavailable");
+	});
+
+	it("a non-integer rev-list count degrades to unknown naming the raw output (runGitText spy)", async () => {
+		const root = mkdtempSync(join(tmpdir(), "lsc-base-obs-mock-"));
+		tempGitDirs.push(root);
+		vi.mocked(runGitText)
+			.mockResolvedValueOnce("a".repeat(40)) // base tip resolution
+			.mockResolvedValueOnce("b".repeat(40)) // source tip resolution
+			.mockResolvedValueOnce("banana"); // git rev-list --count output — not an integer
+
+		const snapshot = await observeAuditBase(root, root, "main");
+
+		expect(snapshot.status).toBe("unknown");
+		expect(snapshot.behindCount).toBe("unknown");
+		expect(snapshot.error ?? "").toContain('returned non-integer "banana"');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-0 RF-15② — describeAuditBase's unknown-status WARN wording, observed through
+// performAuditBegin's success text: 'could not be measured' + the authority and base name.
+// ---------------------------------------------------------------------------
+
+describe("RF-15② — an unknown base snapshot surfaces the non-blocking 'could not be measured' WARN", () => {
+	it("a below-cap begin with an unknown snapshot carries the WARN line, naming the authority and base", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly(freshState(root, feature));
+
+		const result = performAuditBegin(feature, root, {
+			baseSnapshot: { baseBranch: "no-such-branch", baseTip: "", sourceTip: "", behindCount: "unknown", status: "unknown", authority: "explicit-base", observedAt: "2026-08-25T00:00:00.000Z", error: "unresolvable ref" },
+		});
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		const text = firstText(result);
+		expect(text).toContain("WARN: audit base could not be measured");
+		expect(text).toContain('explicit-base "no-such-branch"');
+		expect(text).toContain("non-blocking");
 	});
 });

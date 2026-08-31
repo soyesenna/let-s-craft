@@ -32,7 +32,7 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { GitCommandError, runGit, splitNul } from "../utils/git.js";
-import { worktreePath, worktreesRootDir } from "../artifacts/paths.js";
+import { FEATURE_SLUG_RE, worktreePath, worktreesRootDir } from "../artifacts/paths.js";
 import {
 	type RemovalObservation,
 	type WorktreeEntry,
@@ -217,6 +217,15 @@ function landError(reason: LandReasonCode, feature: string, mode: LandMode, text
  * tests can drive it through the captured production execute with an injected effect port.
  */
 export async function performLand(feature: string, mode: LandMode, cwd: string, effectsOverride?: Partial<LandEffects>): Promise<AgentToolResult<LandDetails>> {
+	// audit-0 RF-13: the feature name reaches the [Land] question, the persisted state, and git
+	// argv verbatim — refuse a non-slug (traversal/newline/control chars) before ANY git access.
+	if (!FEATURE_SLUG_RE.test(feature)) {
+		return {
+			isError: true,
+			content: [{ type: "text", text: `lsc_land: feature must be a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+			details: { feature, mode },
+		};
+	}
 	const projectRoot = cwd;
 	const worktreeRoot = worktreePath(projectRoot, feature);
 	const anchor: ApprovalCraftIdentity = { feature, projectRoot, worktreeRoot };

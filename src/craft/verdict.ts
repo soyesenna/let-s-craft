@@ -11,7 +11,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { runGitText } from "../utils/git.js";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { craftAuditDir, craftAuditPath, craftCheckLogsDir, craftStatePath, resolveFeatureName } from "../artifacts/paths.js";
+import { FEATURE_SLUG_RE, craftAuditDir, craftAuditPath, craftCheckLogsDir, craftStatePath, resolveFeatureName } from "../artifacts/paths.js";
 import { detectFixturePath } from "../fixtures.js";
 import {
 	AUDIT_ESCALATION_DISPOSITIONS,
@@ -390,6 +390,14 @@ function describeAuditBase(snapshot: AuditBaseSnapshot): string {
  * under-cap proceed records the cycle, in ONE atomic write each (applyAuditBeginOutcome).
  */
 export function performAuditBegin(feature: string, cwd: string, options: AuditBeginOptions = {}): AgentToolResult<AuditBeginDetails> {
+	// audit-0 RF-13: the feature is interpolated verbatim into the [Audit Escalation] question and
+	// every result text — refuse a non-slug (newline/control chars) before ANY fs access.
+	if (!FEATURE_SLUG_RE.test(feature)) {
+		return {
+			isError: true,
+			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+		};
+	}
 	const root = resolveAuditRoot(cwd, feature);
 
 	const logsDir = craftCheckLogsDir(root, feature);
@@ -644,6 +652,13 @@ export interface AuditValidateDetails {
  * tool-level test request, mirrors abort.ts/release.ts's performX pattern).
  */
 export function performAuditValidate(feature: string, cwd: string): AgentToolResult<AuditValidateDetails> {
+	// audit-0 RF-13 — same boundary guard as performAuditBegin (the name reaches result text verbatim).
+	if (!FEATURE_SLUG_RE.test(feature)) {
+		return {
+			isError: true,
+			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+		};
+	}
 	const root = resolveAuditRoot(cwd, feature);
 
 	const auditDir = craftAuditDir(root, feature);
