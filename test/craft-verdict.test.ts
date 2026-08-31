@@ -327,6 +327,45 @@ describe("performAuditBegin (tool-execute-level)", () => {
 		expect(readFileSync(craftStatePath(root, feature), "utf8")).toBe(bytes);
 	});
 
+	it("live Continue at 3 lets candidates 4 and 5 proceed and re-fires the gate at candidate 6", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly(freshState(root, feature));
+		for (let n = 0; n < 3; n++) writeAuditDoc(root, feature, n, "REJECT");
+		performAuditBegin(feature, root);
+		const consumed = performAuditBegin(feature, root, { escalationDisposition: "Continue auditing" });
+		expect(consumed.isError).toBeFalsy();
+		expect(consumed.details?.auditCycle).toBe(3);
+
+		writeAuditDoc(root, feature, 3, "REJECT");
+		const at4 = performAuditBegin(feature, root);
+		expect(at4.isError).toBeFalsy();
+		expect(at4.details?.auditCycle).toBe(4);
+		expect(at4.details?.escalation).toBeUndefined();
+
+		writeAuditDoc(root, feature, 4, "REJECT");
+		const at5 = performAuditBegin(feature, root);
+		expect(at5.isError).toBeFalsy();
+		expect(at5.details?.auditCycle).toBe(5);
+		expect(at5.details?.escalation).toBeUndefined();
+
+		writeAuditDoc(root, feature, 5, "REJECT");
+		const at6 = performAuditBegin(feature, root);
+		expect(at6.isError).toBe(true);
+		expect(at6.details?.escalation).toMatchObject({
+			status: "escalation-required",
+			dueCycle: 6,
+			scheduledCycle: 6,
+			intervalCycles: 3,
+		});
+		const persisted = readPersistedCraftState(root, feature);
+		expect(persisted?.auditCycle).toBe(5);
+		expect(persisted?.auditEscalationPending).toMatchObject({ dueCycle: 6, scheduledCycle: 6, intervalCycles: 3 });
+		expect(persisted?.auditEscalations).toHaveLength(1);
+		expect(persisted?.auditEscalations?.[0]).toMatchObject({ dueCycle: 3, disposition: "Continue auditing" });
+	});
+
+
 	it("a terminal disposition (Abort/Preserve) consumes the gate WITHOUT issuing a cycle; later begins are refused", () => {
 		for (const disposition of ["Abort this craft", "Preserve branch and stop"] as const) {
 			const root = tmpProject();
