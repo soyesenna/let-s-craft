@@ -19,6 +19,8 @@
 // record-local (`intervalCycles` on every pending and decision) — there is deliberately NO
 // separate top-level interval mirror, so a fixture↔live mode switch is detectable from the
 // records themselves and rejected before any write.
+import { controlSafeEcho, isControlFreeText } from "./tool-text.js";
+import type { AuditBaseSnapshot } from "./state.js";
 
 /** The escalation interval for normal (live) runs: the gate first fires at candidate cycle 3, then every 3 cycles after a Continue. */
 export const LIVE_AUDIT_ESCALATION_INTERVAL = 3;
@@ -169,11 +171,11 @@ function isCanonicalIsoTimestamp(value: string): boolean {
 function parsePendingRecord(raw: unknown, feature: string, where: string): AuditEscalationPending | { error: string } {
 	if (!isPlainObject(raw)) return { error: `${where}: not an object` };
 	const { feature: recordFeature, dueCycle, scheduledCycle, intervalCycles } = raw;
-	if (recordFeature !== feature) return { error: `${where}: feature "${String(recordFeature)}" does not match the current feature "${feature}"` };
-	if (!isSafeNonNegativeCycle(dueCycle)) return { error: `${where}: dueCycle is not a non-negative safe integer (${String(dueCycle)})` };
-	if (!isSafeNonNegativeCycle(scheduledCycle)) return { error: `${where}: scheduledCycle is not a non-negative safe integer (${String(scheduledCycle)})` };
-	if (!isAuditEscalationInterval(intervalCycles)) return { error: `${where}: intervalCycles is not a declared escalation interval (${String(intervalCycles)})` };
-	if (typeof raw.createdAt !== "string" || !isCanonicalIsoTimestamp(raw.createdAt)) return { error: `${where}: createdAt is not a canonical ISO-8601 timestamp (${JSON.stringify(raw.createdAt)}) — every record lets-craft persists is Date#toISOString()-shaped` };
+	if (recordFeature !== feature) return { error: `${where}: feature ${controlSafeEcho(recordFeature)} does not match the current feature "${feature}"` };
+	if (!isSafeNonNegativeCycle(dueCycle)) return { error: `${where}: dueCycle is not a non-negative safe integer (${controlSafeEcho(dueCycle)})` };
+	if (!isSafeNonNegativeCycle(scheduledCycle)) return { error: `${where}: scheduledCycle is not a non-negative safe integer (${controlSafeEcho(scheduledCycle)})` };
+	if (!isAuditEscalationInterval(intervalCycles)) return { error: `${where}: intervalCycles is not a declared escalation interval (${controlSafeEcho(intervalCycles)})` };
+	if (typeof raw.createdAt !== "string" || !isCanonicalIsoTimestamp(raw.createdAt)) return { error: `${where}: createdAt is not a canonical ISO-8601 timestamp (${controlSafeEcho(raw.createdAt)}) — every record lets-craft persists is Date#toISOString()-shaped` };
 	if (dueCycle < scheduledCycle) return { error: `${where}: dueCycle (${dueCycle}) precedes scheduledCycle (${scheduledCycle})` };
 	return { feature, dueCycle, scheduledCycle, intervalCycles, createdAt: raw.createdAt };
 }
@@ -185,13 +187,13 @@ function parseDecisionRecord(raw: unknown, feature: string, where: string): Pars
 	const pending = parsePendingRecord(raw, feature, where);
 	if ("error" in pending) return pending;
 	const { disposition, decidedAt } = raw;
-	if (typeof decidedAt !== "string" || !isCanonicalIsoTimestamp(decidedAt)) return { error: `${where}: decidedAt is not a canonical ISO-8601 timestamp (${JSON.stringify(decidedAt)}) — every record lets-craft persists is Date#toISOString()-shaped` };
+	if (typeof decidedAt !== "string" || !isCanonicalIsoTimestamp(decidedAt)) return { error: `${where}: decidedAt is not a canonical ISO-8601 timestamp (${controlSafeEcho(decidedAt)}) — every record lets-craft persists is Date#toISOString()-shaped` };
 	if (disposition === "Continue auditing") {
 		const { nextDueCycle } = raw;
-		if (!isSafeNonNegativeCycle(nextDueCycle)) return { error: `${where}: nextDueCycle is not a non-negative safe integer (${String(nextDueCycle)})` };
+		if (!isSafeNonNegativeCycle(nextDueCycle)) return { error: `${where}: nextDueCycle is not a non-negative safe integer (${controlSafeEcho(nextDueCycle)})` };
 		const expected = pending.dueCycle + pending.intervalCycles;
 		if (nextDueCycle !== expected || !Number.isSafeInteger(expected)) {
-			return { error: `${where}: Continue nextDueCycle (${String(nextDueCycle)}) is not dueCycle + intervalCycles (${pending.dueCycle} + ${pending.intervalCycles})` };
+			return { error: `${where}: Continue nextDueCycle (${controlSafeEcho(nextDueCycle)}) is not dueCycle + intervalCycles (${pending.dueCycle} + ${pending.intervalCycles})` };
 		}
 		return { ...pending, disposition, decidedAt, nextDueCycle };
 	}
@@ -200,7 +202,7 @@ function parseDecisionRecord(raw: unknown, feature: string, where: string): Pars
 	}
 	// audit-1 RF-20(b): an invalid value is echoed ESCAPED (JSON.stringify), never raw — control
 	// characters in a forged disposition must not reshape this diagnostic as it flows to tool text.
-	return { error: `${where}: disposition ${JSON.stringify(disposition)} is not a canonical escalation label` };
+	return { error: `${where}: disposition ${controlSafeEcho(disposition)} is not a canonical escalation label` };
 }
 
 /**
@@ -225,6 +227,38 @@ export function parseTerminalDispositionSummary(raw: unknown): TerminalDispositi
 	if (!isSafeNonNegativeCycle(dueCycle)) return undefined;
 	if (typeof decidedAt !== "string" || !isCanonicalIsoTimestamp(decidedAt)) return undefined;
 	return { disposition, dueCycle, decidedAt };
+}
+
+/** audit-2 RF-26 — a 40-hex git OID, or "" (the interface's documented unresolvable marker). */
+function isOidShapeOrEmpty(value: unknown): value is string {
+	return value === "" || (typeof value === "string" && /^[0-9a-f]{40}$/.test(value));
+}
+
+/**
+ * audit-2 RF-26 — runtime-parse a persisted audit base snapshot before ANY of its fields are
+ * interpolated into result text (verdict.ts's replay path): the persisted state file is
+ * untrusted bytes, so the status/authority enums, the canonical ISO-8601 observedAt, the
+ * 40-hex OID shape (or the documented "" unresolvable marker), the safe non-negative count,
+ * and the control-freedom of baseBranch/error are re-verified here rather than trusted from
+ * the decode cast. Undefined = not canonical → the caller emits a constant diagnostic, never
+ * the raw record (the parseTerminalDispositionSummary precedent, mirrored).
+ */
+export function parseAuditBaseSnapshot(raw: unknown): AuditBaseSnapshot | undefined {
+	if (!isPlainObject(raw)) return undefined;
+	const { baseBranch, baseTip, sourceTip, behindCount, status, authority, observedAt, error } = raw;
+	if (typeof baseBranch !== "string" || !isControlFreeText(baseBranch)) return undefined;
+	if (!isOidShapeOrEmpty(baseTip) || !isOidShapeOrEmpty(sourceTip)) return undefined;
+	if (status !== "ok" && status !== "unknown") return undefined;
+	if (authority !== "explicit-base" && authority !== "legacy-current-branch") return undefined;
+	if (typeof observedAt !== "string" || !isCanonicalIsoTimestamp(observedAt)) return undefined;
+	if (status === "ok") {
+		if (!isSafeNonNegativeCycle(behindCount)) return undefined;
+		if (error !== undefined) return undefined; // the interface documents error as present iff status === "unknown"
+		return { baseBranch, baseTip, sourceTip, behindCount, status, authority, observedAt };
+	}
+	if (behindCount !== "unknown") return undefined;
+	if (typeof error !== "string" || !isControlFreeText(error)) return undefined;
+	return { baseBranch, baseTip, sourceTip, behindCount, status, authority, observedAt, error };
 }
 
 /** The validated escalation ledger the gate's later stages consume. */
@@ -279,7 +313,7 @@ export function validateEscalationLedger(
 		} else {
 			const prev = history[i - 1];
 			if (prev.disposition !== "Continue auditing" || prev.nextDueCycle !== parsed.scheduledCycle) {
-				return { error: `auditEscalations[${i}]: scheduledCycle ${parsed.scheduledCycle} does not chain to the previous Continue's nextDueCycle (${prev.disposition === "Continue auditing" ? String(prev.nextDueCycle) : "n/a — previous record is terminal"})` };
+				return { error: `auditEscalations[${i}]: scheduledCycle ${parsed.scheduledCycle} does not chain to the previous Continue's nextDueCycle (${prev.disposition === "Continue auditing" ? JSON.stringify(prev.nextDueCycle) : "n/a — previous record is terminal"})` };
 			}
 		}
 		history.push(parsed);
@@ -360,11 +394,11 @@ export function validateEscalationLedger(
 	const persistedNextDue = persisted.nextAuditEscalationCycle;
 	if (expectedMirror === undefined) {
 		if (hasNextDue && persistedNextDue !== undefined) {
-			return { error: `nextAuditEscalationCycle is set (${String(persistedNextDue)}) but no Continue decision exists to mirror` };
+			return { error: `nextAuditEscalationCycle is set (${controlSafeEcho(persistedNextDue)}) but no Continue decision exists to mirror` };
 		}
 	} else {
 		if (!isSafeNonNegativeCycle(persistedNextDue) || persistedNextDue !== expectedMirror) {
-			return { error: `nextAuditEscalationCycle (${String(persistedNextDue)}) is not the exact mirror of the latest Continue's nextDueCycle (${expectedMirror})` };
+			return { error: `nextAuditEscalationCycle (${controlSafeEcho(persistedNextDue)}) is not the exact mirror of the latest Continue's nextDueCycle (${expectedMirror})` };
 		}
 	}
 
@@ -390,12 +424,12 @@ export function evaluateAuditBeginGate(input: AuditBeginGateInput): AuditBeginGa
 
 	// (i) artifact-derived candidate must be a safe non-negative cycle.
 	if (!isSafeNonNegativeCycle(candidateCycle)) {
-		return invalid(`candidateCycle ${String(candidateCycle)} is not a non-negative safe integer`);
+		return invalid(`candidateCycle ${controlSafeEcho(candidateCycle)} is not a non-negative safe integer`);
 	}
 
 	const persistedAuditCycle = persisted.auditCycle;
 	if (persistedAuditCycle !== undefined && !isSafeNonNegativeCycle(persistedAuditCycle)) {
-		return invalid(`persisted auditCycle ${String(persistedAuditCycle)} is not a non-negative safe integer`);
+		return invalid(`persisted auditCycle ${controlSafeEcho(persistedAuditCycle)} is not a non-negative safe integer`);
 	}
 
 	// Shape/arithmetic/chain invariant validation — BEFORE any write.
@@ -457,7 +491,7 @@ export function evaluateAuditBeginGate(input: AuditBeginGateInput): AuditBeginGa
 				reason: "invalid-disposition",
 				// audit-1 RF-20(b): escaped echo (JSON.stringify) — a forged control-carrying
 				// disposition never reshapes the refusal text it appears in.
-				message: `escalation_disposition ${JSON.stringify(disposition)} is not one of the canonical labels ${AUDIT_ESCALATION_DISPOSITIONS.join(" / ")} — a free answer or blank is never consumed.`,
+				message: `escalation_disposition ${controlSafeEcho(disposition)} is not one of the canonical labels ${AUDIT_ESCALATION_DISPOSITIONS.join(" / ")} — a free answer or blank is never consumed.`,
 			};
 		}
 		if (disposition === "Continue auditing") {
@@ -477,7 +511,7 @@ export function evaluateAuditBeginGate(input: AuditBeginGateInput): AuditBeginGa
 				type: "blocked",
 				reason: "invalid-disposition",
 				// audit-1 RF-20(b): escaped echo — same no-raw-payload rule as the pending branch above.
-				message: `escalation_disposition ${JSON.stringify(disposition)} is not one of the canonical labels ${AUDIT_ESCALATION_DISPOSITIONS.join(" / ")}.`,
+				message: `escalation_disposition ${controlSafeEcho(disposition)} is not one of the canonical labels ${AUDIT_ESCALATION_DISPOSITIONS.join(" / ")}.`,
 			};
 		}
 		return {

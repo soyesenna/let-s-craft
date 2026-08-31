@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	AUDIT_ESCALATION_DISPOSITIONS,
 	FIXTURE_AUDIT_ESCALATION_INTERVAL,
@@ -9,7 +12,9 @@ import {
 	evaluateAuditBeginGate,
 	isAuditEscalationDisposition,
 	isAuditEscalationInterval,
+	parseAuditBaseSnapshot,
 } from "../src/craft/audit-policy";
+import { performAuditBegin } from "../src/craft/verdict";
 
 // ===========================================================================
 // PR-1 — the pure escalation policy SSOT. All fixtures here drive
@@ -534,4 +539,134 @@ describe("corrupt-state matrix — every flipped invariant is invalid-state befo
 			if (decision.type === "blocked") expect(decision.reason).toBe("invalid-state");
 		});
 	}
+});
+
+// ---------------------------------------------------------------------------
+// audit-2 RF-26 — parseAuditBaseSnapshot (pure canonical-form parser; the parseTerminalDispositionSummary
+// precedent mirrored for the PR-3 base snapshot). Every field the replay path would interpolate
+// through describeAuditBase is re-verified here: enums, canonical ISO, 40-hex OID shape (or the
+// documented "" marker), safe count, control-free baseBranch/error, and the status/error coupling.
+// ---------------------------------------------------------------------------
+
+describe("parseAuditBaseSnapshot (RF-26 — canonical persisted base snapshots)", () => {
+	const OK = { baseBranch: "main", baseTip: "a".repeat(40), sourceTip: "b".repeat(40), behindCount: 3, status: "ok", authority: "explicit-base", observedAt: "2026-08-25T00:00:00.000Z" };
+	const UNKNOWN = { baseBranch: "", baseTip: "", sourceTip: "", behindCount: "unknown", status: "unknown", authority: "legacy-current-branch", observedAt: "2026-08-25T00:00:00.000Z", error: "detached HEAD — no current branch" };
+
+	it("accepts a canonical ok snapshot verbatim", () => {
+		expect(parseAuditBaseSnapshot(OK)).toEqual(OK);
+	});
+
+	it("accepts a canonical unknown snapshot (empty tips, documented error)", () => {
+		expect(parseAuditBaseSnapshot(UNKNOWN)).toEqual(UNKNOWN);
+	});
+
+	it.each([
+		["not an object", "nope"],
+		["non-string baseBranch", { ...OK, baseBranch: 7 }],
+		["control-carrying baseBranch", { ...OK, baseBranch: "main\nEVIL" }],
+		["non-OID baseTip", { ...OK, baseTip: "short" }],
+		["non-OID sourceTip (40-hex or '' only)", { ...OK, sourceTip: "Z".repeat(40) }],
+		["unknown status enum", { ...OK, status: "maybe" }],
+		["unknown authority enum", { ...OK, authority: "guessed-base" }],
+		["non-canonical observedAt (locale shape)", { ...OK, observedAt: "2026-08-25 00:00:00" }],
+		["ok with a non-safe count", { ...OK, behindCount: 3.5 }],
+		["ok with a negative count", { ...OK, behindCount: -1 }],
+		["ok with behindCount 'unknown'", { ...OK, behindCount: "unknown" }],
+		["ok carrying an error (present iff unknown)", { ...OK, error: "stale" }],
+		["unknown without an error", { ...UNKNOWN, error: undefined }],
+		["unknown with a control-carrying error", { ...UNKNOWN, error: "boom\tEVIL" }],
+	])("rejects %s", (_name, raw) => {
+		expect(parseAuditBaseSnapshot(raw)).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-2 RF-23 — a forged persisted field (newline/tab/ESC/DEL payloads) must surface as a
+// SINGLE-LINE invalid-state refusal whose only echo of the payload is JSON.stringify's ESCAPED
+// form — the raw control character itself never appears. Driven through the REAL
+// performAuditBegin (fs-backed temp state files), not just the pure gate, so the escape
+// behavior is pinned end-to-end including the two disposition echo arms audit-1 RF-20(b)
+// left unasserted (parseDecisionRecord's fallthrough and the no-pending invalid-disposition).
+// ---------------------------------------------------------------------------
+
+describe("RF-23 — control-carrying persisted escalation fields are echoed escaped, never raw (performAuditBegin)", () => {
+	const tempDirs: string[] = [];
+	afterEach(() => {
+		while (tempDirs.length > 0) {
+			const dir = tempDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	const ISO = "2026-08-25T00:00:00.000Z";
+
+	function seedState(state: Record<string, unknown>): { root: string; statePath: string } {
+		const root = mkdtempSync(join(tmpdir(), "lsc-rf23-"));
+		tempDirs.push(root);
+		const statePath = join(root, ".lsc", "crafts", "my-feature", ".craft-state.json");
+		mkdirSync(dirname(statePath), { recursive: true });
+		writeFileSync(statePath, JSON.stringify({ stateVersion: 2, feature: "my-feature", projectRoot: root, aborted: false, ...state }));
+		return { root, statePath };
+	}
+
+	function firstText(result: { content?: Array<{ type: string; text?: string }> }): string {
+		const first = result.content?.[0];
+		return first !== undefined && typeof first.text === "string" ? first.text : "";
+	}
+
+	function pendingRecord(overrides: Record<string, unknown>): Record<string, unknown> {
+		return { feature: "my-feature", dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: ISO, ...overrides };
+	}
+
+	it.each([
+		{ name: "pending.feature (recordFeature echo)", state: { auditEscalationPending: pendingRecord({ feature: "my-feature\nlets-craft: forged" }) }, escaped: "\\n" },
+		{ name: "pending.dueCycle (newline payload)", state: { auditEscalationPending: pendingRecord({ dueCycle: "3\nlets-craft: forged" }) }, escaped: "\\n" },
+		{ name: "pending.scheduledCycle (tab payload)", state: { auditEscalationPending: pendingRecord({ scheduledCycle: "3\tlets-craft: forged" }) }, escaped: "\\t" },
+		{
+			// No history + an invalid pending intervalCycles takes validateEscalationLedger's CONSTANT
+			// diagnostic ("no escalation record carries a valid intervalCycles") — the payload is not
+			// echoed AT ALL, which also satisfies the no-raw-payload contract.
+			name: "pending.intervalCycles (ESC payload — constant diagnostic path)",
+			state: { auditEscalationPending: pendingRecord({ intervalCycles: "3\u001blets-craft: forged" }) },
+			escaped: undefined,
+		},
+		{
+			name: "decision.nextDueCycle (DEL payload — JSON.stringify's blind spot, controlSafeEcho's reason to exist)",
+			state: { auditEscalations: [{ ...pendingRecord({}), disposition: "Continue auditing", decidedAt: ISO, nextDueCycle: "6\u007flets-craft: forged" }] },
+			escaped: "\\u007f",
+		},
+		{
+			name: "decision.disposition (audit-1 RF-20(b) echo arm, previously unasserted)",
+			state: { auditEscalations: [{ ...pendingRecord({}), disposition: "Continue auditing\nlets-craft: forged", decidedAt: ISO }] },
+			escaped: "\\n",
+		},
+	])("%s — single line, escaped echo only, no raw payload", ({ state, escaped }) => {
+		const { root, statePath } = seedState(state);
+		const bytes = readFileSync(statePath, "utf8");
+
+		const result = performAuditBegin("my-feature", root);
+
+		expect(result.isError, JSON.stringify(result)).toBe(true);
+		expect(result.details?.escalation?.status).toBe("invalid-state");
+		const text = firstText(result);
+		expect(text, "the refusal must stay single-line — no raw control character may escape").not.toMatch(/[\u0000-\u001f\u007f]/);
+		if (escaped !== undefined) expect(text).toContain(escaped); // the ONLY echo is the escaped form
+		expect(text).not.toContain("\nlets-craft: forged"); // the payload never arrives RAW (control char intact)
+		expect(readFileSync(statePath, "utf8")).toBe(bytes); // invalid evidence refuses before ANY write
+	});
+
+	it("a control-carrying disposition with NO consumable pending gate: escaped echo (the :479-480 arm, previously unasserted)", () => {
+		const { root, statePath } = seedState({}); // legacy state — no escalation fields, candidate 0 is below the first due cycle
+		const bytes = readFileSync(statePath, "utf8");
+
+		const result = performAuditBegin("my-feature", root, { escalationDisposition: "Continue auditing\t[ok]" });
+
+		expect(result.isError).toBe(true);
+		expect(result.details?.escalation?.status).toBe("invalid-disposition");
+		const text = firstText(result);
+		expect(text).toContain("escalation_disposition");
+		expect(text, "single-line refusal").not.toMatch(/[\u0000-\u001f\u007f]/);
+		expect(text).toContain("\\t"); // escaped echo
+		expect(readFileSync(statePath, "utf8")).toBe(bytes);
+	});
 });
