@@ -356,19 +356,32 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 		return { isError: true, content: [{ type: "text", text: target.text }] };
 	}
 
-	// audit-1 RF-20(d): audit-evidence mode executes against a root read out of the PERSISTED
-	// state file — untrusted bytes. That root must be exactly this invocation's cwd or the
-	// worktree computed from it; anything else is a foreign root and is refused (escaped echo,
-	// never raw) before the script is located or executed.
+	// audit-1 RF-20(d) / audit-2 RF-24: audit-evidence mode executes against a root read out of
+	// the PERSISTED state file — untrusted bytes. The persisted record must be in the CANONICAL
+	// identity form for this invocation, checked per field (not just the projected root):
+	// feature === requested, projectRoot === the invocation cwd, and worktreeRoot either absent
+	// or exactly worktreePath(cwd, feature). The projected-root comparison stays as a companion;
+	// anything else is a foreign identity and is refused (escaped echo of the claimed identity,
+	// never a raw control payload) before the script is located or executed.
 	if (target.auditEvidenceOnly && args.cwd !== undefined) {
 		const expectedWorktree = worktreePath(args.cwd, args.feature);
-		if (target.root !== args.cwd && target.root !== expectedWorktree) {
+		const claimed = { feature: args.persisted?.feature, projectRoot: args.persisted?.projectRoot, worktreeRoot: args.persisted?.worktreeRoot };
+		const identityOk =
+			args.persisted !== undefined &&
+			claimed.feature === args.feature &&
+			claimed.projectRoot === args.cwd &&
+			(claimed.worktreeRoot === undefined || claimed.worktreeRoot === expectedWorktree);
+		const rootOk = target.root === args.cwd || target.root === expectedWorktree;
+		if (!identityOk || !rootOk) {
 			return {
 				isError: true,
 				content: [
 					{
 						type: "text",
-						text: `lets-craft: the persisted craft state for "${args.feature}" claims the root ${JSON.stringify(target.root)}, which is neither the current directory (${args.cwd}) nor its computed worktree (${expectedWorktree}) — refusing to run check/run_check.sh against a foreign root (audit-1 RF-20).`,
+						text:
+							`lets-craft: the persisted craft state for "${args.feature}" claims the identity ${JSON.stringify(claimed)}, ` +
+							`which is not the canonical form for this invocation (expected feature ${JSON.stringify(args.feature)}, projectRoot ${args.cwd}, worktreeRoot absent or ${expectedWorktree}) — ` +
+							`refusing to run check/run_check.sh against a foreign root (audit-1 RF-20, audit-2 RF-24).`,
 					},
 				],
 			};
@@ -468,6 +481,16 @@ export function registerRunCheckTool(pi: ExtensionAPI): void {
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<RunCheckDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
+			// audit-2 RF-24: the shared slug boundary at the WRAPPER, before ANY fs access —
+			// findPersistedCraftState below runs existsSync+decode over the candidate state
+			// paths, so without this guard the core's "before ANY fs access" comment (audit-0
+			// RF-13, performRunCheck's own slug check) is false at the wrapper seam.
+			if (!FEATURE_SLUG_RE.test(feature)) {
+				return {
+					isError: true,
+					content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+				};
+			}
 			const activeCraft = getActiveCraft();
 			const persisted = findPersistedCraftState(ctx.cwd, feature);
 			return performRunCheck({ feature, activeCraft, persisted, timeoutMs: params.timeout_ms, cwd: ctx.cwd, exec: pi.exec });

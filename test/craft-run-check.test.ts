@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import * as zod from "zod/v4";
 import { craftCheckDir, craftCheckLogsDir, craftCheckScriptPath, worktreePath } from "../src/artifacts/paths";
 import {
 	checkScriptRejectText,
+	registerRunCheckTool,
 	evaluateCheckScriptShape,
 	extractExecutionLines,
 	extractFailureLines,
@@ -516,7 +518,9 @@ describe("performRunCheck (B-1 target resolution + AC11 non-degeneracy gates, to
 		expect(result.isError, JSON.stringify(result)).toBe(true);
 		const text = (result.content[0] as { text: string }).text;
 		expect(text).toContain("foreign root");
-		expect(text).toContain("neither the current directory");
+		// audit-2 RF-24: the refusal now names the claimed IDENTITY (per-field canonical check),
+		// not just the projected root — "neither the current directory" is gone.
+		expect(text).toContain("not the canonical form for this invocation");
 		expect(existsSync(craftCheckLogsDir(foreignRoot, feature)), "무-effect: no check log dir may be created at the foreign root").toBe(false);
 	});
 
@@ -544,5 +548,120 @@ describe("performRunCheck (B-1 target resolution + AC11 non-degeneracy gates, to
 
 		expect(result.isError, JSON.stringify(result)).toBeFalsy();
 		expect((result.content[0] as { text: string }).text).toContain("[Audit Evidence Mode]");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-2 RF-24 — lsc_run_check's registration wrapper: the resolved feature clears the shared
+// slug boundary BEFORE findPersistedCraftState (which runs existsSync+decode over the candidate
+// state paths — the core's "before ANY fs access" comment was false at the wrapper seam), and
+// audit-evidence mode's persisted record must be in the CANONICAL identity form for this
+// invocation: feature === requested, projectRoot === ctx.cwd, worktreeRoot absent or exactly
+// worktreePath(ctx.cwd, feature). All through the CAPTURED PRODUCTION execute.
+// ---------------------------------------------------------------------------
+
+describe("RF-24 — registerRunCheckTool execute: slug guard before any state read + canonical persisted identity", () => {
+	afterEach(() => clearActiveCraft());
+
+	type RunCheckExecute = (id: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: { cwd: string }) => Promise<{ isError?: boolean; content: Array<{ type: string; text: string }> }>;
+
+	function captureRunCheckExecute(): { execute: RunCheckExecute; execCalls: number } {
+		let execute: RunCheckExecute | undefined;
+		const execCounter: { execute?: RunCheckExecute; execCalls: number } = { execCalls: 0 };
+		const pi = {
+			zod,
+			exec: async () => {
+				execCounter.execCalls += 1;
+				return { stdout: "1 passed", stderr: "", code: 0, killed: false };
+			},
+			registerTool(definition: unknown): void {
+				if (typeof definition === "object" && definition !== null && "name" in definition && (definition as { name?: string }).name === "lsc_run_check" && "execute" in definition && typeof (definition as { execute?: unknown }).execute === "function") {
+					execute = (definition as { execute: RunCheckExecute }).execute;
+				}
+			},
+		};
+		registerRunCheckTool(pi as unknown as Parameters<typeof registerRunCheckTool>[0]);
+		if (!execute) throw new Error("lsc_run_check was not registered");
+		execCounter.execute = execute; // the live counter object itself — a spread would freeze execCalls at 0
+		return execCounter;
+	}
+
+	function firstText(result: { content?: Array<{ type: string; text?: string }> }): string {
+		const first = result.content?.[0];
+		return first !== undefined && typeof first.text === "string" ? first.text : "";
+	}
+
+	/** Persist a state file at the cwd candidate exactly the way findPersistedCraftState reads it. */
+	function seedPersistedState(cwd: string, feature: string, state: Record<string, unknown>): string {
+		const statePath = join(cwd, ".lsc", "crafts", feature, ".craft-state.json");
+		mkdirSync(dirname(statePath), { recursive: true });
+		writeFileSync(statePath, JSON.stringify({ stateVersion: 2, feature, projectRoot: cwd, aborted: false, ...state }));
+		return statePath;
+	}
+
+	it("① an invalid slug is refused at the WRAPPER — the candidate state file is never read (much less decoded), exec never runs, no log is written", async () => {
+		const root = tmpProject();
+		const forged = "bad\nfeature";
+		// A MALFORMED state file sits exactly where the invalid slug's candidate lookup would read:
+		// WITHOUT the wrapper guard, findPersistedCraftState decodes it and the execute promise
+		// REJECTS (decodeCraftState's JSON.parse throws) — the discriminator that proves the guard.
+		const statePath = join(root, ".lsc", "crafts", forged, ".craft-state.json");
+		mkdirSync(dirname(statePath), { recursive: true });
+		writeFileSync(statePath, "{ not valid json");
+		const runCheck = captureRunCheckExecute();
+
+		const result = await runCheck.execute("t", { feature_dir: forged }, undefined, undefined, { cwd: root });
+
+		expect(result.isError, "the wrapper must return a clean refusal, not a decode throw").toBe(true);
+		const text = firstText(result);
+		expect(text).toContain("kebab-case slug");
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f]/); // control-marker 무-raw-payload (escaped echo only)
+		expect(runCheck.execCalls, "exec must never run").toBe(0);
+		expect(existsSync(join(root, ".lsc", "crafts", forged, "check")), "no log dir may be created").toBe(false);
+		expect(readFileSync(statePath, "utf8")).toBe("{ not valid json"); // untouched — never read or rewritten
+	});
+
+	it.each([
+		{
+			name: "② persisted.feature !== requested",
+			state: (cwd: string) => ({ feature: "other-feature", projectRoot: cwd }),
+		},
+		{
+			name: "③ persisted.projectRoot is a foreign root carrying a control payload (escaped echo, never raw)",
+			state: () => ({ projectRoot: "/tmp/foreign\n--upload-pack=evil\tflag" }),
+		},
+		{
+			name: "② persisted.worktreeRoot is neither absent nor worktreePath(cwd, feature)",
+			state: (cwd: string) => ({ projectRoot: cwd, worktreeRoot: "/tmp/elsewhere-worktree" }),
+		},
+	])("$name", async ({ state }) => {
+		const root = tmpProject();
+		seedPersistedState(root, "my-feature", state(root));
+		const runCheck = captureRunCheckExecute();
+
+		const result = await runCheck.execute("t", { feature_dir: "my-feature" }, undefined, undefined, { cwd: root });
+
+		expect(result.isError, JSON.stringify(result)).toBe(true);
+		const text = firstText(result);
+		expect(text).toContain("foreign root");
+		expect(text).toContain("not the canonical form for this invocation");
+		expect(text, "single-line refusal — no raw control character may escape").not.toMatch(/[\u0000-\u001f\u007f]/);
+		if (text.includes("upload-pack")) expect(text).toContain("\\n"); // the foreign root's echo is escaped
+		expect(runCheck.execCalls, "exec must never run against a foreign identity").toBe(0);
+		expect(existsSync(craftCheckLogsDir(root, "my-feature")), "no log dir may be created").toBe(false);
+	});
+
+	it("a canonical identity still runs through the wrapper (the guard is not a blanket refusal)", async () => {
+		const root = tmpProject();
+		mkdirSync(craftCheckDir(root, "my-feature"), { recursive: true });
+		writeFileSync(craftCheckScriptPath(root, "my-feature"), DEFAULT_SCRIPT);
+		seedPersistedState(root, "my-feature", {});
+		const runCheck = captureRunCheckExecute();
+
+		const result = await runCheck.execute("t", { feature_dir: "my-feature" }, undefined, undefined, { cwd: root });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy(); // audit-evidence run at the cwd root
+		expect(firstText(result)).toContain("[Audit Evidence Mode]");
+		expect(runCheck.execCalls).toBe(1);
 	});
 });
