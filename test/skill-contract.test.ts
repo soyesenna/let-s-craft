@@ -1270,3 +1270,30 @@ describe("audit-0 RF-14 — §4.2 named case matrix: each case independently pin
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// audit-1 RF-21 — post-craft's TWO lsc_run_check call sites (§1.5 tool inventory + §3.1) must
+// carry ONE shared timeout_ms sized to the sequential E2E budget check/run_check.sh itself
+// runs (package.json's e2e ceilings: 4 files × 10,200,000ms = 41,280,000ms, plus build/hook
+// margin → ≥ 43,200,000ms), with no leftover short fixture-mode exception. This contract
+// keeps the two headings from ever drifting apart again.
+// ---------------------------------------------------------------------------
+
+describe("RF-21 — lsc_run_check timeout_ms contract (E2E-budget-sized, drift-free)", () => {
+	const CALL_RE = /lsc_run_check\(feature_dir, timeout_ms: (\d+)\)/g;
+
+	it("both headings carry the SAME single value, at or above the sequential E2E budget floor 43,200,000ms", () => {
+		const values = [...postCraft.matchAll(CALL_RE)].map(match => match[1]);
+		expect(values, "exactly the two call sites: §1.5 tool inventory + §3.1").toHaveLength(2);
+		expect(new Set(values).size, "the two headings must never drift apart").toBe(1);
+		for (const value of values) {
+			expect(Number(value)).toBeGreaterThanOrEqual(43_200_000);
+		}
+		expect(values[0]).toBe("43200000");
+	});
+
+	it("the fixture-mode 120000 exception and the old 600000 value are gone — one value covers every mode", () => {
+		expect(postCraft).not.toContain("120000");
+		expect(postCraft).not.toContain("timeout_ms: 600000");
+	});
+});
