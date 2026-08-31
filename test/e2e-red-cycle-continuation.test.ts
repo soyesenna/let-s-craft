@@ -30,6 +30,7 @@ import {
 	AUDIT_CYCLE_BEGUN_MARKER,
 	E2E_MAIN_MODEL,
 	RUN_CHECK_MARKER,
+	completedTaskSpawnSeen,
 	debugSummary,
 	readCraftStateFile,
 	runOmpPrint,
@@ -186,12 +187,16 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — canonical red cycle continuation (audit 
 				model: E2E_MAIN_MODEL,
 				env: { LSC_FIXTURE: join(fixtureDir, "answers.json") },
 				timeoutMs: POST_CRAFT_TIMEOUT_MS,
-				// §3.0's completion is the observable that evidence is being re-established on top of
-				// B: either §3.1's lsc_run_check ran (its TS-authored transcript header), or the
-				// §3.0 test-authoring spawn completed (the builtin `task` tool — one of the few tools
-				// whose NDJSON toolName is its own). Exit there, keeping the run bounded.
+				// §3.0's completion is the observable that evidence is being re-established on top
+				// of B: either §3.1's lsc_run_check ran (its TS-authored transcript header), or the
+				// §3.0 test-authoring spawn COMPLETED (a parsed `tool_execution_end` event for the
+				// builtin `task` tool — one of the few tools whose NDJSON toolName is its own).
+				// The raw `"toolName":"task"` substring this replaces also matched the spawn's
+				// START event (audit-0 RF-8), killing the run before the result existed — a
+				// structural flake. Only a completed execution, or the run-check marker, may
+				// ever exit early here.
 				earlyExit: (stdout: string) =>
-					stdout.includes(AUDIT_CYCLE_BEGUN_MARKER(1)) && (stdout.includes(RUN_CHECK_MARKER) || stdout.includes('"toolName":"task"')),
+					stdout.includes(AUDIT_CYCLE_BEGUN_MARKER(1)) && (stdout.includes(RUN_CHECK_MARKER) || completedTaskSpawnSeen(stdout)),
 				prompt: `/skill:post-craft .lsc/crafts/${feature}/ ${FIXTURE_NOTE}`,
 			});
 			expect(postCraftResult.timedOut, `red-cycle post-craft timed out.\n${debugSummary(postCraftResult)}`).toBe(false);

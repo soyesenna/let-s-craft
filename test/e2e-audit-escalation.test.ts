@@ -5,16 +5,20 @@
 // the actual skill hit `lsc_audit_begin`'s fail-closed gate, answer it through
 // the fixture-scripted `lsc_select`, and consume it through the real tool.
 //
-// Continue ends EARLY, at the existing earlyExit seam, the moment the SECOND
-// begin call (the consume) succeeds — `total lsc_audit_begin executions = 2 ∧
-// last.isError = false` — so the gate trace (pending → select → decision →
-// next-due mirror) is observed without waiting for any of §3's audit work.
-// Abort/Preserve observe the durable terminal record and assert the absence
-// set: no new audit cycle, no land, no cleanup, branch+worktree preserved.
-// `aborted: true` after "Abort this craft" is deliberately reported as
-// ORCHESTRATION compliance evidence (the skill delegating to lsc_craft_abort),
-// not as the safety property itself — the terminal disposition's begin/land
-// refusal is already proven fail-closed by the PR-1/PR-2 unit suites.
+// Continue ends EARLY, at the existing earlyExit seam, the moment plan.md:411's
+// exact predicate holds — `total lsc_audit_begin executions = 2 ∧ ordered
+// [isError, success] ∧ last.isError = false` (audit-0 RF-7 fixed the ordered
+// tuple via auditBeginOutcomes) — so the gate trace (pending → select →
+// decision → next-due mirror) is observed without waiting for any of §3's
+// audit work. Abort/Preserve observe the durable terminal record and assert
+// the absence set: no new audit cycle, no land, no cleanup, branch+worktree
+// preserved. Abort additionally WAITS for the lsc_craft_abort delegation's
+// result marker as a mandatory condition (RF-7) and asserts aborted=true
+// unconditionally; a run that never reaches the delegation times out and
+// fails. `aborted: true` is still reported as ORCHESTRATION compliance
+// evidence (the skill delegating to lsc_craft_abort), not as the safety
+// property itself — the terminal disposition's begin/land refusal is already
+// proven fail-closed by the PR-1/PR-2 unit suites.
 //
 // Gated behind LSC_E2E=1 — spends real tokens; `npm run e2e` runs this file.
 import { execFileSync } from "node:child_process";
@@ -31,6 +35,7 @@ import {
 	E2E_MAIN_MODEL,
 	type AuditEscalationLabel,
 	type OmpRunResult,
+	auditBeginOutcomes,
 	debugSummary,
 	readCraftStateFile,
 	runOmpPrint,
@@ -107,17 +112,30 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — fixture cap-2 [Audit Escalation] disposi
 	it(
 		"Continue auditing: the second lsc_audit_begin call succeeds (2 total, first isError) and the durable Continue/next-due state is observable",
 		async () => {
-			const { worktreeRoot, feature, result } = await runEscalationBranch("Continue auditing", streamTextEarlyExit(AUDIT_ESCALATION_CONSUMED_MARKER));
+			// plan.md:411's predicate as an ORDERED tuple over COMPLETED executions (RF-7):
+			// exit only when exactly 2 lsc_audit_begin executions exist, ordered
+			// [isError (the gate refusal), success (the consume)]. Not the consumed-marker
+			// substring — that could fire before the count/order was knowable, and the old
+			// final assertion tolerated isError re-issues with a >= 2 count check.
+			const earlyExit = (stdout: string) => {
+				const outcomes = auditBeginOutcomes(stdout);
+				return outcomes.length === 2 && outcomes[0] === true && outcomes[1] === false;
+			};
+			const { worktreeRoot, feature, result } = await runEscalationBranch("Continue auditing", earlyExit);
 			expect(result.timedOut, `escalation-Continue run timed out.\n${debugSummary(result)}`).toBe(false);
 
 			// lsc plugin tools stream under a generic toolName (see e2e-helpers' marker note), so
-			// the execution counts come from the TS-authored result-text markers in the raw stream.
-			// The contract shape is "first call isError · exactly one success · the success is the
-			// LAST begin execution". The model may re-ask the unconsumed gate (idempotent pending
-			// reuse, PR-1) before passing the disposition, so isError re-issues are tolerated.
-			const beginExecutions = streamMarkerCount(result, AUDIT_BEGIN_ANY_MARKER);
-			expect(beginExecutions, `expected at least 2 lsc_audit_begin executions, saw ${beginExecutions}.\n${debugSummary(result)}`).toBeGreaterThanOrEqual(2);
-			expect(streamMarkerCount(result, AUDIT_ESCALATION_REQUIRED_MARKER), "the gate-opening begin call(s) must be the isError escalation-required result").toBeGreaterThanOrEqual(1);
+			// the execution evidence comes from the TS-authored result-text markers in the raw
+			// stream. The contract shape is plan.md:411's EXACT predicate: total completed begin
+			// executions === 2, ordered [isError, success] — the first call is the gate refusal,
+			// the second (and LAST) is the consume success. An isError re-issue, a third
+			// execution, or a success-first ordering all fail here (audit-0 RF-7).
+			const outcomes = auditBeginOutcomes(result);
+			expect(
+				outcomes,
+				`expected exactly 2 lsc_audit_begin executions ordered [isError, success], saw [${outcomes.map(String).join(", ")}].\n${debugSummary(result)}`,
+			).toEqual([true, false]);
+			expect(streamMarkerCount(result, AUDIT_ESCALATION_REQUIRED_MARKER), "the ONE gate-opening begin call must be the isError escalation-required result").toBe(1);
 			expect(streamMarkerCount(result, AUDIT_CYCLE_BEGUN_MARKER(2)), "the consuming begin call must succeed exactly once with cycle 2").toBe(1);
 			expect(streamMarkerCount(result, AUDIT_ESCALATION_CONSUMED_MARKER), "exactly one successful consume-continue execution").toBe(1);
 			expect(
@@ -141,14 +159,11 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — fixture cap-2 [Audit Escalation] disposi
 	it(
 		"Abort this craft: the terminal disposition is durable, no audit/land/cleanup runs, and the branch+worktree survive",
 		async () => {
-			// Early-exit once the terminal record is durable; give the skill a 12s grace window
-			// afterwards to also complete its lsc_craft_abort delegation before the kill.
-			let terminalSeenAt: number | undefined;
-			const earlyExit = (stdout: string) => {
-				if (terminalSeenAt === undefined && stdout.includes(AUDIT_TERMINAL_MARKER())) terminalSeenAt = Date.now();
-				if (terminalSeenAt === undefined) return false;
-				return stdout.includes(CRAFT_ABORTED_MARKER) || Date.now() - terminalSeenAt > 12_000;
-			};
+			// audit-0 RF-7: the lsc_craft_abort delegation is a MANDATORY wait condition —
+			// kill only once BOTH the terminal record and the delegation's result text have
+			// streamed back. A run that never reaches the delegation hits the harness timeout
+			// and fails the timedOut assertion below: no grace window, no soft pass.
+			const earlyExit = (stdout: string) => stdout.includes(AUDIT_TERMINAL_MARKER()) && stdout.includes(CRAFT_ABORTED_MARKER);
 			const { projectDir, worktreeRoot, feature, result } = await runEscalationBranch("Abort this craft", earlyExit);
 			expect(result.timedOut, `escalation-Abort run timed out.\n${debugSummary(result)}`).toBe(false);
 
@@ -170,12 +185,13 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — fixture cap-2 [Audit Escalation] disposi
 			// aborted=true is ORCHESTRATION compliance evidence (the skill delegated to the abort
 			// tool), deliberately reported separately from the safety property itself — the
 			// terminal-disposition refusal of begin/land is proven by the PR-1/PR-2 unit suites.
-			if (result.stdout.includes(CRAFT_ABORTED_MARKER)) {
-				expect(state?.aborted, "an observed lsc_craft_abort delegation must leave aborted=true").toBe(true);
-			} else {
-				// biome-ignore lint/suspicious/noConsole: soft orchestration observation, not a safety assertion.
-				console.warn("lets-craft E2E (soft check): Abort branch ended before an lsc_craft_abort execution was observed — the durable terminal disposition above is the safety property under test.");
-			}
+			// Both facts are now UNCONDITIONAL (audit-0 RF-7): the delegation marker must have
+			// been observed before the kill, and it must have left aborted=true.
+			expect(
+				result.stdout.includes(CRAFT_ABORTED_MARKER),
+				"the skill must delegate to lsc_craft_abort after a terminal Abort disposition — a run killed without the delegation fails here",
+			).toBe(true);
+			expect(state?.aborted, "the observed lsc_craft_abort delegation must leave aborted=true").toBe(true);
 		},
 		TEST_TIMEOUT_MS,
 	);
