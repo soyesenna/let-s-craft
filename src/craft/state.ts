@@ -237,7 +237,7 @@ export interface SetActiveCraftOptions {
 
 /**
  * Register (or re-register) the active craft. Order: invalidate → merge-preserve → persist →
- * publish. Two properties matter (A/D4):
+ * publish. Three properties matter (A/D4, audit-1 RF-19):
  *
  * 1. PRESERVATION: durable evidence fields owned by the exact-root writers (recordAuditCycleBegin /
  *    recordAuditValidated / recordReleaseApprovalAt / applyAuditBeginOutcome — auditCycle,
@@ -246,7 +246,13 @@ export interface SetActiveCraftOptions {
  *    them — activating a craft must never erase audit/approval evidence it did not produce
  *    (audit-0 RF-5: releaseApproval and auditBaseSnapshot join the preserved list, so this
  *    function is the SINGLE preservation authority and callers never hand-compensate).
- * 2. DURABILITY POLICY: see SetActiveCraftOptions — strict persist-or-throw for the lsc_craft_init
+ * 2. NO-OVERWRITE OF UNDECODABLE EVIDENCE (audit-1 RF-19): an existing state file that fails to
+ *    decode (malformed JSON, or a stateVersion newer than this build supports) is durable
+ *    evidence this function cannot preserve — persisting over it would erase it. Strict
+ *    durability PROPAGATES the decode error before any persist/publish; best-effort SKIPS the
+ *    disk write entirely (bytes untouched, an explicit failure to persist) and still publishes
+ *    the in-memory slot, which remains the enforcement authority.
+ * 3. DURABILITY POLICY: see SetActiveCraftOptions — strict persist-or-throw for the lsc_craft_init
  *    transaction, best-effort (default) everywhere else.
  *
  * Activating a new (or re-initialized) craft also revokes any pending destructive approval carried
@@ -255,6 +261,7 @@ export interface SetActiveCraftOptions {
 export function setActiveCraft(state: CraftState, options: SetActiveCraftOptions = {}): void {
 	invalidatePendingApproval();
 	let next = state;
+	let undecodable: unknown;
 	try {
 		const existing = decodeCraftState(craftStatePath(state.worktreeRoot ?? state.projectRoot, state.feature));
 		if (existing) {
@@ -270,14 +277,23 @@ export function setActiveCraft(state: CraftState, options: SetActiveCraftOptions
 			if (state.auditTerminalDisposition === undefined && existing.auditTerminalDisposition !== undefined) preserved.auditTerminalDisposition = existing.auditTerminalDisposition;
 			if (Object.keys(preserved).length > 0) next = { ...state, ...preserved };
 		}
-	} catch {
-		// An undecodable existing file never blocks activation — the caller's state stands alone.
-	}
-	try {
-		next = persist(next);
 	} catch (error) {
+		// audit-1 RF-19: see property 2 above — never swallow a decode failure into a blind
+		// overwrite of the undecodable file.
 		if (options.durability === "strict") throw error;
-		// Keep the in-memory stamp convention even when the disk half is unreachable.
+		undecodable = error;
+	}
+	if (undecodable === undefined) {
+		try {
+			next = persist(next);
+		} catch (error) {
+			if (options.durability === "strict") throw error;
+			// Keep the in-memory stamp convention even when the disk half is unreachable.
+			next.stateVersion = CRAFT_STATE_VERSION;
+		}
+	} else {
+		// Best-effort + undecodable existing file: the disk write is skipped (the bytes are
+		// evidence), but the in-memory slot still carries the current schema stamp.
 		next.stateVersion = CRAFT_STATE_VERSION;
 	}
 	activeCraft = next;

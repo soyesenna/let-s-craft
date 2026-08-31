@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { craftStatePath, worktreePath } from "../src/artifacts/paths";
 import {
+	CRAFT_STATE_VERSION,
 	applyAuditBeginOutcome,
 	clearActiveCraft,
 	type CraftState,
@@ -507,4 +508,43 @@ describe("RF-15⑤ — applyAuditBeginOutcome clears a prior cycle's auditBaseSn
 		expect(stamped.auditBaseSnapshot).toBeUndefined();
 		expect("auditBaseSnapshot" in JSON.parse(readFileSync(craftStatePath(root, feature), "utf8"))).toBe(false);
 	});
+});
+
+// ===========================================================================
+// audit-1 RF-19 — an undecodable persisted craft state (malformed JSON, or a stateVersion
+// newer than this build supports) is durable evidence setActiveCraft must never overwrite:
+// strict durability propagates the decode error BEFORE persist/publish; best-effort SKIPS the
+// disk write entirely (bytes untouched) while still publishing the in-memory slot.
+// ===========================================================================
+
+describe("RF-19 — an undecodable persisted state is never overwritten", () => {
+	const SEEDS: Array<[string, string]> = [
+		["malformed JSON", "{ not json"],
+		["a future stateVersion", JSON.stringify({ stateVersion: CRAFT_STATE_VERSION + 1, feature: "my-feature", projectRoot: "/nowhere", aborted: false })],
+	];
+
+	for (const [label, bytes] of SEEDS) {
+		it(`strict setActiveCraft propagates the decode error for ${label} — bytes unchanged, nothing published`, () => {
+			const projectRoot = tmpProject();
+			const path = craftStatePath(projectRoot, "my-feature");
+			mkdirSync(dirname(path), { recursive: true });
+			writeFileSync(path, bytes);
+
+			expect(() => setActiveCraft(freshState(projectRoot), { durability: "strict" })).toThrow();
+			expect(readFileSync(path, "utf8")).toBe(bytes);
+			expect(getActiveCraft()).toBeUndefined();
+		});
+
+		it(`best-effort setActiveCraft skips the disk write for ${label} — bytes unchanged, memory-only activation`, () => {
+			const projectRoot = tmpProject();
+			const path = craftStatePath(projectRoot, "my-feature");
+			mkdirSync(dirname(path), { recursive: true });
+			writeFileSync(path, bytes);
+
+			expect(() => setActiveCraft(freshState(projectRoot))).not.toThrow();
+			expect(readFileSync(path, "utf8")).toBe(bytes);
+			expect(getActiveCraft()?.feature).toBe("my-feature");
+			expect(getActiveCraft()?.stateVersion).toBe(CRAFT_STATE_VERSION); // in-memory stamp convention holds
+		});
+	}
 });

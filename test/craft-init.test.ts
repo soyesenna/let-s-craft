@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { craftDir, worktreePath } from "../src/artifacts/paths";
 import { addWorktree } from "../src/artifacts/worktree";
 import { registerCraftInitTool } from "../src/craft/init";
-import { clearActiveCraft } from "../src/craft/state";
+import { clearActiveCraft, getActiveCraft } from "../src/craft/state";
 
 // ── SDK-boundary double (same shape as test/artifacts-scaffold.test.ts's own capture) ──────────
 interface ToolResultLike {
@@ -176,4 +176,32 @@ describe("RF-13 — lsc_craft_init refuses a non-slug resolved feature_dir befor
 		}
 		expect(existsSync(join(projectRoot, ".lsc"))).toBe(false); // nothing was created
 	});
+});
+
+// audit-1 RF-19 — lsc_craft_init's strict setActiveCraft is the single preservation authority,
+// so a preservation-read decode failure must propagate OUT of the real tool path: the
+// undecodable on-disk state is never overwritten, and no active craft is published.
+describe("RF-19 — lsc_craft_init refuses to overwrite an undecodable persisted state", () => {
+	const SEEDS: Array<[string, string]> = [
+		["malformed JSON", "{ not json"],
+		["a future stateVersion", JSON.stringify({ stateVersion: 99, feature: "my-feature", projectRoot: "/nowhere", aborted: false })],
+	];
+
+	for (const [label, bytes] of SEEDS) {
+		it(`${label}: the execute rejects, the state bytes stay untouched, and nothing becomes active`, async () => {
+			const cwd = tmpGitRepo();
+			const feature = "my-feature";
+			await addWorktree(cwd, feature);
+			const wt = worktreePath(cwd, feature);
+			seedPreCraftArtifacts(wt, feature);
+			const statePath = join(craftDir(wt, feature), ".craft-state.json");
+			writeFileSync(statePath, bytes);
+
+			const execute = captureCraftInitExecute();
+			await expect(execute("t", { feature_dir: feature, worktree: true }, undefined, undefined, ctxFor(cwd))).rejects.toThrow();
+
+			expect(readFileSync(statePath, "utf8")).toBe(bytes); // bytes 불변 — never overwritten
+			expect(getActiveCraft()).toBeUndefined(); // active singleton 미등록
+		});
+	}
 });
