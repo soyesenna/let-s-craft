@@ -1042,20 +1042,42 @@ describe("RF-3 — equality candidate + open pending is invalid-state with zero 
 // audit-0 RF-5 — re-registration (a bare lsc_craft_init resume) must preserve the persisted
 // auditBaseSnapshot and releaseApproval, and a same-cycle replay afterwards must return THAT
 // persisted snapshot (not undefined, not a freshly injected observation).
+//
+// audit-1 RF-19 strengthens the byte-equivalence half: the WHOLE persisted representation —
+// not just the two named fields — must survive the re-registration exactly, compared as a
+// canonical (key-sorted) serialization of the before/after file bytes so a merge-reordered key
+// sequence can never mask a dropped, added, or mutated sibling field.
 // ---------------------------------------------------------------------------
+
+/** Deterministic key-sorted serialization — key-insertion-order differences never mask a value change. */
+function canonicalJson(text: string): string {
+	const sort = (value: unknown): unknown => {
+		if (Array.isArray(value)) return value.map(sort);
+		if (typeof value === "object" && value !== null) {
+			return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, item]) => [key, sort(item)]));
+		}
+		return value;
+	};
+	return JSON.stringify(sort(JSON.parse(text)));
+}
 
 describe("RF-5 — re-registration preserves auditBaseSnapshot; same-cycle replay returns the persisted snapshot", () => {
 	afterEach(() => clearActiveCraft());
 
-	it("a bare setActiveCraft keeps releaseApproval and auditBaseSnapshot byte-equivalent, and replay serves the persisted base", () => {
+	it("a bare setActiveCraft keeps the whole persisted representation serialized-exact (releaseApproval and auditBaseSnapshot included), and replay serves the persisted base", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
 		const snapshot = { baseBranch: "main", baseTip: "a".repeat(40), sourceTip: "b".repeat(40), behindCount: 0, status: "ok" as const, authority: "explicit-base" as const, observedAt: "2026-08-25T00:00:00.000Z" };
 		const releaseApproval = { nonce: "n1", tag: "[Land]", question: "q", response: "yes", issuedAt: "2026-08-25T00:00:00.000Z" };
 		persistOnly({ ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: snapshot, releaseApproval });
+		const bytesBefore = readFileSync(craftStatePath(root, feature), "utf8");
 
 		setActiveCraft(freshState(root, feature)); // a bare re-registration carrying none of the fields
 
+		const bytesAfter = readFileSync(craftStatePath(root, feature), "utf8");
+		// audit-1 RF-19: serialized-representation EXACT comparison over the whole file —
+		// stronger than the previous per-field .toEqual, which could not see sibling damage.
+		expect(canonicalJson(bytesAfter)).toBe(canonicalJson(bytesBefore));
 		const persisted = readPersistedCraftState(root, feature);
 		expect(persisted?.auditBaseSnapshot).toEqual(snapshot);
 		expect(persisted?.releaseApproval).toEqual(releaseApproval);
