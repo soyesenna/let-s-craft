@@ -9,7 +9,7 @@
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { craftClaimsPath, worktreePath } from "../artifacts/paths.js";
+import { FEATURE_SLUG_RE, craftClaimsPath, worktreePath } from "../artifacts/paths.js";
 import { isRegisteredWorktree } from "../artifacts/worktree.js";
 import { writeFileAtomicSync } from "../utils/atomic-write.js";
 import { type Claim, type ClaimStatus, evaluateLedger } from "./ledger.js";
@@ -28,8 +28,7 @@ export interface ClaimsDetails {
 	uncertain: number;
 }
 
-/** kebab-case slug — the only feature shape accepted (`.`/`..`/NUL/separator injection refused before any fs access). */
-const FEATURE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// The kebab-slug rule lives in paths.ts (FEATURE_SLUG_RE, audit-0 RF-13 SSOT) — the guard below uses it unchanged.
 
 const CLAIM_VERDICTS: readonly string[] = ["support", "contradict", "uncertain"];
 

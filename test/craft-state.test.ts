@@ -11,6 +11,7 @@ import {
 	getActiveCraft,
 	loadActiveCraft,
 	markCraftAborted,
+	markCraftAbortedAt,
 	readPersistedCraftState,
 	recordAuditCycleBegin,
 	recordAuditValidated,
@@ -433,5 +434,77 @@ describe("applyAuditBeginOutcome (PR-1 escalation ledger writers)", () => {
 		expect(getActiveCraft()?.auditEscalations).toEqual([decision]);
 		expect(getActiveCraft()?.nextAuditEscalationCycle).toBe(6);
 		expect(getActiveCraft()?.auditCycle).toBe(5);
+	});
+});
+
+// ===========================================================================
+// audit-0 RF-15③⑤ — the two uncovered state.ts branches: markCraftAbortedAt's singleton-sync
+// (state.ts:313-315) and applyAuditBeginOutcome's auditBaseSnapshot CLEAR branches (the
+// escalation-continue :418 and audit-cycle :430 writes drop the key entirely when the new cycle
+// carries no observation — JSON.stringify omits undefined, so no stale base evidence survives).
+// ===========================================================================
+
+describe("RF-15③ — markCraftAbortedAt keeps the in-memory singleton in sync when it is this exact craft", () => {
+	it("an active singleton for the same feature+root is updated to the aborted stamped state", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		writePersistedState(root, feature, { ...freshState(root, feature), auditCycle: 2 });
+		loadActiveCraft(root, feature); // singleton now IS this exact craft (feature + projectRoot match)
+		expect(getActiveCraft()?.aborted).toBeFalsy();
+
+		const stamped = markCraftAbortedAt(root, feature);
+
+		expect(stamped.aborted).toBe(true);
+		expect(getActiveCraft()).toEqual(stamped); // the singleton reflects the SAME stamped object
+		expect(getActiveCraft()?.aborted).toBe(true);
+		expect(JSON.parse(readFileSync(craftStatePath(root, feature), "utf8")).aborted).toBe(true);
+	});
+
+	it("a singleton for a DIFFERENT root is left untouched (no cross-craft resurrection)", () => {
+		const root = tmpProject();
+		const other = tmpProject();
+		writePersistedState(root, "my-feature", { ...freshState(root, "my-feature") });
+		setActiveCraft({ ...freshState(other, "my-feature"), worktreeRoot: undefined });
+
+		markCraftAbortedAt(root, "my-feature");
+
+		expect(getActiveCraft()?.aborted).toBeFalsy(); // different projectRoot — not our craft
+	});
+});
+
+describe("RF-15⑤ — applyAuditBeginOutcome clears a prior cycle's auditBaseSnapshot when the new cycle records none", () => {
+	const STALE_SNAPSHOT = { baseBranch: "main", baseTip: "a".repeat(40), sourceTip: "b".repeat(40), behindCount: 1, status: "ok", authority: "explicit-base", observedAt: "2026-08-25T00:00:00.000Z" };
+
+	it("an audit-cycle outcome without baseSnapshot drops the key from the persisted JSON", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		writePersistedState(root, feature, { ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: STALE_SNAPSHOT });
+
+		const stamped = applyAuditBeginOutcome(root, feature, { kind: "audit-cycle", auditCycle: 1, checkLogAtCycleStart: 0 });
+
+		expect(stamped.auditBaseSnapshot).toBeUndefined();
+		const onDisk = JSON.parse(readFileSync(craftStatePath(root, feature), "utf8"));
+		expect("auditBaseSnapshot" in onDisk).toBe(false); // the key is GONE, not null
+	});
+
+	it("an escalation-continue outcome without baseSnapshot also clears the prior snapshot (same atomic write)", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		writePersistedState(root, feature, {
+			...freshState(root, feature),
+			auditCycle: 2,
+			auditEscalationPending: { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: "2026-08-25T00:00:00.000Z" },
+			auditBaseSnapshot: STALE_SNAPSHOT,
+		});
+
+		const stamped = applyAuditBeginOutcome(root, feature, {
+			kind: "escalation-continue",
+			decision: { feature, dueCycle: 3, scheduledCycle: 3, intervalCycles: 3, createdAt: "2026-08-25T00:00:00.000Z", disposition: "Continue auditing", decidedAt: "2026-08-25T00:00:00.000Z", nextDueCycle: 6 },
+			auditCycle: 3,
+			checkLogAtCycleStart: 0,
+		});
+
+		expect(stamped.auditBaseSnapshot).toBeUndefined();
+		expect("auditBaseSnapshot" in JSON.parse(readFileSync(craftStatePath(root, feature), "utf8"))).toBe(false);
 	});
 });

@@ -92,8 +92,16 @@ export function worktreePath(cwd: string, feature: string): string {
 
 // ============================================================================
 // Feature-name resolution (C22)
-// ============================================================================
 
+/**
+ * kebab-case slug — the ONLY feature-name shape lets-craft accepts anywhere (audit-0 RF-13).
+ * This is the single SSOT (moved from scaffold.ts's local copy, mirrored verbatim in
+ * claims-tool.ts before): path separators, `.`/`..` traversal, NUL, newlines, and every other
+ * special character fail this pattern, so validating the RESOLVED feature against it at each
+ * lifecycle tool boundary closes the injection surface of an unvalidated name reaching
+ * command-shaped tool text (`composeAuditEscalationQuestion` and friends interpolate it raw).
+ */
+export const FEATURE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /**
  * Resolve a feature name from either a bare kebab-case name ("my-feature") or a
  * path that includes `.lsc/crafts/{feature}/...` — the pre-craft directory itself,

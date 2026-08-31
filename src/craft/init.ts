@@ -7,8 +7,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { ensureCheckLogsGitignored, ensureCraftStateGitignored } from "../artifacts/gitignore.js";
-import { craftDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
-import { readPersistedCraftState, setActiveCraft } from "./state.js";
+import { FEATURE_SLUG_RE, craftDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
+import { setActiveCraft } from "./state.js";
 
 export interface CraftInitDetails {
 	feature: string;
@@ -61,6 +61,19 @@ export function registerCraftInitTool(pi: ExtensionAPI): void {
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<CraftInitDetails>> {
 			const feature = resolveFeatureName(params.feature_dir);
+			// audit-0 RF-13: the resolved feature reaches command-shaped tool text and durable state
+			// verbatim — refuse any non-slug (traversal/newline/control chars) before ANY fs access.
+			if (!FEATURE_SLUG_RE.test(feature)) {
+				return {
+					isError: true,
+					content: [
+						{
+							type: "text",
+							text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.`,
+						},
+					],
+				};
+			}
 
 			let worktreeRoot: string | undefined;
 			if (params.worktree) {
@@ -91,12 +104,9 @@ export function registerCraftInitTool(pi: ExtensionAPI): void {
 					],
 				};
 			}
-
-			const previousState = readPersistedCraftState(root, feature);
-			setActiveCraft(
-				{ feature, projectRoot: ctx.cwd, worktreeRoot, aborted: false, releaseApproval: previousState?.releaseApproval },
-				{ durability: "strict" },
-			);
+			// RF-5: releaseApproval/auditBaseSnapshot preservation is setActiveCraft's job alone (its
+			// merge-preserve step) — no caller-side compensation here anymore.
+			setActiveCraft({ feature, projectRoot: ctx.cwd, worktreeRoot, aborted: false }, { durability: "strict" });
 
 			// F3 (corrected — root, not ctx.cwd): register the two per-feature sidecars
 			// (.craft-state.json, check/logs/) in the CRAFT ROOT's .gitignore — `root` is the SAME

@@ -18,7 +18,7 @@ import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { ensureWorktreesGitignored } from "./gitignore.js";
-import { craftDir, worktreePath, worktreesRootDir } from "./paths.js";
+import { FEATURE_SLUG_RE, craftDir, worktreePath, worktreesRootDir } from "./paths.js";
 import { addWorktree } from "./worktree.js";
 
 export interface ScaffoldDetails {
@@ -31,8 +31,7 @@ export interface ScaffoldDetails {
 	gitignoreAdded: boolean;
 }
 
-/** kebab-case slug — the only feature-name shape scaffold accepts (traversal/NUL/separator injection is refused before any write). */
-const FEATURE_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+/** The kebab-slug rule itself now lives in paths.ts (FEATURE_SLUG_RE, audit-0 RF-13 SSOT) — scaffold keeps only this guard. */
 
 function scaffoldError(text: string): AgentToolResult<ScaffoldDetails> {
 	return { isError: true, content: [{ type: "text", text: `lsc_scaffold: ${text}` }] };

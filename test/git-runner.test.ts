@@ -73,6 +73,17 @@ describe("runGit / runGitText", () => {
 			expect(failure.message).toContain("rev-parse");
 			expect(failure.message).toContain("failed");
 			expect(failure.stderr.length).toBeGreaterThan(0);
+			expect(failure.exitCode).toBe(128); // git's own nonzero exit surfaced verbatim (RF-15⑥)
+			return true;
+		});
+	});
+
+	it("a spawn-level failure carries exitCode undefined — never a fabricated process exit (RF-15⑥)", async () => {
+		const dir = tmpGit();
+		await expect(runGit(join(dir, "no-such-subdir"), ["rev-parse", "HEAD"])).rejects.toSatisfy((err: unknown) => {
+			expect(err).toBeInstanceOf(GitCommandError);
+			const failure = err as GitCommandError;
+			expect(failure.exitCode).toBeUndefined(); // ENOENT-style spawn error has no exit code
 			return true;
 		});
 	});

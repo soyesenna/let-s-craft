@@ -160,3 +160,20 @@ describe("lsc_craft_init — F3 gitignore registration targets the craft root, n
 		expect(() => execFileSync("git", ["check-ignore", "-q", logPath], { cwd: wt }), `${logPath} must be ignored from inside the worktree`).not.toThrow();
 	});
 });
+
+// audit-0 RF-13 — the lifecycle tool boundary: a feature_dir that RESOLVES to a non-slug must
+// be refused before any fs access (no worktree probe, no artifact validation, no registration).
+describe("RF-13 — lsc_craft_init refuses a non-slug resolved feature_dir before any fs access", () => {
+	it("newline/case/semicolon payloads fail with the kebab-slug message and register nothing", async () => {
+		const execute = captureCraftInitExecute();
+		const projectRoot = mkdtempSync(join(tmpdir(), "lsc-init-rf13-"));
+		tempDirs.push(projectRoot);
+		for (const forged of ["bad\nfeature", "Shout Case", "semi;colon"]) {
+			const result = await execute("t", { feature_dir: forged }, undefined, undefined, ctxFor(projectRoot));
+			expect(result.isError, `feature_dir ${JSON.stringify(forged)} must be refused`).toBe(true);
+			const first = result.content[0];
+			expect(first !== undefined && "text" in first ? first.text : "").toContain("kebab-case slug");
+		}
+		expect(existsSync(join(projectRoot, ".lsc"))).toBe(false); // nothing was created
+	});
+});

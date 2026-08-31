@@ -113,3 +113,46 @@ describe("performCraftAbort — optional feature_dir (exact-root, fresh-process 
 		expect((result.content[0] as { text: string }).text).toContain("no persisted craft state");
 	});
 });
+
+// ===========================================================================
+// audit-0 RF-15④ / RF-13 — the singleton abort path's invalidatePreparedOperation() branch
+// (abort.ts:59, previously only the featureDir path and pending approvals were covered), and
+// the kebab-slug boundary guard on the resolved feature_dir.
+// ===========================================================================
+
+describe("RF-15④ — singleton-path abort invalidates a staged destructive operation", () => {
+	it("an active craft + installed prepared operation: performCraftAbort clears the staged op and marks aborted", () => {
+		const projectRoot = tmpProject();
+		const feature = "my-feature";
+		const wt = worktreePath(projectRoot, feature);
+		setActiveCraft({ feature, projectRoot, worktreeRoot: wt, aborted: false });
+		installPreparedOperation({
+			prepareId: "prep-singleton",
+			tag: "[Land]",
+			identity: { feature, projectRoot, worktreeRoot: wt },
+			operationScope: { sourceBranch: "lets-craft/my-feature", sourceOID: "a", targetBranch: "main", targetOID: "b", mode: "merge-and-clean" },
+			approvalQuestion: "[Land] Merge? Merge?",
+			evidenceRoot: wt,
+		});
+		expect(peekPreparedOperation("[Land]")?.prepareId).toBe("prep-singleton");
+
+		const result = performCraftAbort("user stop");
+
+		expect(result.isError).toBeFalsy();
+		expect(result.details).toEqual({ feature, reason: "user stop" });
+		expect(getActiveCraft()?.aborted).toBe(true);
+		expect(peekPreparedOperation("[Land]")).toBeUndefined(); // nothing staged survives the abort
+	});
+});
+
+describe("RF-13 — performCraftAbort refuses a non-slug resolved feature_dir before any fs access", () => {
+	it("newline/space/semicolon/dot payloads are refused with the kebab-slug message", () => {
+		const projectRoot = tmpProject();
+		for (const forged of ["bad\nfeature", "Shout Case", "semi;colon", "dot.name"]) {
+			const result = performCraftAbort("user stop", forged, projectRoot);
+			const first = result.content[0];
+			expect(result.isError, `feature_dir ${JSON.stringify(forged)} must be refused`).toBe(true);
+			expect(first !== undefined && "text" in first ? first.text : "").toContain("kebab-case slug");
+		}
+	});
+});

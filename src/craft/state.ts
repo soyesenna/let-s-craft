@@ -240,9 +240,12 @@ export interface SetActiveCraftOptions {
  * publish. Two properties matter (A/D4):
  *
  * 1. PRESERVATION: durable evidence fields owned by the exact-root writers (recordAuditCycleBegin /
- *    recordAuditValidated / recordReleaseApprovalAt — auditCycle, checkLogAtCycleStart,
- *    auditValidated, releaseApproval) survive a re-registration whose caller does not itself
- *    provide them — activating a craft must never erase audit/approval evidence it did not produce.
+ *    recordAuditValidated / recordReleaseApprovalAt / applyAuditBeginOutcome — auditCycle,
+ *    checkLogAtCycleStart, auditValidated, releaseApproval, auditBaseSnapshot, and every
+ *    escalation-ledger field) survive a re-registration whose caller does not itself provide
+ *    them — activating a craft must never erase audit/approval evidence it did not produce
+ *    (audit-0 RF-5: releaseApproval and auditBaseSnapshot join the preserved list, so this
+ *    function is the SINGLE preservation authority and callers never hand-compensate).
  * 2. DURABILITY POLICY: see SetActiveCraftOptions — strict persist-or-throw for the lsc_craft_init
  *    transaction, best-effort (default) everywhere else.
  *
@@ -259,6 +262,8 @@ export function setActiveCraft(state: CraftState, options: SetActiveCraftOptions
 			if (state.auditCycle === undefined && existing.auditCycle !== undefined) preserved.auditCycle = existing.auditCycle;
 			if (state.checkLogAtCycleStart === undefined && existing.checkLogAtCycleStart !== undefined) preserved.checkLogAtCycleStart = existing.checkLogAtCycleStart;
 			if (state.auditValidated === undefined && existing.auditValidated !== undefined) preserved.auditValidated = existing.auditValidated;
+			if (state.releaseApproval === undefined && existing.releaseApproval !== undefined) preserved.releaseApproval = existing.releaseApproval;
+			if (state.auditBaseSnapshot === undefined && existing.auditBaseSnapshot !== undefined) preserved.auditBaseSnapshot = existing.auditBaseSnapshot;
 			if (state.auditEscalationPending === undefined && existing.auditEscalationPending !== undefined) preserved.auditEscalationPending = existing.auditEscalationPending;
 			if (state.auditEscalations === undefined && existing.auditEscalations !== undefined) preserved.auditEscalations = existing.auditEscalations;
 			if (state.nextAuditEscalationCycle === undefined && existing.nextAuditEscalationCycle !== undefined) preserved.nextAuditEscalationCycle = existing.nextAuditEscalationCycle;
