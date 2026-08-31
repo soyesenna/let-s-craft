@@ -31,3 +31,16 @@ export function controlCharRefusalText(fields: Record<string, string | undefined
 	}
 	return undefined;
 }
+
+/**
+ * audit-2 RF-23 — the safe echo of an untrusted value inside a diagnostic: JSON.stringify's own
+ * escaping PLUS the one control character it leaves raw — DEL (U+007F). JSON only mandates
+ * escapes for U+0000-U+001F, so a DEL-carrying forged field echoed through bare JSON.stringify
+ * still reshapes command-shaped text (proven live by the RF-23 regression: a DEL-carrying
+ * nextDueCycle leaked the raw control character into the refusal line). Every diagnostic that
+ * names an untrusted persisted field echoes through THIS, never bare JSON.stringify/String.
+ */
+export function controlSafeEcho(value: unknown): string {
+	const serialized = JSON.stringify(value);
+	return serialized === undefined ? "undefined" : serialized.replace(/\u007f/g, "\\u007f");
+}
