@@ -48,6 +48,7 @@ import {
 	installPreparedOperation,
 	invalidatePreparedOperation,
 } from "./destructive-approval.js";
+import { parseTerminalDispositionSummary } from "./audit-policy.js";
 import { type CraftState, craftStateCandidates, decodeCraftState } from "./state.js";
 import { validateLandAuditEvidence } from "./verdict.js";
 
@@ -312,7 +313,19 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 		return landError("craft-aborted", feature, mode, `the persisted craft state for "${feature}" is marked aborted — a stopped run never lands. Re-invoking craft/post-craft requires clearing that record explicitly, not a [Land] approval.`);
 	}
 	if (state.auditTerminalDisposition) {
-		const terminal = state.auditTerminalDisposition;
+		// audit-1 RF-20(c): the persisted record is untrusted bytes — runtime-parse it (canonical
+		// label · canonical ISO timestamp · non-negative cycle) BEFORE interpolating any field, and
+		// refuse with a constant diagnostic (never the raw payload) when it does not parse. The
+		// refusal itself is unchanged either way: a terminal record always blocks land.
+		const terminal = parseTerminalDispositionSummary(state.auditTerminalDisposition);
+		if (!terminal) {
+			return landError(
+				"terminal-disposition",
+				feature,
+				mode,
+				"the persisted [Audit Escalation] terminal record is not canonical (disposition/decidedAt/dueCycle) — its raw content is deliberately not echoed; inspect the state file directly.",
+			);
+		}
 		return landError(
 			"terminal-disposition",
 			feature,

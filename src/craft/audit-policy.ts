@@ -198,7 +198,33 @@ function parseDecisionRecord(raw: unknown, feature: string, where: string): Pars
 	if (disposition === "Abort this craft" || disposition === "Preserve branch and stop") {
 		return { ...pending, disposition, decidedAt };
 	}
-	return { error: `${where}: disposition "${String(disposition)}" is not a canonical escalation label` };
+	// audit-1 RF-20(b): an invalid value is echoed ESCAPED (JSON.stringify), never raw — control
+	// characters in a forged disposition must not reshape this diagnostic as it flows to tool text.
+	return { error: `${where}: disposition ${JSON.stringify(disposition)} is not a canonical escalation label` };
+}
+
+/**
+ * audit-1 RF-20(c) — runtime-parse a persisted terminal record before ANY of its fields are
+ * interpolated into result text (land.ts's terminal-disposition refusal): the persisted state
+ * file is untrusted bytes, so the canonical label, canonical ISO-8601 timestamp, and
+ * non-negative safe-integer cycle are re-verified here rather than trusted from the decode cast
+ * (which also guarantees control-char freedom — the canonical labels carry none, and a
+ * `Date#toISOString()` round-trip cannot). Undefined = not canonical → the caller emits a
+ * constant diagnostic, never the raw record.
+ */
+export interface TerminalDispositionSummary {
+	disposition: Exclude<AuditEscalationDisposition, "Continue auditing">;
+	dueCycle: number;
+	decidedAt: string;
+}
+
+export function parseTerminalDispositionSummary(raw: unknown): TerminalDispositionSummary | undefined {
+	if (!isPlainObject(raw)) return undefined;
+	const { disposition, dueCycle, decidedAt } = raw;
+	if (disposition !== "Abort this craft" && disposition !== "Preserve branch and stop") return undefined;
+	if (!isSafeNonNegativeCycle(dueCycle)) return undefined;
+	if (typeof decidedAt !== "string" || !isCanonicalIsoTimestamp(decidedAt)) return undefined;
+	return { disposition, dueCycle, decidedAt };
 }
 
 /** The validated escalation ledger the gate's later stages consume. */
@@ -429,7 +455,9 @@ export function evaluateAuditBeginGate(input: AuditBeginGateInput): AuditBeginGa
 			return {
 				type: "blocked",
 				reason: "invalid-disposition",
-				message: `escalation_disposition "${String(disposition)}" is not one of the canonical labels ${AUDIT_ESCALATION_DISPOSITIONS.join(" / ")} — a free answer or blank is never consumed.`,
+				// audit-1 RF-20(b): escaped echo (JSON.stringify) — a forged control-carrying
+				// disposition never reshapes the refusal text it appears in.
+				message: `escalation_disposition ${JSON.stringify(disposition)} is not one of the canonical labels ${AUDIT_ESCALATION_DISPOSITIONS.join(" / ")} — a free answer or blank is never consumed.`,
 			};
 		}
 		if (disposition === "Continue auditing") {
@@ -448,7 +476,8 @@ export function evaluateAuditBeginGate(input: AuditBeginGateInput): AuditBeginGa
 			return {
 				type: "blocked",
 				reason: "invalid-disposition",
-				message: `escalation_disposition "${String(disposition)}" is not one of the canonical labels ${AUDIT_ESCALATION_DISPOSITIONS.join(" / ")}.`,
+				// audit-1 RF-20(b): escaped echo — same no-raw-payload rule as the pending branch above.
+				message: `escalation_disposition ${JSON.stringify(disposition)} is not one of the canonical labels ${AUDIT_ESCALATION_DISPOSITIONS.join(" / ")}.`,
 			};
 		}
 		return {

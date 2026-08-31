@@ -21,7 +21,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentToolResult, ExecOptions, ExecResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { craftCheckLogsDir, craftCheckScriptPath, resolveFeatureName } from "../artifacts/paths.js";
+import { FEATURE_SLUG_RE, craftCheckLogsDir, craftCheckScriptPath, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
 import { type CraftState, findPersistedCraftState, getActiveCraft } from "./state.js";
 
 // registerTool's execute() needs an explicit Promise<AgentToolResult<T>> return type: without
@@ -327,6 +327,8 @@ export interface PerformRunCheckArgs {
 	feature: string;
 	activeCraft: CraftState | undefined;
 	persisted: CraftState | undefined;
+	/** The invocation's cwd (the wrapper passes ctx.cwd). audit-1 RF-20(d): when given, an audit-evidence run's persisted root must exactly match it or the worktree computed from it. */
+	cwd?: string;
 	timeoutMs?: number;
 	exec: ExecFn;
 }
@@ -340,9 +342,37 @@ export interface PerformRunCheckArgs {
  * empty-transcript gate AFTER it (E3 rule ①).
  */
 export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentToolResult<RunCheckDetails>> {
+	// audit-1 RF-20(d): the same shared slug boundary every other lifecycle tool applies
+	// (audit-0 RF-13) — the resolved feature reaches the persisted-state lookup, the exec argv,
+	// and the result text verbatim, so a non-slug is refused before ANY fs access.
+	if (!FEATURE_SLUG_RE.test(args.feature)) {
+		return {
+			isError: true,
+			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(args.feature)}) — path separators, traversal segments, and special characters are refused.` }],
+		};
+	}
 	const target = resolveRunCheckTarget(args.feature, args.activeCraft, args.persisted);
 	if (target.mode === "refuse") {
 		return { isError: true, content: [{ type: "text", text: target.text }] };
+	}
+
+	// audit-1 RF-20(d): audit-evidence mode executes against a root read out of the PERSISTED
+	// state file — untrusted bytes. That root must be exactly this invocation's cwd or the
+	// worktree computed from it; anything else is a foreign root and is refused (escaped echo,
+	// never raw) before the script is located or executed.
+	if (target.auditEvidenceOnly && args.cwd !== undefined) {
+		const expectedWorktree = worktreePath(args.cwd, args.feature);
+		if (target.root !== args.cwd && target.root !== expectedWorktree) {
+			return {
+				isError: true,
+				content: [
+					{
+						type: "text",
+						text: `lets-craft: the persisted craft state for "${args.feature}" claims the root ${JSON.stringify(target.root)}, which is neither the current directory (${args.cwd}) nor its computed worktree (${expectedWorktree}) — refusing to run check/run_check.sh against a foreign root (audit-1 RF-20).`,
+					},
+				],
+			};
+		}
 	}
 
 	const root = target.root;
@@ -440,7 +470,7 @@ export function registerRunCheckTool(pi: ExtensionAPI): void {
 			const feature = resolveFeatureName(params.feature_dir);
 			const activeCraft = getActiveCraft();
 			const persisted = findPersistedCraftState(ctx.cwd, feature);
-			return performRunCheck({ feature, activeCraft, persisted, timeoutMs: params.timeout_ms, exec: pi.exec });
+			return performRunCheck({ feature, activeCraft, persisted, timeoutMs: params.timeout_ms, cwd: ctx.cwd, exec: pi.exec });
 		},
 	});
 }

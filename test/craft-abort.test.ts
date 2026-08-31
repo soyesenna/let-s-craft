@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -154,5 +154,41 @@ describe("RF-13 — performCraftAbort refuses a non-slug resolved feature_dir be
 			expect(result.isError, `feature_dir ${JSON.stringify(forged)} must be refused`).toBe(true);
 			expect(first !== undefined && "text" in first ? first.text : "").toContain("kebab-case slug");
 		}
+	});
+});
+
+// ===========================================================================
+// audit-1 RF-20(a) — the free-text `reason` is control-checked BEFORE any effect: no abort
+// write, no durable-state mutation, and the refusal names the field, never the payload.
+// ===========================================================================
+
+describe("RF-20(a) — performCraftAbort refuses a control-carrying reason before any effect", () => {
+	beforeEach(() => clearActiveCraft());
+
+	it("the singleton path refuses newline/tab/ESC/DEL reasons without aborting anything", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+		const bytes = readFileSync(craftStatePath(projectRoot, "my-feature"), "utf8");
+		for (const forged of ["stop\nplease", "stop\ttab", "run\x1b[2away", "del\x7fete"]) {
+			const result = performCraftAbort(forged);
+			expect(result.isError, JSON.stringify(forged)).toBe(true);
+			const first = result.content[0];
+			const text = first !== undefined && "text" in first && typeof first.text === "string" ? first.text : "";
+			expect(text).toContain("control characters");
+			expect(text).toContain("reason");
+			expect(text, "무-raw-payload: the refusal is single-line").not.toMatch(/[\u0000-\u001f\u007f]/);
+		}
+		expect(getActiveCraft()?.aborted, "no abort may be recorded").toBe(false);
+		expect(readFileSync(craftStatePath(projectRoot, "my-feature"), "utf8")).toBe(bytes);
+	});
+
+	it("the exact-root path (feature_dir) refuses before any fs access too", () => {
+		const projectRoot = tmpProject();
+		const result = performCraftAbort("bad\nreason", "my-feature", projectRoot);
+		expect(result.isError).toBe(true);
+		const first = result.content[0];
+		expect(first !== undefined && "text" in first ? first.text : "").toContain("control characters");
+		// Nothing was created at the would-be worktree state path — the guard fired first.
+		expect(existsSync(craftStatePath(worktreePath(projectRoot, "my-feature"), "my-feature"))).toBe(false);
 	});
 });
