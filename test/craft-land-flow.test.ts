@@ -41,7 +41,7 @@ import {
 	peekPreparedOperation,
 } from "../src/craft/destructive-approval";
 // NEW MODULE (Step 3b) — the import that makes this file import-RED pre-craft.
-import { LAND_REASON_CODES, type LandEffects, registerLandTool } from "../src/craft/land";
+import { LAND_REASON_CODES, type LandEffects, performLand, registerLandTool } from "../src/craft/land";
 import { type CraftState, clearActiveCraft, getActiveCraft, setActiveCraft } from "../src/craft/state";
 // NEW (Step 2) — the removal-observation shape the injected LandEffects.inspectRemovalTarget produces.
 import type { RemovalObservation } from "../src/artifacts/worktree";
@@ -1331,5 +1331,85 @@ describe("lsc_land — prepared-operation issuance eligibility", () => {
 		expect(confirm.isError, "a cancelled confirm is an isError").toBe(true);
 		expect(peekPendingApproval()).toBeUndefined();
 		expect(peekPreparedOperation(LAND_TAG), "a cancelled [Land] confirm conditionally invalidates the prepared entry").toBeUndefined();
+	});
+});
+
+// ===========================================================================
+// audit-0 RF-12 — the added-path-unknown fail-closed branch (land.ts:424-432) at the REAL
+// land seam. The production branch exists but had zero integration coverage; the deterministic
+// git failure is an UNRELATED-HISTORY source: an orphan-root worktree branch shares no ancestry
+// with the target, so `git merge-base <target> <source>` exits nonzero INSIDE the Phase X
+// added-path gate — after the nonce was consumed, immediately before effects.merge.
+// ===========================================================================
+
+describe("RF-12 — a merge-base computation failure refuses added-path-unknown: no merge, worktree preserved, fresh approval required", () => {
+	it("unrelated-history target/source → reason=added-path-unknown with the nonce consumed", async () => {
+		const projectRoot = tmpGitRepo();
+		const feature = "unrelated-feat";
+		const sourceBranch = `lets-craft/${feature}`;
+		const worktreeRoot = worktreePath(projectRoot, feature);
+		// A worktree whose branch is an ORPHAN root: same files, NO ancestry with main —
+		// `git merge-base main <orphan>` exits 1, the exact GitCommandError the gate catches.
+		git(projectRoot, ["worktree", "add", "-q", "--detach", worktreeRoot, "HEAD"]);
+		git(worktreeRoot, ["checkout", "-q", "--orphan", sourceBranch]);
+		writeFileSync(join(worktreeRoot, "feature.txt"), "orphan feature work\n");
+		mkdirSync(craftAuditDir(worktreeRoot, feature), { recursive: true });
+		writeFileSync(craftAuditPath(worktreeRoot, feature, 1), "# audit-1\n\n**AUDIT VERDICT: APPROVE**\n\nverified.\n");
+		mkdirSync(craftCheckLogsDir(worktreeRoot, feature), { recursive: true });
+		writeFileSync(join(craftCheckLogsDir(worktreeRoot, feature), "check-2.log"), `$ bash run_check.sh\ncwd: ${worktreeRoot}\nok\n--- exit 0 ---\n`);
+		mkdirSync(craftDir(worktreeRoot, feature), { recursive: true });
+		writeFileSync(
+			craftStatePath(worktreeRoot, feature),
+			JSON.stringify({ feature, projectRoot, worktreeRoot, aborted: false, stateVersion: 2, auditCycle: 1, checkLogAtCycleStart: 1 }, null, 2),
+		);
+		git(worktreeRoot, ["add", "-A"]);
+		git(worktreeRoot, ["commit", "-q", "-m", "feat: orphan-root work + land evidence"]);
+		const fx: LandFixture = {
+			projectRoot,
+			worktreeRoot,
+			feature,
+			sourceBranch,
+			sourceOID: git(worktreeRoot, ["rev-parse", "HEAD"]),
+			targetOID: git(projectRoot, ["rev-parse", "HEAD"]),
+			stateFilePath: craftStatePath(worktreeRoot, feature),
+		};
+		expect(() => git(projectRoot, ["merge-base", fx.targetOID, fx.sourceOID]), "fixture: the histories must share NO merge base").toThrow();
+
+		let mergeCalls = 0;
+		const tools = buildTools({
+			merge: () => {
+				mergeCalls++;
+			},
+		});
+		await issueLandApproval(tools, fx); // Phase R → approval-required → Yes → pending [Land]
+
+		const result = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+
+		expect(result.isError, textOf(result)).toBe(true);
+		expect(textOf(result)).toContain("added-path-unknown");
+		expect(textOf(result)).toContain("refusing to merge rather than assuming no overlap");
+		const details = result.details;
+		expect(details !== undefined && typeof details === "object" && "reason" in details ? details.reason : undefined).toBe("added-path-unknown");
+		expect(mergeCalls, "effects.merge must NEVER run on the fail-closed refusal").toBe(0);
+		expect(existsSync(worktreeRoot), "the worktree must survive the refusal untouched").toBe(true);
+		expect(peekPendingApproval(), "the single-use nonce WAS consumed").toBeUndefined();
+		expect(git(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]), "the target branch is still checked out, unmerged").toBe("main");
+
+		// A re-call cannot ride the consumed nonce: it demands a FRESH approval.
+		const again = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+		expect(again.isError, textOf(again)).toBe(true);
+		expect(textOf(again)).toContain("approval-required");
+	});
+});
+
+describe("RF-13 — lsc_land refuses a non-slug feature before any git access", () => {
+	it("newline/traversal/case payloads fail with the kebab-slug message and no git side effects", async () => {
+		const projectRoot = tmpGitRepo();
+		for (const forged of ["bad\nfeature", "weird/../traversal", "Shout Case"]) {
+			const result = await performLand(forged, "merge-and-clean", projectRoot);
+			expect(result.isError, `feature ${JSON.stringify(forged)} must be refused`).toBe(true);
+			expect(textOf(result)).toContain("kebab-case slug");
+		}
+		expect(git(projectRoot, ["status", "--porcelain"])).toBe(""); // nothing touched the repo
 	});
 });
