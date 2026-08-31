@@ -1175,3 +1175,94 @@ describe("RF-15② — an unknown base snapshot surfaces the non-blocking 'could
 		expect(text).toContain("non-blocking");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// audit-1 RF-20(a) — lsc_audit_begin's free-text params (base_branch / escalation_disposition)
+// are refused for control characters BEFORE any effect or observation. The refusal must precede
+// observeAuditBase (the registration wrapper's first git read), proven here through the
+// production execute capture with the runGitText spy recording ZERO calls and no durable state
+// written — the fail-closed / 무-effect / 무-raw-payload triple.
+// ---------------------------------------------------------------------------
+
+describe("RF-20(a) — lsc_audit_begin refuses control-carrying free-text params before any observation", () => {
+	type BeginExecute = (id: string, params: Record<string, unknown>, signal: unknown, onUpdate: unknown, ctx: { cwd: string }) => Promise<{ isError?: boolean; content: Array<{ type: string; text: string }>; details?: unknown }>;
+	let savedFixtureEnv: string | undefined;
+	beforeEach(() => {
+		savedFixtureEnv = process.env.LSC_FIXTURE;
+		delete process.env.LSC_FIXTURE;
+	});
+	afterEach(() => {
+		if (savedFixtureEnv === undefined) delete process.env.LSC_FIXTURE;
+		else process.env.LSC_FIXTURE = savedFixtureEnv;
+		clearActiveCraft();
+	});
+
+	function captureBeginExecute(): BeginExecute {
+		let execute: BeginExecute | undefined;
+		const pi = {
+			zod,
+			getFlag: (): undefined => undefined,
+			registerTool(definition: unknown): void {
+				if (typeof definition === "object" && definition !== null && "name" in definition && (definition as { name?: string }).name === "lsc_audit_begin" && "execute" in definition && typeof (definition as { execute?: unknown }).execute === "function") {
+					execute = (definition as { execute: BeginExecute }).execute;
+				}
+			},
+		};
+		registerAuditValidateTools(pi as unknown as Parameters<typeof registerAuditValidateTools>[0]);
+		if (!execute) throw new Error("lsc_audit_begin was not registered");
+		return execute;
+	}
+
+	it("a control-carrying base_branch: refused, ZERO git observations, ZERO writes, no raw payload", async () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 1 });
+		writeAuditDoc(root, feature, 0, "REJECT");
+		const bytes = readFileSync(craftStatePath(root, feature), "utf8");
+		const execute = captureBeginExecute();
+		vi.mocked(runGitText).mockClear();
+
+		const result = await execute("t", { feature_dir: feature, base_branch: "main\n--upload-pack=evil" }, undefined, undefined, { cwd: root });
+
+		expect(result.isError).toBe(true);
+		const text = firstText(result);
+		expect(text).toContain("control characters");
+		expect(text).toContain("base_branch"); // names the field, never the payload
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f]/); // 무-raw-payload: single-line refusal
+		expect(vi.mocked(runGitText), "observeAuditBase must not have run (RF-20(a): guard precedes observation)").not.toHaveBeenCalled();
+		expect(readFileSync(craftStatePath(root, feature), "utf8")).toBe(bytes); // 무-effect
+	});
+
+	it("a control-carrying escalation_disposition: same pre-observation refusal", async () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 1 });
+		writeAuditDoc(root, feature, 0, "REJECT");
+		const bytes = readFileSync(craftStatePath(root, feature), "utf8");
+		const execute = captureBeginExecute();
+		vi.mocked(runGitText).mockClear();
+
+		const result = await execute("t", { feature_dir: feature, escalation_disposition: "Continue auditing\t[ok]" }, undefined, undefined, { cwd: root });
+
+		expect(result.isError).toBe(true);
+		const text = firstText(result);
+		expect(text).toContain("escalation_disposition");
+		expect(text).toContain("control characters");
+		expect(vi.mocked(runGitText)).not.toHaveBeenCalled();
+		expect(readFileSync(craftStatePath(root, feature), "utf8")).toBe(bytes);
+	});
+
+	it("clean single-line values still pass the guard (the validator is not a blanket refusal)", async () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 1 });
+		writeAuditDoc(root, feature, 0, "REJECT");
+		const execute = captureBeginExecute();
+		vi.mocked(runGitText).mockClear();
+
+		const result = await execute("t", { feature_dir: feature, base_branch: "main" }, undefined, undefined, { cwd: root });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy(); // proceeds to begin cycle 1 (replay)
+		expect(vi.mocked(runGitText).mock.calls.length).toBeGreaterThan(0); // observation DID run
+	});
+});

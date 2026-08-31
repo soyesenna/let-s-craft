@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { craftCheckDir, craftCheckLogsDir, craftCheckScriptPath } from "../src/artifacts/paths";
+import { craftCheckDir, craftCheckLogsDir, craftCheckScriptPath, worktreePath } from "../src/artifacts/paths";
 import {
 	checkScriptRejectText,
 	evaluateCheckScriptShape,
@@ -490,5 +490,59 @@ describe("performRunCheck (B-1 target resolution + AC11 non-degeneracy gates, to
 		// passing evidence by validateLandAuditEvidence's isPassingCheckLog scan.
 		const logContent = readFileSync(join(craftCheckLogsDir(root, feature), "check-1.log"), "utf8");
 		expect(isPassingCheckLog(logContent), "an isError-rejected empty-transcript run must not read as a passing check log").toBe(false);
+	});
+
+	// audit-1 RF-20(d) — the shared slug boundary (audit-0 RF-13's guard, which lsc_run_check
+	// was missing) and the persisted-root identity exact-match: an audit-evidence run executes
+	// against a root read out of the persisted state file (untrusted bytes), so that root must
+	// be exactly the invocation's cwd or the worktree computed from it.
+	it("RF-20(d): a non-slug feature is refused with the shared kebab-slug message before any fs access", async () => {
+		for (const forged of ["bad\nfeature", "Shout Case", "semi;colon"]) {
+			const result = await performRunCheck({ feature: forged, activeCraft: undefined, persisted: undefined, exec: passExec });
+			expect(result.isError, `feature ${JSON.stringify(forged)} must be refused`).toBe(true);
+			expect((result.content[0] as { text: string }).text).toContain("kebab-case slug");
+		}
+	});
+
+	it("RF-20(d): audit-evidence mode refuses a persisted root that is neither cwd nor its computed worktree (foreign root)", async () => {
+		const projectRoot = tmpProject();
+		const foreignRoot = tmpProject(); // a script exists here, but it is NOT this invocation's root
+		const feature = "my-feature";
+		seedScript(foreignRoot, feature);
+		const persisted = freshCraftState(foreignRoot, feature);
+
+		const result = await performRunCheck({ feature, activeCraft: undefined, persisted, cwd: projectRoot, exec: passExec });
+
+		expect(result.isError, JSON.stringify(result)).toBe(true);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("foreign root");
+		expect(text).toContain("neither the current directory");
+		expect(existsSync(craftCheckLogsDir(foreignRoot, feature)), "무-effect: no check log dir may be created at the foreign root").toBe(false);
+	});
+
+	it("RF-20(d): audit-evidence mode accepts the computed worktree root (the real post-craft shape) and runs", async () => {
+		const projectRoot = tmpProject();
+		const feature = "my-feature";
+		const wt = worktreePath(projectRoot, feature);
+		seedScript(wt, feature);
+		const persisted = { ...freshCraftState(projectRoot, feature), worktreeRoot: wt };
+
+		const result = await performRunCheck({ feature, activeCraft: undefined, persisted, cwd: projectRoot, exec: passExec });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		expect((result.content[0] as { text: string }).text).toContain("[Audit Evidence Mode]");
+		expect(readdirSync(craftCheckLogsDir(wt, feature))).toContain("check-1.log");
+	});
+
+	it("RF-20(d): audit-evidence mode accepts a persisted root that IS the invocation cwd (legacy non-worktree shape)", async () => {
+		const projectRoot = tmpProject();
+		const feature = "my-feature";
+		seedScript(projectRoot, feature);
+		const persisted = freshCraftState(projectRoot, feature);
+
+		const result = await performRunCheck({ feature, activeCraft: undefined, persisted, cwd: projectRoot, exec: passExec });
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		expect((result.content[0] as { text: string }).text).toContain("[Audit Evidence Mode]");
 	});
 });

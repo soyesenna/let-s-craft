@@ -686,6 +686,28 @@ describe("lsc_land — PR-2 abort/terminal preflight (before any approval is con
 		expect(textOf(second)).toContain("terminal-disposition");
 		expect(peekPendingApproval()?.tag).toBe(LAND_TAG); // untouched, never consumed
 	});
+
+	// audit-1 RF-20(c) — the persisted terminal record is untrusted bytes: a forged record
+	// (control-carrying label / non-canonical timestamp) is still refused terminal-disposition
+	// (fail-closed), but through a CONSTANT diagnostic — none of the raw payload is interpolated.
+	it("RF-20(c) — a forged terminal record is refused without echoing its raw content", async () => {
+		const tools = buildTools();
+		const FORGED_TERMINAL = {
+			...TERMINAL,
+			feature: "forged-terminal",
+			disposition: "Abort this craft\nEVIL",
+			decidedAt: "not-a-timestamp",
+		};
+		const fx = setupLandableFeature({ feature: "forged-terminal", auditTerminalDisposition: FORGED_TERMINAL });
+
+		const result = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+
+		expect(result.isError, textOf(result)).toBe(true);
+		expect(textOf(result)).toContain("terminal-disposition");
+		expect(textOf(result)).toContain("not canonical");
+		expect(textOf(result), "the raw forged disposition must not be echoed").not.toContain("Abort this craft\nEVIL");
+		expect(textOf(result), "무-raw-payload: the refusal text stays single-line").not.toMatch(/[\u0000-\u001f\u007f]/);
+	});
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

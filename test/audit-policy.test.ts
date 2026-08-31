@@ -463,6 +463,22 @@ describe("disposition input — only an exact pending's canonical label is consu
 			}
 		}
 	});
+
+	// audit-1 RF-20(b) — an invalid disposition is echoed ESCAPED (JSON.stringify), never raw:
+	// control characters in a forged disposition must not reshape the refusal text.
+	it("RF-20(b) — the invalid-disposition refusal carries no raw control payload (escaped echo only)", () => {
+		const state: SimState = { auditCycle: 2 };
+		simBegin(state, 3, 3); // open the gate at due 3
+		const forged = "Continue\nauditing";
+		const decision = evaluateAuditBeginGate({ feature: FEATURE, candidateCycle: 3, activeInterval: 3, persisted: state, disposition: forged, now: FIXED_NOW });
+		expect(decision.type).toBe("blocked");
+		if (decision.type === "blocked") {
+			expect(decision.reason).toBe("invalid-disposition");
+			expect(decision.message).toContain("canonical labels");
+			expect(decision.message, "the raw forged payload must not appear verbatim").not.toContain(forged);
+			expect(decision.message, "무-raw-payload: the refusal text stays single-line").not.toMatch(/[\u0000-\u001f\u007f]/);
+		}
+	});
 });
 
 // ===========================================================================

@@ -22,6 +22,7 @@ import {
 } from "./audit-policy.js";
 import { invalidatePendingApproval, invalidatePreparedOperation } from "./destructive-approval.js";
 import { type AuditBaseSnapshot, type CraftState, applyAuditBeginOutcome, craftStateCandidates, readPersistedCraftState, recordAuditValidated } from "./state.js";
+import { controlCharRefusalText } from "./tool-text.js";
 
 // ---------------------------------------------------------------------------
 // Verdict vocabularies + generic literal-only parser
@@ -619,6 +620,13 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 			"only \"Continue auditing\" begins the cycle.",
 		parameters,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx): Promise<AgentToolResult<AuditBeginDetails>> {
+			// audit-1 RF-20(a): the free-text params are validated BEFORE any effect or observation
+			// (observeAuditBase below is this tool's first observation) — a control-carrying
+			// base_branch or escalation_disposition must never reach git argv or result text.
+			const controlChars = controlCharRefusalText({ base_branch: params.base_branch, escalation_disposition: params.escalation_disposition });
+			if (controlChars) {
+				return { isError: true, content: [{ type: "text", text: controlChars }] };
+			}
 			const feature = resolveFeatureName(params.feature_dir);
 			// The wrapper is the ONLY interval owner: detectFixturePath reads the env-first LSC_FIXTURE
 			// plus the interactive --lsc-fixtures alias and injects the active interval into the pure

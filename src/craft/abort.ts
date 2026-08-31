@@ -17,6 +17,7 @@ import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { FEATURE_SLUG_RE, resolveFeatureName } from "../artifacts/paths.js";
 import { invalidatePreparedOperation } from "./destructive-approval.js";
 import { findPersistedCraftState, getActiveCraft, markCraftAborted, markCraftAbortedAt } from "./state.js";
+import { controlCharRefusalText } from "./tool-text.js";
 
 export interface CraftAbortDetails {
 	feature: string;
@@ -34,6 +35,12 @@ export interface CraftAbortDetails {
  * root even when no active-craft singleton exists in this process. A missing persisted state
  */
 export function performCraftAbort(reason: string, featureDir?: string, cwd: string = process.cwd()): AgentToolResult<CraftAbortDetails> {
+	// audit-1 RF-20(a): the free-text reason reaches the durable details and the result text
+	// verbatim — refuse a control-carrying value BEFORE any effect (no fs access, no abort write).
+	const controlChars = controlCharRefusalText({ reason });
+	if (controlChars) {
+		return { isError: true, content: [{ type: "text", text: controlChars }] };
+	}
 	if (featureDir !== undefined) {
 		const feature = resolveFeatureName(featureDir);
 		// audit-0 RF-13: refuse a non-slug resolved feature (traversal/newline/control chars) before
