@@ -17,6 +17,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	appendBounded,
 	attachOmpRunHandlers,
+	auditBeginOutcomes,
+	completedTaskSpawnSeen,
 	type OmpRunResult,
 	preCraftArtifactsComplete,
 	type RunnableChild,
@@ -355,5 +357,54 @@ describe("preCraftArtifactsComplete", () => {
 		const projectDir = tmpProjectDir();
 		seedCraftDir(projectDir, "demo", { trace: true, spec: true, plan: true });
 		expect(preCraftArtifactsComplete(projectDir)).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-0 RF-7/RF-8 — stream-predicate helpers the escalation/red-cycle E2E suites
+// early-exit on. Same no-real-process, `npm test`-runs philosophy as above: the
+// ordered-tuple parse (RF-7) and the completed-task probe (RF-8) are exercised
+// against synthetic NDJSON streams, never a real `omp` child.
+// ---------------------------------------------------------------------------
+
+describe("auditBeginOutcomes (RF-7)", () => {
+	/** A synthetic `tool_execution_end` NDJSON line carrying the given begin result text. */
+	function beginEndLine(text: string, isError: boolean): string {
+		return JSON.stringify({ type: "tool_execution_end", toolName: "write", isError, result: { content: [{ type: "text", text }] } });
+	}
+
+	it("returns the isError flags of completed begin executions in ORDER — the exact [isError, success] tuple the plan's Continue predicate fixes", () => {
+		const stdout = [
+			beginEndLine("lets-craft: audit escalation required for demo at cycle 2 — ask the disposition question", true),
+			JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "lets-craft: audit (a model message quoting a result — never an execution)" }] } }),
+			beginEndLine("lets-craft: audit cycle 2 begun for demo — escalation consumed: Continue auditing", false),
+		].join("\n");
+		expect(auditBeginOutcomes(stdout)).toEqual([true, false]);
+	});
+
+	it("ignores non-begin tool results and unterminated trailing NDJSON lines", () => {
+		const stdout = [
+			beginEndLine("an unrelated write result text", false),
+			beginEndLine("lets-craft: audit escalation required for demo", true),
+			'{"type":"tool_execution_end","toolName":"write","isError":false,"result":{"content":[{"type":"text","text":"lets-craft: audit cycle 2 begun',
+		].join("\n");
+		expect(auditBeginOutcomes(stdout)).toEqual([true]);
+	});
+});
+
+describe("completedTaskSpawnSeen (RF-8)", () => {
+	it("is FALSE for a task execution START event alone — the raw toolName substring this replaces fired on exactly this line, before the spawn's result existed", () => {
+		const stdout = JSON.stringify({ type: "tool_execution_start", toolName: "task", args: { agent: "lsc-test-engineer" } });
+		// Reproduce the retired arm's false fire first, so the regression pins the actual difference.
+		expect(stdout.includes('"toolName":"task"')).toBe(true);
+		expect(completedTaskSpawnSeen(stdout)).toBe(false);
+	});
+
+	it("is TRUE once a task execution END event has streamed back", () => {
+		const stdout = [
+			JSON.stringify({ type: "tool_execution_start", toolName: "task", args: { agent: "lsc-test-engineer" } }),
+			JSON.stringify({ type: "tool_execution_end", toolName: "task", isError: false, result: { content: [{ type: "text", text: "spawn delivered" }] } }),
+		].join("\n");
+		expect(completedTaskSpawnSeen(stdout)).toBe(true);
 	});
 });

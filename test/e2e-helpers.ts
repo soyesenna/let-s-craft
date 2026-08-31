@@ -759,6 +759,33 @@ export function lastToolResultWith(result: OmpRunResult, marker: string): string
 	return last;
 }
 
+/**
+ * audit-0 RF-7 — the ORDERED outcome tuple of every COMPLETED `lsc_audit_begin` execution in
+ * the raw NDJSON stream: one `isError` flag per `tool_execution_end` whose result text carries
+ * the begin marker, in execution order. plan.md:411's Continue predicate (`total executions = 2
+ * ∧ last.isError = false`, i.e. the exact ordered tuple [isError, success]) is fixed against
+ * THIS — per-marker counts cannot express order, and order is the contract (the first call must
+ * be the gate refusal, the second and last the consume success).
+ */
+export function auditBeginOutcomes(result: OmpRunResult | string): boolean[] {
+	const stdout = typeof result === "string" ? result : result.stdout;
+	const outcomes: boolean[] = [];
+	for (const line of stdout.split("\n")) {
+		const trimmed = line.trim();
+		if (!trimmed.startsWith("{")) continue;
+		try {
+			const event = JSON.parse(trimmed) as { type?: string; isError?: boolean; result?: { content?: Array<{ text?: string }> } };
+			if (event.type !== "tool_execution_end") continue;
+			const text = (event.result?.content ?? []).map(block => block.text ?? "").join("\n");
+			if (!text.includes(AUDIT_BEGIN_ANY_MARKER)) continue;
+			outcomes.push(event.isError === true);
+		} catch {
+			// unterminated NDJSON line — not a completed execution yet
+		}
+	}
+	return outcomes;
+}
+
 /** Count a prompt-stage spawn's `task` tool executions (e.g. the §3.0 lsc-test-engineer spawn of a red-cycle continuation). */
 export function taskSpawnCount(result: OmpRunResult): number {
 	return toolExecutions(result).filter(call => call.toolName === "task").length;
@@ -779,4 +806,16 @@ function parseToolEnds(stdout: string, toolName: string): Array<{ isError: boole
 		}
 	}
 	return calls;
+}
+
+/**
+ * audit-0 RF-8 — earlyExit-safe "a `task` spawn has COMPLETED" probe: true only once a parsed
+ * `tool_execution_end` event carries `toolName === "task"`. The raw `"toolName":"task"`
+ * substring this replaces also matched `tool_execution_start` (and partial/update events), so
+ * the old arm could kill the run the moment the §3.0 test-authoring spawn BEGAN — before its
+ * result existed — a structural flake. Only a completed execution, or `RUN_CHECK_MARKER`, may
+ * ever terminate a red-cycle continuation's early-exit.
+ */
+export function completedTaskSpawnSeen(stdout: string): boolean {
+	return parseToolEnds(stdout, "task").length > 0;
 }
