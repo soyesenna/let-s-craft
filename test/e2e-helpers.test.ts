@@ -11,11 +11,12 @@
 // against a fake `spawn` function, never a real `omp` child.
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	REPO_ROOT,
 	appendBounded,
 	attachOmpRunHandlers,
 	auditBeginOutcomes,
@@ -493,7 +494,7 @@ describe("pinLetsCraftPluginToRepo (RF-18 — link-slot boundaries)", () => {
 		expect(readlinkSync(linkPath)).toBe(repoRoot);
 	});
 
-	it("a NON-symlink occupying the slot (EINVAL from readlinkSync) is not pinned → re-pointed the same way", () => {
+	it("a NON-symlink occupying the slot (EINVAL from readlinkSync) is not pinned → the helper normalizes it, then re-points (audit-2 RF-22)", () => {
 		const { repoRoot, head } = tmpPluginRepo();
 		writeVersionJs(repoRoot, head);
 		const slotDir = tmpDir("lsc-pin-slot-");
@@ -501,14 +502,50 @@ describe("pinLetsCraftPluginToRepo (RF-18 — link-slot boundaries)", () => {
 		writeFileSync(linkPath, "a regular file, not a symlink\n");
 		let linkCalls = 0;
 		const linkPlugin = (root: string): void => {
+			// audit-2 RF-22: the fake mimics PRODUCTION omp exactly — it does NOT clear a regular
+			// file itself. With the helper's normalization removed, symlinkSync below hits EEXIST
+			// and this test goes red; the helper must do the normalizing.
 			linkCalls += 1;
-			rmSync(linkPath, { force: true });
 			symlinkSync(root, linkPath);
 		};
 
 		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin })).not.toThrow();
 		expect(linkCalls).toBe(1);
 		expect(readlinkSync(linkPath)).toBe(repoRoot);
+	});
+
+	it("audit-2 RF-22 (hermetic, real omp): a regular-file slot is normalized by the helper, then the REAL `omp plugin link` succeeds under a temp HOME — the user's ~/.omp is never touched", () => {
+		// Exercises the actual production boundary this RF exists for: installed omp 18.0.11's
+		// link only unlinks symlink/directory slots, so a regular file makes its `symlink` call
+		// EEXIST and the CLI exit 1 (verified live on this machine). Runs during the deterministic
+		// check's test stage — after `npm run build`, which the hash preflight below requires.
+		const home = tmpDir("lsc-pin-hermetic-home-");
+		const slot = join(home, ".omp", "plugins", "node_modules", "lets-craft");
+		mkdirSync(join(home, ".omp", "plugins", "node_modules"), { recursive: true });
+		writeFileSync(slot, "regular file residue\n"); // the shape production omp cannot unlink
+
+		pinLetsCraftPluginToRepo({
+			linkPath: slot,
+			repoRoot: REPO_ROOT,
+			linkPlugin: root => {
+				execFileSync("omp", ["plugin", "link", root], { stdio: "pipe", env: { ...process.env, HOME: home } });
+			},
+		});
+
+		expect(readlinkSync(slot)).toBe(REPO_ROOT); // the REAL link created the symlink
+	});
+
+	it("audit-2 rec ① (RF-22 병행): an unexpected errno from the slot read rethrows — EACCES propagates, never treated as not-pinned", () => {
+		const { repoRoot } = tmpPluginRepo();
+		const slotDir = tmpDir("lsc-pin-eacces-");
+		const linkPath = join(slotDir, "lets-craft");
+		symlinkSync(repoRoot, linkPath);
+		chmodSync(slotDir, 0o000); // readlinkSync now fails EACCES — neither ENOENT nor EINVAL
+		try {
+			expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin: () => {} })).toThrow();
+		} finally {
+			chmodSync(slotDir, 0o700); // restore for the afterEach cleanup
+		}
 	});
 
 	it("an already-correct link is a no-op — the omp re-point never runs (correct → no-op)", () => {

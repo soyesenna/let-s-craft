@@ -21,6 +21,15 @@
 // subsequent test/check commit OIDs (new commits on top of B touching test/ or
 // check/run_check.sh). The prior A-cycle report is never re-attributed to B.
 //
+// audit-2 RF-28: §3.0 also has a LEGITIMATE no-commit completion shape (this
+// real cycle demonstrated it — the spawn completes, the fresh check runs, and
+// nothing lands on top of B). Commit existence is therefore asserted only in
+// the with-commit branch; the no-commit branch asserts the snapshot-input /
+// executed-OID evidence instead: the §3.0 spawn ran while HEAD was still B
+// (it consumed B's production snapshot as its input by construction), and a
+// check/logs transcript was written beyond process-1's red log — with HEAD
+// pinned at B, that execution ran at exactly B's OID.
+//
 // Gated behind LSC_E2E=1 — spends real tokens; `npm run e2e` runs this file.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -181,6 +190,18 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — canonical red cycle continuation (audit 
 			).toEqual([]);
 
 			// ==================== Process 2 — normal, fresh post-craft (LSC_FIXTURE env only) ====================
+			// audit-2 RF-28: the early-exit observation below polls the WORKTREE, not just the
+			// stream — see the comment on the earlyExit arm.
+			const continuationCommitLanded = (): boolean => {
+				try {
+					if (git(worktreeRoot, ["rev-parse", "HEAD"]) === commitB) return false;
+					execFileSync("git", ["merge-base", "--is-ancestor", commitB, "HEAD"], { cwd: worktreeRoot, stdio: "pipe" });
+					const diff = git(worktreeRoot, ["diff", "--name-only", `${commitB}..HEAD`]);
+					return /^test\/|\.lsc\/crafts\/red-cycle\/check\/run_check\.sh$/m.test(diff);
+				} catch {
+					return false; // not descended from B, or git not ready — keep waiting
+				}
+			};
 			const postCraftResult = await runOmpPrint({
 				cwd: projectDir,
 				sessionDir,
@@ -195,8 +216,16 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — canonical red cycle continuation (audit 
 				// START event (audit-0 RF-8), killing the run before the result existed — a
 				// structural flake. Only a completed execution, or the run-check marker, may
 				// ever exit early here.
+				//
+				// audit-2 RF-28: those arms alone sampled the stream BEFORE §8's finalization
+				// commits the very observations asserted below (check-3: the RUN_CHECK_MARKER arm
+				// fired before the §3.0 spawn had even run; check-4: the completed-spawn arm fired
+				// after the spawn but before any commit). Early exit is now permitted ONLY once
+				// the asserted observation itself holds — a new commit on top of B touching test/
+				// or check/run_check.sh — or the subprocess ends naturally (the no-commit
+				// legitimate-completion path, branch-handled in the assertions below).
 				earlyExit: (stdout: string) =>
-					stdout.includes(AUDIT_CYCLE_BEGUN_MARKER(1)) && (stdout.includes(RUN_CHECK_MARKER) || completedTaskSpawnSeen(stdout)),
+					stdout.includes(AUDIT_CYCLE_BEGUN_MARKER(1)) && (stdout.includes(RUN_CHECK_MARKER) || completedTaskSpawnSeen(stdout)) && continuationCommitLanded(),
 				prompt: `/skill:post-craft .lsc/crafts/${feature}/ ${FIXTURE_NOTE}`,
 			});
 			expect(postCraftResult.timedOut, `red-cycle post-craft timed out.\n${debugSummary(postCraftResult)}`).toBe(false);
@@ -212,16 +241,37 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — canonical red cycle continuation (audit 
 			// in this worktree) and executed at subsequent test/check commit OIDs — new commits on
 			// top of B touching test/ or check/run_check.sh. Exact-HEAD-B equality is NOT asserted;
 			// the A-cycle report is never re-attributed (craft's incomplete record stayed in its
-			// own process output, and the state carries no cross-OID report field).
+			// own process output, and the state carries no cross-OID report field). Both legitimate
+			// completion shapes satisfy this (audit-2 RF-28): commits landed → the with-commit
+			// branch below; nothing landed → the no-commit branch's snapshot-input/executed-OID
+			// evidence (see the file header).
 			expect(taskSpawnCount(postCraftResult), "§3.0's test-authoring spawn must run in the continuation cycle").toBeGreaterThanOrEqual(1);
 			const headAfter = git(worktreeRoot, ["rev-parse", "HEAD"]);
-			expect(headAfter, "the continuation cycle must land new commits on top of B").not.toBe(commitB);
-			expect(() => execFileSync("git", ["merge-base", "--is-ancestor", commitB, "HEAD"], { cwd: worktreeRoot }), "the new work must descend from B").not.toThrow();
-			const continuationDiff = git(worktreeRoot, ["diff", "--name-only", `${commitB}..HEAD`]);
-			expect(
-				/^test\/|\.lsc\/crafts\/red-cycle\/check\/run_check\.sh$/m.test(continuationDiff),
-				`the new commits on top of B must touch the §3.0 test/check artifacts.\n${continuationDiff}`,
-			).toBe(true);
+			if (headAfter !== commitB) {
+				// WITH-COMMIT branch (the observation the strengthened earlyExit waits for):
+				// continuation commits exist — assert descent and the test/check artifact surface.
+				expect(() => execFileSync("git", ["merge-base", "--is-ancestor", commitB, "HEAD"], { cwd: worktreeRoot }), "the new work must descend from B").not.toThrow();
+				const continuationDiff = git(worktreeRoot, ["diff", "--name-only", `${commitB}..HEAD`]);
+				expect(
+					/^test\/|\.lsc\/crafts\/red-cycle\/check\/run_check\.sh$/m.test(continuationDiff),
+					`the new commits on top of B must touch the §3.0 test/check artifacts.\n${continuationDiff}`,
+				).toBe(true);
+			} else {
+				// NO-COMMIT legitimate completion (audit-2 RF-28): §3.0 read B's production snapshot
+				// as input — the spawn asserted above ran in this worktree while HEAD was still B —
+				// and its verification EXECUTED at B's OID. The durable, orchestration-independent
+				// proof is a check/logs transcript written beyond process-1's red log: with HEAD
+				// pinned at B, any execution this process performed ran at exactly B's OID.
+				const redLogIndex = Number(/^check-(\d+)\.log$/.exec(redLog ?? "")?.[1] ?? 0);
+				const logIndices = readdirSync(checkLogsDir)
+					.map(name => /^check-(\d+)\.log$/.exec(name)?.[1])
+					.filter((n): n is string => n !== undefined)
+					.map(Number);
+				expect(
+					Math.max(0, ...logIndices),
+					"the no-commit completion still requires fresh §3.0 execution evidence at B's OID — a check log beyond process-1's red log",
+				).toBeGreaterThan(redLogIndex);
+			}
 		},
 		TEST_TIMEOUT_MS,
 	);

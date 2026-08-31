@@ -24,7 +24,7 @@
 // list`) — same model for both roles per explicit user direction, still on the `:low` effort tier
 // (glm-5.2 supports minimal/low/medium/high/xhigh).
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +56,13 @@ const GLOBAL_PLUGIN_LINK = join(homedir(), ".omp", "plugins", "node_modules", "l
  * seams exist so the three boundaries (missing → created / wrong-target → re-pointed /
  * correct → no-op) and every refusal branch are unit-testable without the real global slot or
  * the `omp` binary.
+ *
+ * audit-2 RF-22: production `omp plugin link` (installed 18.0.11) fails with `symlink` EEXIST
+ * when a REGULAR FILE occupies the slot — its unlink step only clears symlink/directory
+ * shapes — so the helper normalizes that shape itself BEFORE entering the real link: the
+ * regular file is removed by explicit policy, EACCES/EPERM (and every other removal error)
+ * propagates, and directories are left to omp's own handling. Empirically pinned on this
+ * machine: regular-file slot → `omp plugin link` exit 1, slot untouched.
  */
 export interface PluginPinSeams {
 	/** omp's global plugin-link slot to inspect/re-point (default: GLOBAL_PLUGIN_LINK). */
@@ -84,6 +91,19 @@ export function pinLetsCraftPluginToRepo(seams: Partial<PluginPinSeams> = {}): v
 		if (code !== "ENOENT" && code !== "EINVAL") throw error;
 	}
 	if (!pinned) {
+		// audit-2 RF-22: normalize a regular-file slot before the real `omp plugin link` —
+		// production only unlinks symlink/directory shapes, so a regular file would make the
+		// link's own `symlink` call EEXIST and kill the CLI (exit 1) before the fail-closed
+		// post-verification below could ever run. Removal is the explicit policy for regular
+		// files only; every other errno from rmSync (EACCES/EPERM/...) propagates untouched,
+		// and only the benign TOCTOU ENOENT (slot vanished between lstat and rm) is swallowed.
+		try {
+			if (lstatSync(linkPath).isFile()) {
+				rmSync(linkPath);
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
 		linkPlugin(repoRoot);
 	}
 	// Fail-closed re-verification for EVERY branch (created / re-pointed / already correct):

@@ -2,6 +2,21 @@
 // session starts with a deliberately different --model, then session_start must replace it before
 // turn 1. A tracer without an explicit entry inherits the same default, while an explicit explore
 // entry keeps precedence. Gated behind LSC_E2E=1 because it spends real provider tokens.
+//
+// audit-2 RF-29 — the check-4 failure (same OID as check-3's pass): the explore session ran on
+// the preset DEFAULT ('glm-4.5-flash', expected the explicit 'glm-5.1' entry) while the parent's
+// own model HAD been replaced to that default — which proves the plugin's session_start handler
+// completed, and `applySessionAgentModelOverrides` runs synchronously BEFORE
+// `applySessionDefaultModel` in that handler (src/main.ts:56-78), so the plugin-side application
+// is not the variable. The two remaining host-side candidates are (a) the task spawn targeted an
+// agent name other than the override's exact key "lsc-explore" (the marker-identified session
+// would then legitimately inherit the default), or (b) omp's task routing missed the runtime
+// #overrides entry. The captured per-agent session dirs were temp-cleaned, so (a) vs (b) is not
+// decidable post-hoc — the deterministic preconditions below discriminate them live: every
+// marker-identified session's session_init.agent must equal the override-keyed name (kills (a)),
+// and the parent session file must record the preset's model_change (config-load completion).
+// Only on top of BOTH does the override-vs-inheritance model assertion run; a failure with the
+// preconditions green IS the host-routing-defect evidence for the audit docs.
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -120,6 +135,26 @@ function sessionTask(entries: JsonObject[]): string | undefined {
 	return init && typeof init.task === "string" ? init.task : undefined;
 }
 
+/**
+ * audit-2 RF-29 — the AGENT a spawned session actually ran as, from its own session_init entry
+ * (omp records `agent` alongside `task`; verified against a live `--mode=json` run). The
+ * agentModelOverrides map is keyed by this exact task-agent name, so a marker-identified
+ * session's model assertion is only meaningful once its agent is the override-keyed one.
+ */
+function sessionAgent(entries: JsonObject[]): string | undefined {
+	const init = entries.find(entry => entry.type === "session_init");
+	return init && typeof init.agent === "string" ? init.agent : undefined;
+}
+
+/** audit-2 RF-29 — true iff the parent session file records a model_change to the preset default (the durable config-load-completion observation; ctx.ui.notify does NOT reach `-p --mode=json` stdout — verified live). */
+function sawPresetModelChange(entries: JsonObject[], defaultModel: ModelIdentity): boolean {
+	return entries.some(entry => {
+		if (entry.type !== "model_change" || typeof entry.model !== "string") return false;
+		const model = entry.model.split("/").pop() ?? entry.model;
+		return model === defaultModel.model;
+	});
+}
+
 describe.skipIf(!RUN_E2E)("preset session default E2E (AC1 + AC2)", () => {
 	it(
 		"applies the preset default to the fresh main session and an unspecified tracer while preserving the explore override",
@@ -182,9 +217,34 @@ describe.skipIf(!RUN_E2E)("preset session default E2E (AC1 + AC2)", () => {
 			expect(tracerAssistant?.provider, `tracer must inherit preset default provider\n${sessionInventory}`).toBe(defaultModel.provider);
 			expect(tracerAssistant?.model, `tracer must inherit preset default bare model id\n${sessionInventory}`).toBe(defaultModel.model);
 
+			// audit-2 RF-29 — deterministic preconditions for the override assertion (see the file
+			// header for the check-4 evidence): (1) config-load completion observed durably in the
+			// parent session file (the model_change the preset's session-default application writes);
+			// (2) routing-source verification — each marker-identified session must actually have been
+			// spawned as the task-agent the override is keyed to. The parent-model assertions above
+			// already prove applyActivePreset ran; these pin the remaining two variables.
+			const parentEntries = readJsonl(parentFiles[0]);
+			expect(
+			sawPresetModelChange(parentEntries, defaultModel),
+			`config-load completion observation missing: the parent session file records no model_change to the preset default ${defaultModel.base}\n${sessionInventory}`,
+			).toBe(true);
+			const tracerAgent = sessionAgent(tracerSessions[0].entries);
+			expect(
+			tracerAgent,
+			`tracer session must have been spawned as agent lsc-tracer (routing-source precondition)\n${sessionInventory}`,
+			).toBe("lsc-tracer");
+			const exploreAgent = sessionAgent(exploreSessions[0].entries);
+			expect(
+			exploreAgent,
+			`explore session must have been spawned as agent lsc-explore — the preset's override is keyed to that exact task-agent name; anything else legitimately inherits the default (routing-source precondition)\n${sessionInventory}`,
+			).toBe("lsc-explore");
+
 			const exploreAssistant = firstAssistantMessage(exploreSessions[0].entries);
 			expect(exploreAssistant, `explore session has no assistant message\n${sessionInventory}`).toBeDefined();
-			expect(exploreAssistant?.model, `explicit explore entry must beat preset default\n${sessionInventory}`).toBe(exploreModel.model);
+			expect(
+			exploreAssistant?.model,
+			`explicit explore entry must beat preset default (preconditions held: config load observed, spawn agent was ${exploreAgent}) — a failure here with the preconditions green is host-side task-routing evidence for the audit docs\n${sessionInventory}`,
+			).toBe(exploreModel.model);
 		},
 		TEST_TIMEOUT_MS,
 	);
