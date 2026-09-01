@@ -313,7 +313,7 @@ export function validateEscalationLedger(
 		} else {
 			const prev = history[i - 1];
 			if (prev.disposition !== "Continue auditing" || prev.nextDueCycle !== parsed.scheduledCycle) {
-				return { error: `auditEscalations[${i}]: scheduledCycle ${parsed.scheduledCycle} does not chain to the previous Continue's nextDueCycle (${prev.disposition === "Continue auditing" ? JSON.stringify(prev.nextDueCycle) : "n/a — previous record is terminal"})` };
+			return { error: `auditEscalations[${i}]: scheduledCycle ${parsed.scheduledCycle} does not chain to the previous Continue's nextDueCycle (${prev.disposition === "Continue auditing" ? controlSafeEcho(prev.nextDueCycle) : "n/a — previous record is terminal"})` };
 			}
 		}
 		history.push(parsed);
