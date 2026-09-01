@@ -23,6 +23,7 @@ import { join } from "node:path";
 import type { AgentToolResult, ExecOptions, ExecResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { FEATURE_SLUG_RE, craftCheckLogsDir, craftCheckScriptPath, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
 import { type CraftState, findPersistedCraftState, getActiveCraft } from "./state.js";
+import { controlSafeEcho } from "./tool-text.js";
 
 // registerTool's execute() needs an explicit Promise<AgentToolResult<T>> return type: without
 // it, TSchema/TParams inference from `parameters` and TDetails inference from the body collide
@@ -379,8 +380,8 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 					{
 						type: "text",
 						text:
-							`lets-craft: the persisted craft state for "${args.feature}" claims the identity ${JSON.stringify(claimed)}, ` +
-							`which is not the canonical form for this invocation (expected feature ${JSON.stringify(args.feature)}, projectRoot ${args.cwd}, worktreeRoot absent or ${expectedWorktree}) — ` +
+							`lets-craft: the persisted craft state for "${args.feature}" claims the identity ${controlSafeEcho(claimed)}, ` +
+							`which is not the canonical form for this invocation (expected feature ${controlSafeEcho(args.feature)}, projectRoot ${args.cwd}, worktreeRoot absent or ${expectedWorktree}) — ` +
 							`refusing to run check/run_check.sh against a foreign root (audit-1 RF-20, audit-2 RF-24).`,
 					},
 				],
