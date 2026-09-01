@@ -885,3 +885,200 @@ function parseToolEnds(stdout: string, toolName: string): Array<{ isError: boole
 export function completedTaskSpawnSeen(stdout: string): boolean {
 	return parseToolEnds(stdout, "task").length > 0;
 }
+
+// ---------------------------------------------------------------------------
+// audit-3 RF-33/RF-35 — durable parent-session JSONL readers.
+//
+// The bounded stdout buffer (MAX_BUFFERED_OUTPUT_BYTES' 32MB rolling tail) can lose
+// early-stream lines on long runs, and the stream's toolName for plugin tools is generic,
+// so RF-35(a)'s exact-spawn evidence and RF-33's routing-source precondition are re-founded
+// on the session FILES the host itself persists under --session-dir: omp writes one
+// top-level `<sessionDir>/<timestamp>_<uuid>.jsonl` per process (confirmed against a real
+// --session-dir layout; subagent sessions live in the sibling DIRECTORY of the same stem),
+// recording every assistant `toolCall` block with its PARSED arguments, every `toolResult`
+// message, and a timestamp per entry — the stdout-independent record these readers expose.
+// ---------------------------------------------------------------------------
+
+/** The harness's one canonical JSON-object guard (exported so call sites never recreate it) — narrows to `Record<string, unknown>`; fields stay `unknown` and are checked at each use. */
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Read a persisted session JSONL as objects. Deliberately THROWS on an unparseable or
+ * non-object line (with `path:line` context): these readers exist to be a durable authority,
+ * so a corrupt file must surface as its own loud failure — never silently degrade into
+ * "no task calls found", which would fabricate an orchestration-defect verdict.
+ */
+export function readSessionJsonl(path: string): Array<Record<string, unknown>> {
+	return readFileSync(path, "utf8")
+		.split("\n")
+		.filter(line => line.trim().length > 0)
+		.map((line, index) => {
+			let value: unknown;
+			try {
+				value = JSON.parse(line);
+			} catch (error) {
+				throw new Error(`${path}:${index + 1} is not parseable JSON: ${(error as Error).message}`);
+			}
+			if (!isJsonObject(value)) throw new Error(`${path}:${index + 1} is not a JSON object`);
+			return value;
+		});
+}
+
+/**
+ * audit-3 RF-35 — locate the durable session FILE of the process whose prompt carries
+ * `promptNeedle` (e.g. "/skill:post-craft"). omp persists one top-level `.jsonl` per process
+ * directly under `sessionDir`, and each process's own `-p` prompt is its first user message —
+ * so the needle identifies that process's record even when several runs share the dir (the
+ * pre-craft/craft processes' prompts cannot contain another skill's invocation). Subagent
+ * sessions live one level down (in the sibling directory of the same stem) and are never
+ * matched here. Returns undefined when no process's user message carries the needle.
+ */
+export function findSessionFileByPrompt(sessionDir: string, promptNeedle: string): { path: string; matchedUserText: string } | undefined {
+	for (const entry of readdirSync(sessionDir, { withFileTypes: true })) {
+		if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+		const path = join(sessionDir, entry.name);
+		try {
+			const entries = readSessionJsonl(path);
+			for (const e of entries) {
+				if (e.type !== "message" || !isJsonObject(e.message) || e.message.role !== "user") continue;
+				const text = extractMessageText(e.message.content);
+				if (text.includes(promptNeedle)) return { path, matchedUserText: text };
+			}
+		} catch {
+			// A file that fails to parse while SCANNING is skipped, not fatal: the finder's job is
+			// needle matching, and another process's corrupt file must not mask a healthy match.
+			// (Reads of the MATCHED file go through readSessionJsonl, which does throw.)
+		}
+	}
+	return undefined;
+}
+
+/** One `task` tool call a session file records, with its durable completion state. See `sessionTaskSpawns`. */
+export interface SessionTaskSpawn {
+	/** The toolCall block id — pairs the call with its toolResult message. */
+	callId: string;
+	/** The requested agent from the call's arguments: the flat `agent` field, or a `tasks[]` batch item's `agent`. Undefined when the model omitted it. */
+	agent: string | undefined;
+	/** The assignment text: the flat `task` field, or the batch item's `task`. Empty string when absent. */
+	taskText: string;
+	/** True once a toolResult message for `callId` exists in the same file — the durable, stdout-independent completion observation. */
+	resultDelivered: boolean;
+	resultIsError: boolean | undefined;
+	resultText: string | undefined;
+}
+
+/**
+ * audit-3 RF-35(a)/RF-33 — every `task` tool call a session FILE records, in order, with its
+ * durable completion state. The persisted assistant block is the host's own schema
+ * (pi-ai's `ToolCall`: `{type:"toolCall", id, name, arguments: Record<string,unknown>}`),
+ * always written when the model makes the call — unlike the child's `session_init.agent`, an
+ * OPTIONAL host field — so "which agent did the orchestrator request, and did that spawn
+ * complete" is answerable from this record alone, immune to stdout-buffer truncation. Both
+ * argument shapes the tool accepts are normalized (task/index.ts): the flat
+ * `{agent, task}` form and the batch `{tasks: [{agent, task}]}` form.
+ */
+export function sessionTaskSpawns(sessionJsonlPath: string): SessionTaskSpawn[] {
+	const entries = readSessionJsonl(sessionJsonlPath);
+	const spawns: SessionTaskSpawn[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message" || !isJsonObject(entry.message) || entry.message.role !== "assistant") continue;
+		const content = entry.message.content;
+		if (!Array.isArray(content)) continue;
+		for (const block of content) {
+			if (!isJsonObject(block) || block.type !== "toolCall" || block.name !== "task") continue;
+			// `arguments` is a parsed object per the ToolCall schema; tolerate a JSON string
+			// (provider variance) rather than dropping the call on the floor.
+			let args: Record<string, unknown> | undefined = isJsonObject(block.arguments)
+				? block.arguments
+				: typeof block.arguments === "string"
+					? (() => {
+							try {
+								const parsed: unknown = JSON.parse(block.arguments);
+								return isJsonObject(parsed) ? parsed : undefined;
+							} catch {
+								return undefined;
+							}
+						})()
+					: undefined;
+			const items: unknown[] = Array.isArray(args?.tasks) && args.tasks.length > 0 ? args.tasks : [args ?? {}];
+			for (const item of items) {
+				if (!isJsonObject(item)) continue;
+				const agent = typeof item.agent === "string" && item.agent.trim().length > 0 ? item.agent.trim() : undefined;
+				spawns.push({
+					callId: typeof block.id === "string" ? block.id : "",
+					agent,
+					taskText: typeof item.task === "string" ? item.task : "",
+					resultDelivered: false,
+					resultIsError: undefined,
+					resultText: undefined,
+				});
+			}
+		}
+	}
+	// A batch call's items share ONE toolCall id, so a delivered result completes EVERY item
+	// of that call — per-item results do not exist for the batch shape.
+	const deliveredByCallId = new Map<string, { isError: boolean; text: string }>();
+	for (const entry of entries) {
+		if (entry.type !== "message" || !isJsonObject(entry.message) || entry.message.role !== "toolResult") continue;
+		const message = entry.message;
+		if (typeof message.toolCallId !== "string") continue;
+		const content = message.content;
+		deliveredByCallId.set(message.toolCallId, {
+			isError: message.isError === true,
+			text: Array.isArray(content) ? content.map(block => (isJsonObject(block) && typeof block.text === "string" ? block.text : "")).join("\n") : "",
+		});
+	}
+	for (const spawn of spawns) {
+		const delivered = deliveredByCallId.get(spawn.callId);
+		if (!delivered) continue;
+		spawn.resultDelivered = true;
+		spawn.resultIsError = delivered.isError;
+		spawn.resultText = delivered.text;
+	}
+	return spawns;
+}
+
+/** One timestamped entry digest — the attribution tail a stall diagnostic needs. See `sessionEntryDigests`. */
+export interface SessionEntryDigest {
+	timestamp: string | number | undefined;
+	type: string;
+	/** Present for message entries: "assistant"/"user"/"toolResult". */
+	role: string | undefined;
+	/** Present for toolResult messages: the tool's own name. */
+	toolName: string | undefined;
+	/** Bounded text: the assistant/user text or the tool result text (capped). */
+	snippet: string;
+}
+
+/**
+ * audit-3 RF-35(b) — the ordered entry digests of a session file (timestamp, type, role,
+ * toolName, bounded text) so a post-craft timeout can attribute its stall: the timestamp of
+ * the LAST durable activity (and the gap to the kill) separates a provider stall (long tail
+ * silence) from budget exhaustion (dense activity right up to the kill) from an
+ * orchestration hang (a task call whose result never arrives).
+ */
+export function sessionEntryDigests(sessionJsonlPath: string): SessionEntryDigest[] {
+	return readSessionJsonl(sessionJsonlPath).map(entry => {
+		const message = isJsonObject(entry.message) ? entry.message : undefined;
+		let role: string | undefined;
+		let toolName: string | undefined;
+		let snippet = "";
+		if (message && typeof message.role === "string") {
+			role = message.role;
+			if (role === "toolResult" && typeof message.toolName === "string") toolName = message.toolName;
+			const content = message.content;
+			snippet = role === "toolResult" && Array.isArray(content)
+				? content.map(block => (isJsonObject(block) && typeof block.text === "string" ? block.text : "")).join(" ")
+				: extractMessageText(content);
+		}
+		return {
+			timestamp: typeof entry.timestamp === "string" || typeof entry.timestamp === "number" ? entry.timestamp : message && typeof message.timestamp === "number" ? message.timestamp : undefined,
+			type: typeof entry.type === "string" ? entry.type : "<unknown>",
+			role,
+			toolName,
+			snippet: snippet.slice(0, 200),
+		};
+	});
+}

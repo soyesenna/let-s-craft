@@ -21,6 +21,9 @@ import {
 	attachOmpRunHandlers,
 	auditBeginOutcomes,
 	completedTaskSpawnSeen,
+	findSessionFileByPrompt,
+	sessionEntryDigests,
+	sessionTaskSpawns,
 	type OmpRunResult,
 	pinLetsCraftPluginToRepo,
 	preCraftArtifactsComplete,
@@ -595,5 +598,113 @@ describe("pinLetsCraftPluginToRepo (RF-18 — link-slot boundaries)", () => {
 		symlinkSync(repoRoot, linkPath);
 
 		expect(() => pinLetsCraftPluginToRepo({ linkPath, repoRoot, linkPlugin: () => {} })).toThrow("(unparsed)");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-3 RF-33/RF-35 — the durable parent-session JSONL readers (e2e-helpers.ts' new
+// seam). Same no-real-process, `npm test`-runs philosophy: exercised against synthetic
+// session files shaped exactly like the host's persisted entries (message/toolCall/
+// toolResult), never a real `omp` child. These are the parsers the routing-source
+// precondition (RF-33) and the exact-spawn/stall evidence (RF-35) stand on, so their
+// argument-shape normalization and completion linkage are pinned here.
+// ---------------------------------------------------------------------------
+
+describe("sessionTaskSpawns / findSessionFileByPrompt / sessionEntryDigests (RF-33/RF-35)", () => {
+	const tempDirs: string[] = [];
+	afterEach(() => {
+		while (tempDirs.length > 0) {
+			const dir = tempDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function tmpDir(prefix: string): string {
+		const dir = mkdtempSync(join(tmpdir(), prefix));
+		tempDirs.push(dir);
+		return dir;
+	}
+
+	/** A session file carrying the host's persisted entry shape: assistant message with a toolCall block, and a toolResult message pairing by toolCallId. */
+	function writeSessionFile(path: string, entries: Array<Record<string, unknown>>): string {
+		writeFileSync(path, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+		return path;
+	}
+
+	const entryBase = { id: "e1", parentId: null, timestamp: "2026-09-01T00:00:00.000Z" };
+
+	it("sessionTaskSpawns normalizes the FLAT {agent, task} shape and pairs the delivered toolResult", () => {
+		const dir = tmpDir("lsc-session-flat-");
+		const path = writeSessionFile(join(dir, "run.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "assistant", content: [{ type: "toolCall", id: "call_1", name: "task", arguments: { agent: "lsc-test-engineer", task: "author tests for feature X at HEAD" } }] } },
+			{ type: "message", ...entryBase, id: "e2", message: { role: "toolResult", toolCallId: "call_1", toolName: "task", content: [{ type: "text", text: "spawn finished" }], isError: false } },
+		]);
+
+		const spawns = sessionTaskSpawns(path);
+		expect(spawns).toHaveLength(1);
+		expect(spawns[0].agent).toBe("lsc-test-engineer");
+		expect(spawns[0].taskText).toContain("feature X");
+		expect(spawns[0].resultDelivered).toBe(true);
+		expect(spawns[0].resultIsError).toBe(false);
+		expect(spawns[0].resultText).toBe("spawn finished");
+	});
+
+	it("sessionTaskSpawns normalizes the BATCH {tasks: [...]} shape, tolerates JSON-string arguments, and reports an un-resulted call as not delivered", () => {
+		const dir = tmpDir("lsc-session-batch-");
+		const path = writeSessionFile(join(dir, "run.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "assistant", content: [
+				{ type: "toolCall", id: "call_1", name: "task", arguments: JSON.stringify({ tasks: [{ agent: "lsc-tracer", task: "TRACER-PING ack" }, { agent: "lsc-explore", task: "EXPLORE-PING ack" }] }) },
+			] } },
+			{ type: "message", ...entryBase, id: "e2", message: { role: "toolResult", toolCallId: "call_1", toolName: "task", content: [{ type: "text", text: "both done" }], isError: false } },
+			{ type: "message", ...entryBase, id: "e3", message: { role: "assistant", content: [{ type: "toolCall", id: "call_2", name: "task", arguments: { agent: "lsc-test-engineer", task: "second spawn" } }] } },
+		]);
+
+		const spawns = sessionTaskSpawns(path);
+		expect(spawns.map(s => s.agent)).toEqual(["lsc-tracer", "lsc-explore", "lsc-test-engineer"]);
+		expect(spawns[0].resultDelivered).toBe(true); // the batch call's single result covers both items
+		expect(spawns[1].resultDelivered).toBe(true);
+		expect(spawns[2].resultDelivered).toBe(false); // no toolResult for call_2 — in-flight, not completed
+		expect(spawns[2].resultText).toBeUndefined();
+	});
+
+	it("sessionTaskSpawns throws on a corrupt line instead of fabricating a no-spawn verdict", () => {
+		const dir = tmpDir("lsc-session-corrupt-");
+		const path = join(dir, "run.jsonl");
+		writeFileSync(path, '{"type":"message"\n'); // unterminated JSON
+
+		expect(() => sessionTaskSpawns(path)).toThrow(/run\.jsonl:1/);
+	});
+
+	it("findSessionFileByPrompt matches the process whose user message carries the needle, ignoring nested subagent files", () => {
+		const dir = tmpDir("lsc-session-finder-");
+		writeSessionFile(join(dir, "craft-run.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "user", content: "/skill:craft .lsc/crafts/red-cycle/ go" } },
+		]);
+		const postCraftPath = writeSessionFile(join(dir, "postcraft-run.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "user", content: [{ type: "text", text: "/skill:post-craft .lsc/crafts/red-cycle/ continue" }] } },
+		]);
+		mkdirSync(join(dir, "postcraft-run"), { recursive: true });
+		writeSessionFile(join(dir, "postcraft-run", "Subagent.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "user", content: "quoted /skill:post-craft text must not match from a nested file" } },
+		]);
+
+		const found = findSessionFileByPrompt(dir, "/skill:post-craft");
+		expect(found?.path).toBe(postCraftPath);
+		expect(found?.matchedUserText).toContain("red-cycle");
+		expect(findSessionFileByPrompt(dir, "/skill:pre-craft")).toBeUndefined();
+	});
+
+	it("sessionEntryDigests carries timestamps, roles, and toolNames for the stall-attribution tail", () => {
+		const dir = tmpDir("lsc-session-digest-");
+		const path = writeSessionFile(join(dir, "run.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "user", content: "prompt" } },
+			{ type: "message", ...entryBase, id: "e2", timestamp: "2026-09-01T00:05:00.000Z", message: { role: "assistant", content: [{ type: "text", text: "thinking aloud" }] } },
+			{ type: "message", id: "e3", parentId: "e2", timestamp: "2026-09-01T00:09:00.000Z", message: { role: "toolResult", toolCallId: "call_1", toolName: "task", content: [{ type: "text", text: "result text" }] } },
+		]);
+
+		const digests = sessionEntryDigests(path);
+		expect(digests.map(d => d.type)).toEqual(["message", "message", "message"]);
+		expect(digests[1]).toMatchObject({ role: "assistant", snippet: "thinking aloud", timestamp: "2026-09-01T00:05:00.000Z" });
+		expect(digests[2]).toMatchObject({ role: "toolResult", toolName: "task", snippet: "result text" });
 	});
 });
