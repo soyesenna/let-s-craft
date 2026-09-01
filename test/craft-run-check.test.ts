@@ -625,16 +625,32 @@ describe("RF-24 — registerRunCheckTool execute: slug guard before any state re
 		{
 			name: "② persisted.feature !== requested",
 			state: (cwd: string) => ({ feature: "other-feature", projectRoot: cwd }),
+			escaped: undefined,
 		},
 		{
 			name: "③ persisted.projectRoot is a foreign root carrying a control payload (escaped echo, never raw)",
 			state: () => ({ projectRoot: "/tmp/foreign\n--upload-pack=evil\tflag" }),
+			escaped: undefined,
 		},
 		{
 			name: "② persisted.worktreeRoot is neither absent nor worktreePath(cwd, feature)",
 			state: (cwd: string) => ({ projectRoot: cwd, worktreeRoot: "/tmp/elsewhere-worktree" }),
+			escaped: undefined,
 		},
-	])("$name", async ({ state }) => {
+		{
+			// audit-3 RF-30: the seed gap audit-2 left — the assertion regex already included
+			// \u007f but no seed ever carried one, so the JSON.stringify blind spot (raw DEL in
+			// the identity echo) was never exercised. DEL on projectRoot fails the canonical check.
+			name: "③ persisted.projectRoot carries a raw DEL (U+007F) payload — JSON.stringify's blind spot, escaped through the shared seam (RF-30)",
+			state: () => ({ projectRoot: "/tmp/foreign\u007fupload-pack=evil" }),
+			escaped: "\\u007f",
+		},
+		{
+			name: "③ persisted.worktreeRoot carries a raw DEL (U+007F) payload — escaped through the shared seam (RF-30)",
+			state: (cwd: string) => ({ projectRoot: cwd, worktreeRoot: "/tmp/elsewhere\u007fworktree" }),
+			escaped: "\\u007f",
+		},
+	])("$name", async ({ state, escaped }) => {
 		const root = tmpProject();
 		seedPersistedState(root, "my-feature", state(root));
 		const runCheck = captureRunCheckExecute();
@@ -645,8 +661,10 @@ describe("RF-24 — registerRunCheckTool execute: slug guard before any state re
 		const text = firstText(result);
 		expect(text).toContain("foreign root");
 		expect(text).toContain("not the canonical form for this invocation");
-		expect(text, "single-line refusal — no raw control character may escape").not.toMatch(/[\u0000-\u001f\u007f]/);
-		if (text.includes("upload-pack")) expect(text).toContain("\\n"); // the foreign root's echo is escaped
+		// audit-3 RF-30/RF-34: the no-raw class now spans the total serializer's whole repertoire.
+		expect(text, "single-line refusal — no raw control character may escape").not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
+		if (escaped !== undefined) expect(text, "the DEL payload's only echo is the escaped \\u007f form").toContain(escaped);
+		if (text.includes("--upload-pack")) expect(text).toContain("\\n"); // the newline-carrying foreign root's echo is escaped
 		expect(runCheck.execCalls, "exec must never run against a foreign identity").toBe(0);
 		expect(existsSync(craftCheckLogsDir(root, "my-feature")), "no log dir may be created").toBe(false);
 	});
