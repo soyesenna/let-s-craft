@@ -14,6 +14,7 @@ import {
 	isAuditEscalationInterval,
 	parseAuditBaseSnapshot,
 } from "../src/craft/audit-policy";
+import { controlSafeEcho } from "../src/craft/tool-text";
 import { performAuditBegin } from "../src/craft/verdict";
 
 // ===========================================================================
@@ -668,5 +669,46 @@ describe("RF-23 — control-carrying persisted escalation fields are echoed esca
 		expect(text, "single-line refusal").not.toMatch(/[\u0000-\u001f\u007f]/);
 		expect(text).toContain("\\t"); // escaped echo
 		expect(readFileSync(statePath, "utf8")).toBe(bytes);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-3 RF-34 — controlSafeEcho IS the total escaped serializer for model-facing text (the
+// single seam every untrusted-value diagnostic echoes through). Pure-helper pins: the C1 /
+// U+2028/U+2029 axes JSON.stringify leaves raw (the RF-23 DEL axis, extended), JSON's own C0
+// escaping preserved, and the total-function fallbacks (circular throw / undefined return) so
+// NO input can make a diagnostic throw.
+// ---------------------------------------------------------------------------
+
+describe("controlSafeEcho (RF-34 — total escaped serializer, pure helper)", () => {
+	it.each([
+		["C1 NEL U+0085", "a\u0085b", '"a\\u0085b"'],
+		["C1 CSI U+009B", "x\u009by", '"x\\u009by"'],
+		["line separator U+2028", "a\u2028b", '"a\\u2028b"'],
+		["paragraph separator U+2029", "a\u2029b", '"a\\u2029b"'],
+		["DEL U+007F (the RF-23 axis, still escaped)", "a\u007fb", '"a\\u007fb"'],
+		["a lone CR JSON.stringify itself would leave inside a split line", "a\rb", '"a\\rb"'],
+	])("escapes %s raw-ly carried in a string", (_name, input, expected) => {
+		expect(controlSafeEcho(input)).toBe(expected);
+	});
+
+	it("keeps JSON.stringify's own C0 escaping and quoting (back-compat with the RF-23 regressions)", () => {
+		expect(controlSafeEcho("3\nlets-craft: forged")).toBe('"3\\nlets-craft: forged"');
+		expect(controlSafeEcho("3\tEVIL")).toBe('"3\\tEVIL"');
+		expect(controlSafeEcho("3\u001bEVIL")).toBe('"3\\u001bEVIL"');
+	});
+
+	it("is a TOTAL function: a circular structure lands on the constant fallback instead of throwing", () => {
+		const circular: Record<string, unknown> = { feature: "my-feature" };
+		circular.self = circular;
+		expect(() => controlSafeEcho(circular)).not.toThrow();
+		expect(controlSafeEcho(circular)).toBe("<unserializable value>");
+		expect(controlSafeEcho(1n)).toBe("<unserializable value>"); // BigInt — JSON.stringify's other throw
+	});
+
+	it("maps JSON.stringify's undefined return to a constant (undefined / symbol / function)", () => {
+		expect(controlSafeEcho(undefined)).toBe("undefined");
+		expect(controlSafeEcho(Symbol("forged"))).toBe("undefined");
+		expect(controlSafeEcho(() => "forged")).toBe("undefined");
 	});
 });

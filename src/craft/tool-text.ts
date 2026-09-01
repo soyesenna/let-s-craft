@@ -33,14 +33,27 @@ export function controlCharRefusalText(fields: Record<string, string | undefined
 }
 
 /**
- * audit-2 RF-23 — the safe echo of an untrusted value inside a diagnostic: JSON.stringify's own
- * escaping PLUS the one control character it leaves raw — DEL (U+007F). JSON only mandates
- * escapes for U+0000-U+001F, so a DEL-carrying forged field echoed through bare JSON.stringify
- * still reshapes command-shaped text (proven live by the RF-23 regression: a DEL-carrying
- * nextDueCycle leaked the raw control character into the refusal line). Every diagnostic that
- * names an untrusted persisted field echoes through THIS, never bare JSON.stringify/String.
+ * audit-2 RF-23 / audit-3 RF-34 — the ONE total escaped serializer for echoing an untrusted
+ * value inside model-facing text: JSON.stringify's own escaping PLUS every text-reshaping
+ * character JSON leaves raw — DEL (U+007F), C1 (U+0080–U+009F), and the Unicode line/paragraph
+ * separators (U+2028/U+2029). JSON only mandates escapes for U+0000–U+001F, so a forged field
+ * carrying any of these still reshapes command-shaped text through bare JSON.stringify (the
+ * RF-23 regression's live DEL leak, extended to the C1/separator axes by RF-34). Total
+ * function: the throw JSON.stringify itself can produce (circular structure, BigInt) and its
+ * undefined return (undefined, symbol, function) both land on constant fallbacks, so NO input
+ * can make a diagnostic throw. Every diagnostic that names an untrusted value echoes through
+ * THIS, never bare JSON.stringify/String — this module's own contract, enforced by the
+ * RF-30/RF-34 regressions.
  */
+const RAW_TEXT_RESHAPE_RE = /[\u007f\u0080-\u009f\u2028\u2029]/g;
+
 export function controlSafeEcho(value: unknown): string {
-	const serialized = JSON.stringify(value);
-	return serialized === undefined ? "undefined" : serialized.replace(/\u007f/g, "\\u007f");
+	let serialized: string | undefined;
+	try {
+		serialized = JSON.stringify(value);
+	} catch {
+		return "<unserializable value>";
+	}
+	if (serialized === undefined) return "undefined";
+	return serialized.replace(RAW_TEXT_RESHAPE_RE, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
