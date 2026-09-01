@@ -11,8 +11,8 @@
 // against a fake `spawn` function, never a real `omp` child.
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -22,10 +22,10 @@ import {
 	auditBeginOutcomes,
 	completedTaskSpawnSeen,
 	findSessionFileByPrompt,
-	sessionEntryDigests,
-	sessionTaskSpawns,
 	type OmpRunResult,
 	pinLetsCraftPluginToRepo,
+	sessionEntryDigests,
+	sessionTaskSpawns,
 	preCraftArtifactsComplete,
 	type RunnableChild,
 	runToCompletionWith,
@@ -464,6 +464,27 @@ describe("pinLetsCraftPluginToRepo (RF-18 — link-slot boundaries)", () => {
 		);
 	}
 
+	/**
+	 * audit-3 RF-31 — an existence/content snapshot of a plugins dir's three write surfaces
+	 * (`node_modules/lets-craft` slot, `omp-plugins.lock.json`, `package.json` — everything
+	 * `omp plugin link` touches). Missing paths snapshot as `<absent>`; files as their bytes;
+	 * a symlink slot as its target — so a before/after `toEqual` catches ANY real-user-area
+	 * write the pinned-env child might have made.
+	 */
+	function snapshotPluginsDir(pluginsDir: string): string[] {
+		const snapshotOne = (path: string): string => {
+			try {
+				const stat = lstatSync(path);
+				if (stat.isSymbolicLink()) return `symlink -> ${readlinkSync(path)}`;
+				if (stat.isFile()) return `file ${readFileSync(path, "utf8")}`;
+				return "other";
+			} catch {
+				return "<absent>";
+			}
+		};
+		return [join(pluginsDir, "node_modules", "lets-craft"), join(pluginsDir, "omp-plugins.lock.json"), join(pluginsDir, "package.json")].map(snapshotOne);
+	}
+
 	it("missing link slot (ENOENT) → takes the omp re-point, then the link resolves to the repo (missing → created)", () => {
 		const { repoRoot, head } = tmpPluginRepo();
 		writeVersionJs(repoRoot, head);
@@ -517,25 +538,87 @@ describe("pinLetsCraftPluginToRepo (RF-18 — link-slot boundaries)", () => {
 		expect(readlinkSync(linkPath)).toBe(repoRoot);
 	});
 
-	it("audit-2 RF-22 (hermetic, real omp): a regular-file slot is normalized by the helper, then the REAL `omp plugin link` succeeds under a temp HOME — the user's ~/.omp is never touched", () => {
+	it("audit-3 RF-31 (hermetic, real omp): every omp state root is pinned into the temp tree — the REAL link resolves through the pinned XDG root, and the user's actual plugin slot/lockfile are identical before/after", () => {
 		// Exercises the actual production boundary this RF exists for: installed omp 18.0.11's
 		// link only unlinks symlink/directory slots, so a regular file makes its `symlink` call
 		// EEXIST and the CLI exit 1 (verified live on this machine). Runs during the deterministic
 		// check's test stage — after `npm run build`, which the hash preflight below requires.
+		//
+		// audit-3 RF-31: the previous child env was `{...process.env, HOME: home}` — installed
+		// omp's DirResolver (pi-utils/src/dirs.ts:339-364) prefers an EXISTING `$XDG_DATA_HOME/omp`
+		// over HOME, so on an XDG-configured machine the real link re-pointed the USER's plugin
+		// slot and rewrote their omp-plugins.lock.json (env-conditional: this machine has XDG
+		// unset, which is why check-6 stayed green). The child env is now an ALLOWLIST: every
+		// root the resolver consults (HOME, XDG_DATA_HOME, XDG_STATE_HOME, XDG_CACHE_HOME) is
+		// pinned into the temp tree and no redirect knob (OMP_PROFILE / PI_PROFILE /
+		// PI_CONFIG_DIR / PI_CODING_AGENT_DIR / ...) can be inherited at all. Pre-creating
+		// `<xdgData>/omp/plugins/node_modules` makes the pinned XDG root EXIST, so the resolver
+		// makes it authoritative over HOME — reproducing exactly the XDG-configured machine
+		// class the old env leaked into, now confined to the temp tree.
 		const home = tmpDir("lsc-pin-hermetic-home-");
-		const slot = join(home, ".omp", "plugins", "node_modules", "lets-craft");
-		mkdirSync(join(home, ".omp", "plugins", "node_modules"), { recursive: true });
+		const xdgData = tmpDir("lsc-pin-hermetic-xdg-data-");
+		const xdgState = tmpDir("lsc-pin-hermetic-xdg-state-");
+		const xdgCache = tmpDir("lsc-pin-hermetic-xdg-cache-");
+		mkdirSync(join(xdgData, "omp", "plugins", "node_modules"), { recursive: true });
+		const slot = join(xdgData, "omp", "plugins", "node_modules", "lets-craft");
 		writeFileSync(slot, "regular file residue\n"); // the shape production omp cannot unlink
+
+		// The user's REAL plugin area on BOTH resolution axes (configRoot `~/.omp`, and
+		// `$XDG_DATA_HOME/omp` when the developer exports one), snapshotted before the child
+		// runs: slot, lockfile, and package.json — everything `omp plugin link` writes.
+		const realPluginsDirs = [join(homedir(), ".omp", "plugins")];
+		if (process.env.XDG_DATA_HOME) realPluginsDirs.push(join(process.env.XDG_DATA_HOME, "omp", "plugins"));
+		const before = realPluginsDirs.map(snapshotPluginsDir);
 
 		pinLetsCraftPluginToRepo({
 			linkPath: slot,
 			repoRoot: REPO_ROOT,
 			linkPlugin: root => {
-				execFileSync("omp", ["plugin", "link", root], { stdio: "pipe", env: { ...process.env, HOME: home } });
+				execFileSync("omp", ["plugin", "link", root], {
+					stdio: "pipe",
+					env: {
+						PATH: process.env.PATH,
+						HOME: home,
+						XDG_DATA_HOME: xdgData,
+						XDG_STATE_HOME: xdgState,
+						XDG_CACHE_HOME: xdgCache,
+					},
+				});
 			},
 		});
 
-		expect(readlinkSync(slot)).toBe(REPO_ROOT); // the REAL link created the symlink
+		expect(readlinkSync(slot), "the REAL omp must have linked through the PINNED XDG root").toBe(REPO_ROOT);
+		expect(
+			realPluginsDirs.map(snapshotPluginsDir),
+			"the user's real plugin slot/lockfile/package.json must be identical before/after on both resolution axes (audit-3 RF-31)",
+		).toEqual(before);
+	});
+
+	it("audit-3 rec ① (RF-22 잔여): a read-only slot DIRECTORY lets lstat succeed but the regular-file removal fail — the rmSync errno (EACCES/EPERM) rethrows and the omp re-point never runs", () => {
+		// e2e-helpers.ts:100-106's normalization arm: only the benign TOCTOU ENOENT is
+		// swallowed; a removal PERMISSION failure must propagate BEFORE `omp plugin link` ever
+		// runs (the explore lane's trigger: chmod the slot dir r-x so lstat(linkPath) succeeds
+		// while unlink needs the write bit). Same root-user caveat as the 0o000 test below.
+		const { repoRoot } = tmpPluginRepo();
+		const slotDir = tmpDir("lsc-pin-rm-eacces-");
+		const linkPath = join(slotDir, "lets-craft");
+		writeFileSync(linkPath, "regular file, not a symlink\n");
+		let linkCalls = 0;
+		chmodSync(slotDir, 0o555); // r-x: lstat OK, rmSync EACCES
+		try {
+			expect(() =>
+				pinLetsCraftPluginToRepo({
+					linkPath,
+					repoRoot,
+					linkPlugin: () => {
+						linkCalls += 1;
+					},
+				}),
+			).toThrow(/EACCES|EPERM/);
+		} finally {
+			chmodSync(slotDir, 0o700); // restore for the afterEach cleanup
+		}
+		expect(linkCalls, "the removal error must propagate BEFORE the omp re-point").toBe(0);
 	});
 
 	it("audit-2 rec ① (RF-22 병행): an unexpected errno from the slot read rethrows — EACCES propagates, never treated as not-pinned", () => {
