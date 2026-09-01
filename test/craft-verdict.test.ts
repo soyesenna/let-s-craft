@@ -1388,6 +1388,29 @@ describe("RF-26 — a non-canonical persisted auditBaseSnapshot is never interpo
 		expect(readFileSync(statePath, "utf8")).toBe(bytesBeforeReplay); // state bytes 불변 across the replay
 	});
 
+	// audit-3 RF-32: the ok↔OID coupling — `{status:"ok", baseTip:"", sourceTip:"", behindCount:0}`
+	// used to pass canonical parsing and replay as "0 behind (in sync)" evidence without a single
+	// OID. The parser now rejects it ("" is the unknown branch's marker only), so the replay
+	// serves the constant invalid-state line, suppresses details.base, and rewrites nothing.
+	it("an ok snapshot with empty tips is refused by the parser — constant invalid-state, no 'in sync' replay, bytes stable (RF-32)", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		const forged = { baseBranch: "main", baseTip: "", sourceTip: "", behindCount: 0, status: "ok" as const, authority: "explicit-base" as const, observedAt: "2026-08-25T00:00:00.000Z" };
+		persistOnly({ ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: forged });
+		const statePath = craftStatePath(root, feature);
+		const bytesBeforeReplay = readFileSync(statePath, "utf8");
+
+		const replay = performAuditBegin(feature, root); // candidate 0 === persisted 0 → replay
+
+		expect(replay.isError, JSON.stringify(replay)).toBeFalsy(); // replay still succeeds — non-blocking evidence
+		const text = firstText(replay);
+		expect(text).toContain("idempotent replay");
+		expect(text).toContain("invalid-state"); // the constant diagnostic names the class
+		expect(text).not.toContain("in sync"); // the forged "0 behind" evidence is NOT reproduced
+		expect(replay.details?.base).toBeUndefined(); // details suppressed
+		expect(readFileSync(statePath, "utf8")).toBe(bytesBeforeReplay); // state bytes 불변 across the replay
+	});
+
 	it("a CANONICAL persisted snapshot still describes on replay (the parser is not a blanket suppression)", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
