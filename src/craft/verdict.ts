@@ -23,7 +23,7 @@ import {
 } from "./audit-policy.js";
 import { invalidatePendingApproval, invalidatePreparedOperation } from "./destructive-approval.js";
 import { type AuditBaseSnapshot, type CraftState, applyAuditBeginOutcome, craftStateCandidates, readPersistedCraftState, recordAuditValidated } from "./state.js";
-import { controlCharRefusalText } from "./tool-text.js";
+import { controlCharRefusalText, controlSafeEcho } from "./tool-text.js";
 
 // ---------------------------------------------------------------------------
 // Verdict vocabularies + generic literal-only parser
@@ -371,13 +371,17 @@ export async function observeAuditBase(projectRoot: string, sourceRoot: string, 
 
 /** The non-blocking base line a begun cycle's success text carries — a WARN only when the base actually drifted or could not be measured. */
 function describeAuditBase(snapshot: AuditBaseSnapshot): string {
+	// audit-3 RF-34: baseBranch/error are untrusted persisted/gift text echoed into model-facing
+	// prose — through the total escaped serializer (which supplies the JSON quotes AND escapes),
+	// never raw. The C0/DEL axes were already validated upstream; this closes the remaining
+	// C1/U+2028/U+2029 axes. The tips are parser-guaranteed 40-hex-or-"" — safe to slice verbatim.
 	if (snapshot.status === "unknown") {
-		return `WARN: audit base could not be measured (${snapshot.authority} "${snapshot.baseBranch}"): ${snapshot.error} — non-blocking for the audit; land's own gates stay fail-closed.`;
+		return `WARN: audit base could not be measured (${snapshot.authority} ${controlSafeEcho(snapshot.baseBranch)}): ${controlSafeEcho(snapshot.error)} — non-blocking for the audit; land's own gates stay fail-closed.`;
 	}
 	if (snapshot.behindCount === 0) {
-		return `Base authority: ${snapshot.authority} "${snapshot.baseBranch}" @ ${snapshot.baseTip.slice(0, 12)} — source @ ${snapshot.sourceTip.slice(0, 12)}, 0 behind (in sync).`;
+		return `Base authority: ${snapshot.authority} ${controlSafeEcho(snapshot.baseBranch)} @ ${snapshot.baseTip.slice(0, 12)} — source @ ${snapshot.sourceTip.slice(0, 12)}, 0 behind (in sync).`;
 	}
-	return `WARN: base drift — ${snapshot.authority} "${snapshot.baseBranch}" @ ${snapshot.baseTip.slice(0, 12)} is ${snapshot.behindCount} commit(s) ahead of the source @ ${snapshot.sourceTip.slice(0, 12)}. The audit proceeds (non-blocking); resolve the drift before land.`;
+	return `WARN: base drift — ${snapshot.authority} ${controlSafeEcho(snapshot.baseBranch)} @ ${snapshot.baseTip.slice(0, 12)} is ${snapshot.behindCount} commit(s) ahead of the source @ ${snapshot.sourceTip.slice(0, 12)}. The audit proceeds (non-blocking); resolve the drift before land.`;
 }
 
 /**
@@ -405,7 +409,7 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 	if (!FEATURE_SLUG_RE.test(feature)) {
 		return {
 			isError: true,
-			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${controlSafeEcho(feature)}) — path separators, traversal segments, and special characters are refused.` }],
 		};
 	}
 	const root = resolveAuditRoot(cwd, feature);
@@ -652,7 +656,7 @@ function registerAuditBeginTool(pi: ExtensionAPI): void {
 			if (!FEATURE_SLUG_RE.test(feature)) {
 				return {
 					isError: true,
-					content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+					content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${controlSafeEcho(feature)}) — path separators, traversal segments, and special characters are refused.` }],
 				};
 			}
 			// The wrapper is the ONLY interval owner: detectFixturePath reads the env-first LSC_FIXTURE
@@ -691,7 +695,7 @@ export function performAuditValidate(feature: string, cwd: string): AgentToolRes
 	if (!FEATURE_SLUG_RE.test(feature)) {
 		return {
 			isError: true,
-			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${controlSafeEcho(feature)}) — path separators, traversal segments, and special characters are refused.` }],
 		};
 	}
 	const root = resolveAuditRoot(cwd, feature);

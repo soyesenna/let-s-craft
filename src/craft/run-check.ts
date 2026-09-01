@@ -37,12 +37,21 @@ const MAX_FAILURE_LINES = 40;
 
 export type ExecFn = (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>;
 
-/** Best-effort extraction of failure-looking lines from arbitrary run_check.sh output. */
+/**
+ * Best-effort extraction of failure-looking lines from arbitrary run_check.sh output — BOUNDED
+ * (max) and ESCAPED (audit-3 RF-34): each kept line is echoed through controlSafeEcho, so no
+ * control character the child's raw output carries (C0/C1/DEL/U+2028/U+2029, including a lone CR
+ * the newline split leaves inside a line) can reshape the model-facing failure summary. The raw
+ * stdout/stderr halves stay in the durable check-N.log transcript (and details' documented raw
+ * exec halves, isEmptyCheckTranscript's input) — the tool-result summary carries ONLY this
+ * bounded escaped form.
+ */
 export function extractFailureLines(output: string, max = MAX_FAILURE_LINES): string[] {
 	return output
 		.split(/\r?\n/)
 		.filter(line => FAILURE_LINE_RE.test(line))
-		.slice(0, max);
+		.slice(0, max)
+		.map(controlSafeEcho);
 }
 
 /** Next `check-N.log` index for a feature's check/logs/ directory (N starts at 1). */
@@ -349,7 +358,7 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 	if (!FEATURE_SLUG_RE.test(args.feature)) {
 		return {
 			isError: true,
-			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(args.feature)}) — path separators, traversal segments, and special characters are refused.` }],
+			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${controlSafeEcho(args.feature)}) — path separators, traversal segments, and special characters are refused.` }],
 		};
 	}
 	const target = resolveRunCheckTarget(args.feature, args.activeCraft, args.persisted);
@@ -425,7 +434,8 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 		const message = error instanceof Error ? error.message : String(error);
 		return {
 			isError: true,
-			content: [{ type: "text", text: `lets-craft: run_check.sh failed to execute — ${message}. Escalate to the user.` }],
+			// audit-3 RF-34: the exec failure message is untrusted child/host text — escaped echo.
+			content: [{ type: "text", text: `lets-craft: run_check.sh failed to execute — ${controlSafeEcho(message)}. Escalate to the user.` }],
 		};
 	}
 
@@ -489,7 +499,7 @@ export function registerRunCheckTool(pi: ExtensionAPI): void {
 			if (!FEATURE_SLUG_RE.test(feature)) {
 				return {
 					isError: true,
-					content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+					content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${controlSafeEcho(feature)}) — path separators, traversal segments, and special characters are refused.` }],
 				};
 			}
 			const activeCraft = getActiveCraft();

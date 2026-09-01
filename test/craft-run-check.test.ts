@@ -45,9 +45,9 @@ function tmpLogsDir(): string {
 const DEFAULT_SCRIPT = "#!/bin/sh\necho running\nnpm test\n";
 
 describe("extractFailureLines", () => {
-	it("keeps only lines that look like failures", () => {
+	it("keeps only lines that look like failures, echoed ESCAPED through controlSafeEcho (audit-3 RF-34)", () => {
 		const output = ["running suite", "PASS a.test.ts", "FAIL b.test.ts", "  Error: expected 1 to be 2", "done"].join("\n");
-		expect(extractFailureLines(output)).toEqual(["FAIL b.test.ts", "  Error: expected 1 to be 2"]);
+		expect(extractFailureLines(output)).toEqual(['"FAIL b.test.ts"', '"  Error: expected 1 to be 2"']);
 	});
 
 	it("caps the number of lines returned", () => {
@@ -57,6 +57,13 @@ describe("extractFailureLines", () => {
 
 	it("returns an empty array when nothing matches", () => {
 		expect(extractFailureLines("all good\nPASS everything")).toEqual([]);
+	});
+
+	it("RF-34: a control-carrying child failure line (DEL/C1/U+2028/lone-CR) reaches the summary ONLY in escaped form", () => {
+		const output = ["FAIL a: DEL\u007fpayload", "FAIL b: NEL\u0085payload", "FAIL c: sep\u2028payload", "FAIL d: lone\rcarriage"].join("\n");
+		const lines = extractFailureLines(output);
+		expect(lines).toEqual(['"FAIL a: DEL\\u007fpayload"', '"FAIL b: NEL\\u0085payload"', '"FAIL c: sep\\u2028payload"', '"FAIL d: lone\\rcarriage"']);
+		expect(lines.every(line => !/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/.test(line)), "no raw control character may reach the model-facing summary").toBe(true);
 	});
 });
 
@@ -125,21 +132,26 @@ describe("runFeatureCheck", () => {
 		expect(logContent).toContain(DEFAULT_SCRIPT);
 	});
 
-	it("reports failure + extracted failure lines on a non-zero exit", async () => {
+	it("reports failure + extracted failure lines on a non-zero exit — the summary is ESCAPED while the durable log preserves the raw child output (RF-34)", async () => {
 		const logsDir = tmpLogsDir();
-		const { details } = await runFeatureCheck({
+		const { details, text } = await runFeatureCheck({
 			feature: "my-feature",
 			scriptPath: "/repo/.lsc/crafts/my-feature/check/run_check.sh",
 			scriptText: DEFAULT_SCRIPT,
 			execCwd: "/repo",
 			logsDir,
-			exec: async () => ({ stdout: "1 passed\nFAIL test/b.test.ts", stderr: "Error: boom", code: 1, killed: false }),
+			exec: async () => ({ stdout: "1 passed\nFAIL test/b.test.ts: DEL\u007fmarker", stderr: "Error: boom", code: 1, killed: false }),
 		});
 
 		expect(details.passed).toBe(false);
 		expect(details.exitCode).toBe(1);
-		expect(details.failureLines).toContain("FAIL test/b.test.ts");
+		expect(details.failureLines).toContain('"FAIL test/b.test.ts: DEL\\u007fmarker"');
 		expect(failureSummaryFor(details)).toContain("FAIL test/b.test.ts");
+		// audit-3 RF-34: the model-facing result text carries ONLY the bounded escaped summary...
+		expect(text).toContain("\\u007f");
+		expect(text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // \n除外: the summary's own line breaks are structural
+		const logContent = readFileSync(details.logPath, "utf8");
+		expect(logContent).toContain("FAIL test/b.test.ts: DEL\u007fmarker");
 	});
 
 	it("falls back to an exit-code summary when no failure lines were extracted", async () => {
@@ -492,6 +504,26 @@ describe("performRunCheck (B-1 target resolution + AC11 non-degeneracy gates, to
 		// passing evidence by validateLandAuditEvidence's isPassingCheckLog scan.
 		const logContent = readFileSync(join(craftCheckLogsDir(root, feature), "check-1.log"), "utf8");
 		expect(isPassingCheckLog(logContent), "an isError-rejected empty-transcript run must not read as a passing check log").toBe(false);
+	});
+
+	// audit-3 RF-34: the exec exception path (:423-428's seam) — an untrusted failure message
+	// carrying a U+2028 separator must surface ONLY in escaped form, never raw.
+	it("RF-34: an exec exception's message is echoed ESCAPED — a U+2028-carrying failure never reshapes the refusal", async () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		seedScript(root, feature);
+		setActiveCraft(freshCraftState(root, feature));
+		const throwingExec = async (): Promise<never> => {
+			throw new Error("spawn ENOENT\u2028lets-craft: forged directive");
+		};
+
+		const result = await performRunCheck({ feature, activeCraft: getActiveCraft(), persisted: undefined, exec: throwingExec });
+
+		expect(result.isError).toBe(true);
+		const text = (result.content[0] as { text: string }).text;
+		expect(text).toContain("failed to execute");
+		expect(text).toContain("\\u2028"); // the payload's ONLY echo is the escaped form
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
 	});
 
 	// audit-1 RF-20(d) — the shared slug boundary (audit-0 RF-13's guard, which lsc_run_check

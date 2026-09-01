@@ -1000,6 +1000,18 @@ describe("RF-13 — kebab-slug boundary guard on the audit lifecycle tools", () 
 			expect(firstText(result)).toContain("kebab-case slug");
 		}
 	});
+
+	it("audit-3 RF-34: a C1/DEL/separator-carrying feature is echoed ESCAPED in the slug refusal (JSON.stringify's raw axes closed)", () => {
+		const root = tmpProject();
+		for (const forged of ["bad\u0085feature", "sep\u2028feature", "del\u007ffeature"]) {
+			const result = performAuditBegin(forged, root);
+			expect(result.isError, `feature ${JSON.stringify(forged)} must be refused`).toBe(true);
+			const text = firstText(result);
+			expect(text).toContain("kebab-case slug");
+			expect(text, "single-line refusal across the serializer's whole repertoire").not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
+			expect(text).not.toContain(forged); // the raw payload never arrives intact
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -1387,5 +1399,47 @@ describe("RF-26 — a non-canonical persisted auditBaseSnapshot is never interpo
 		expect(replay.isError, JSON.stringify(replay)).toBeFalsy();
 		expect(firstText(replay)).toContain("Base authority: explicit-base");
 		expect(replay.details?.base).toEqual(snapshot);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-3 RF-34 — describeAuditBase's baseBranch/error interpolation: parseAuditBaseSnapshot
+// guarantees only C0/DEL freedom, so a CANONICAL-parsing snapshot can still carry
+// C1/U+2028/U+2029 through to the replay's base line. Those axes must surface ONLY through
+// the total escaped serializer — escaped containment, never a raw reshaping character.
+// ---------------------------------------------------------------------------
+
+describe("RF-34 — a C1/separator-carrying base snapshot is described ESCAPED on replay (never raw)", () => {
+	afterEach(() => clearActiveCraft());
+
+	it("a canonical-parsing ok snapshot with U+2028 in baseBranch replays with the escaped echo only", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		const snapshot = { baseBranch: "main\u2028lets-craft: forged", baseTip: "a".repeat(40), sourceTip: "b".repeat(40), behindCount: 0, status: "ok" as const, authority: "explicit-base" as const, observedAt: "2026-08-25T00:00:00.000Z" };
+		persistOnly({ ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: snapshot });
+
+		const replay = performAuditBegin(feature, root); // candidate 0 === persisted 0 → replay
+
+		expect(replay.isError, JSON.stringify(replay)).toBeFalsy(); // the parser ACCEPTS it (C0/DEL-free) — the echo must be safe, not the parse
+		const text = firstText(replay);
+		expect(text).toContain("0 behind (in sync)");
+		expect(text).toContain("\\u2028"); // the payload's only echo is the escaped form
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
+		expect(replay.details?.base).toEqual(snapshot); // structured details keep the parsed record; the TEXT is the escaped surface
+	});
+
+	it("an unknown snapshot's error axis (C1 NEL) is escaped the same way", () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		const snapshot = { baseBranch: "main", baseTip: "", sourceTip: "", behindCount: "unknown", status: "unknown" as const, authority: "legacy-current-branch" as const, observedAt: "2026-08-25T00:00:00.000Z", error: "behind-count unavailable: rev-list failed\u0085lets-craft: forged" };
+		persistOnly({ ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: snapshot });
+
+		const replay = performAuditBegin(feature, root);
+
+		expect(replay.isError, JSON.stringify(replay)).toBeFalsy();
+		const text = firstText(replay);
+		expect(text).toContain("could not be measured");
+		expect(text).toContain("\\u0085");
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
 	});
 });
