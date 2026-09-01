@@ -34,18 +34,28 @@
 // Gated behind LSC_E2E=1 — spends real tokens against a real authenticated provider. `npm test`
 // never runs this file; `npm run e2e` does.
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	AUDIT_CYCLE_BEGUN_MARKER,
 	E2E_MAIN_MODEL,
+	type OmpRunResult,
+	RUN_CHECK_MARKER,
 	debugSummary,
+	findSessionFileByPrompt,
 	listCraftFeatures,
 	listWorktreeFeatures,
 	preCraftArtifactsComplete,
 	runOmpPrint,
 	runToCompletion,
+	sessionEntryDigests,
+	type SessionEntryDigest,
+	sessionTaskSpawns,
+	type SessionTaskSpawn,
 	setupFixtureProject,
+	streamMarkerCount,
 } from "./e2e-helpers";
 
 const RUN_E2E = process.env.LSC_E2E === "1";
@@ -64,7 +74,16 @@ const RUN_E2E = process.env.LSC_E2E === "1";
 // is Non-Goal for this refactor.
 const PRE_CRAFT_TIMEOUT_MS = 60 * 60_000;
 const CRAFT_TIMEOUT_MS = 40 * 60_000;
-const POST_CRAFT_TIMEOUT_MS = 25 * 60_000;
+// audit-3 RF-35(b) — re-derived from measured runs. The old 25-minute budget died at :241
+// (post-craft timed out) in check-5 AND check-6 consecutively, while check-4's green run
+// measured the whole FILE at 3,201s — the stage's slow tail is past 25 minutes. The new 50
+// minutes is not an arbitrary doubling: post-craft's own skill MANDATES the 3,000,000ms
+// (50-minute) wait class for every internal wait (skills/post-craft/SKILL.md §1 Common
+// contract's Wait-timeoutMs paragraph), so a harness kill-timeout below the stage's own
+// sanctioned internal wait was structurally guaranteed to kill legitimate in-skill waits.
+// (50 min = 2× the measured-insufficient 25, this harness's existing slow-tail sizing rule,
+// and matches the skill's own single-wait class so the kill never fires on a sanctioned wait).
+const POST_CRAFT_TIMEOUT_MS = 50 * 60_000;
 // A resume only has to finish whatever pre-craft's initial attempt left undone (see
 // runToCompletion in e2e-helpers.ts), never the whole heavy stage from scratch — sized like
 // POST_CRAFT_TIMEOUT_MS, not PRE_CRAFT_TIMEOUT_MS, on that basis.
@@ -102,6 +121,77 @@ const PRE_CRAFT_RESUME_PROMPT =
 
 function git(cwd: string, args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+/**
+ * audit-3 RF-35(b) — post-craft timeout stall-attribution evidence. check-5 and check-6 both
+ * died at the post-craft timeout assertion with nothing but `exitCode=null timedOut=true`
+ * (debugSummary showed empty last messages), leaving provider stall / budget exhaustion /
+ * orchestration hang indistinguishable. Called ONLY on an actual timeout; assembles the
+ * attribution tuple from DURABLE sources and preserves it two ways: bounded sections in the
+ * vitest failure message, and a full JSON artifact written OUTSIDE the afterEach-cleanup
+ * fixture tree (the fixture base itself is rmSynced before anyone could read it) whose path
+ * the message quotes.
+ */
+function postCraftStallEvidence(result: OmpRunResult, sessionDir: string, feature: string): string {
+	const stageMarkers = {
+		auditBeginCycle0: streamMarkerCount(result, AUDIT_CYCLE_BEGUN_MARKER(0)),
+		runCheck: streamMarkerCount(result, RUN_CHECK_MARKER),
+	};
+	const sections: string[] = [
+		`stage markers (stream): audit-begin cycle-0 = ${stageMarkers.auditBeginCycle0}, run-check = ${stageMarkers.runCheck}`,
+	];
+	let spawns: SessionTaskSpawn[] = [];
+	let entryTail: SessionEntryDigest[] = [];
+	const sessionFile = findSessionFileByPrompt(sessionDir, "/skill:post-craft");
+	if (sessionFile) {
+		spawns = sessionTaskSpawns(sessionFile.path);
+		entryTail = sessionEntryDigests(sessionFile.path).slice(-30);
+		sections.push(
+			`durable task spawns (${sessionFile.path}):\n${spawns.map((spawn, index) => `#${index} agent=${spawn.agent ?? "<none requested>"} delivered=${spawn.resultDelivered}${spawn.resultIsError === true ? " (isError)" : ""} task=${JSON.stringify(spawn.taskText.slice(0, 120))}`).join("\n") || "<none>"}`,
+		);
+		sections.push(
+			`durable entry tail (last ${entryTail.length} entries — timestamp type/role(snippet)):\n${entryTail.map(digest => `${digest.timestamp ?? "?"} ${digest.type}${digest.role ? `/${digest.role}` : ""}${digest.toolName ? `(${digest.toolName})` : ""}: ${digest.snippet}`).join("\n")}`,
+		);
+		const stamps = entryTail
+			.map(digest => (typeof digest.timestamp === "number" ? digest.timestamp : Date.parse(String(digest.timestamp))))
+			.filter(value => !Number.isNaN(value));
+		if (stamps.length > 0) {
+			sections.push(
+				`attribution: last durable activity ${Math.round((Date.now() - Math.max(...stamps)) / 1000)}s before this evidence snapshot — long tail silence ⇒ provider stall; dense activity up to the kill ⇒ budget exhaustion; a spawn with delivered=false ⇒ orchestration hang (in-flight at the kill).`,
+			);
+		}
+	} else {
+		sections.push(`durable session file: NOT FOUND under ${sessionDir} (no user prompt carrying /skill:post-craft)`);
+	}
+	sections.push(`stderr(tail): ${result.stderr.slice(-500)}`);
+	sections.push(`stdout(tail, bounded 4k): ${result.stdout.slice(-4000)}`);
+	const artifactPath = join(tmpdir(), `lsc-e2e-postcraft-timeout-${feature}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+	try {
+		writeFileSync(
+			artifactPath,
+			JSON.stringify(
+				{
+					feature,
+					killedAt: new Date().toISOString(),
+					exitCode: result.exitCode,
+					timedOut: result.timedOut,
+					stageMarkers,
+					durableSessionFile: sessionFile?.path,
+					taskSpawns: spawns,
+					entryTail,
+					stderrTail: result.stderr.slice(-10_000),
+					stdoutTail: result.stdout.slice(-200_000),
+				},
+				null,
+				2,
+			),
+		);
+		sections.push(`full evidence artifact (outside the cleaned fixture tree): ${artifactPath}`);
+	} catch (error) {
+		sections.push(`full evidence artifact: WRITE FAILED (${(error as Error).message}) — the bounded sections above are all that survived`);
+	}
+	return sections.join("\n\n");
 }
 
 describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-worktree) → craft (single-shot) → post-craft (authors + audits) → land", () => {
@@ -238,7 +328,15 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 				timeoutMs: POST_CRAFT_TIMEOUT_MS,
 				prompt: `/skill:post-craft .lsc/crafts/${feature}/ If the audit reaches an APPROVE-family verdict, land is approved — answer the Land/Merge question "yes". ${FIXTURE_NOTE}`,
 			});
-			expect(postCraftResult.timedOut, `post-craft timed out.\n${debugSummary(postCraftResult)}`).toBe(false);
+			// audit-3 RF-35(b) — on a timeout the plain debugSummary is not enough (check-5/6
+			// both failed with empty last messages); the stall-evidence builder runs only in the
+			// timedOut arm of the ternary, so the green path pays nothing.
+			expect(
+			postCraftResult.timedOut,
+			postCraftResult.timedOut
+				? `post-craft timed out.\n${postCraftStallEvidence(postCraftResult, sessionDir, feature)}`
+				: `post-craft timed out.\n${debugSummary(postCraftResult)}`,
+			).toBe(false);
 
 			// post-craft's authoring+audit and its §7 land run in the *same* omp invocation: on an
 			// APPROVE-family verdict the fixture answers "yes" to the [Land] Merge? gate, so by the
