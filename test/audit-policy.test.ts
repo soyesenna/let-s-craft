@@ -561,6 +561,11 @@ describe("parseAuditBaseSnapshot (RF-26 — canonical persisted base snapshots)"
 		expect(parseAuditBaseSnapshot(UNKNOWN)).toEqual(UNKNOWN);
 	});
 
+	it("accepts a partial-parse unknown with MEASURED tips (RF-32 — only the ok branch requires them; the degraded-anchor shape is preserved)", () => {
+		const partial = { ...OK, behindCount: "unknown" as const, status: "unknown" as const, error: "behind-count unavailable" };
+		expect(parseAuditBaseSnapshot(partial)).toEqual(partial);
+	});
+
 	it.each([
 		["not an object", "nope"],
 		["non-string baseBranch", { ...OK, baseBranch: 7 }],
@@ -574,6 +579,10 @@ describe("parseAuditBaseSnapshot (RF-26 — canonical persisted base snapshots)"
 		["ok with a negative count", { ...OK, behindCount: -1 }],
 		["ok with behindCount 'unknown'", { ...OK, behindCount: "unknown" }],
 		["ok carrying an error (present iff unknown)", { ...OK, error: "stale" }],
+		// audit-3 RF-32: "" is the unknown branch's unresolvable marker — an ok record MUST carry
+		// non-empty exact 40-hex tips on BOTH axes ("ok iff all measured", state.ts's contract).
+		["ok with an empty baseTip (RF-32 — the '' marker is unknown-only)", { ...OK, baseTip: "" }],
+		["ok with an empty sourceTip (RF-32 — the '' marker is unknown-only)", { ...OK, sourceTip: "" }],
 		["unknown without an error", { ...UNKNOWN, error: undefined }],
 		["unknown with a control-carrying error", { ...UNKNOWN, error: "boom\tEVIL" }],
 	])("rejects %s", (_name, raw) => {

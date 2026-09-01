@@ -235,10 +235,22 @@ function isOidShapeOrEmpty(value: unknown): value is string {
 }
 
 /**
+ * audit-3 RF-32 — an EXACT non-empty 40-lower-hex OID: the "measured" shape. The "" unresolvable
+ * marker is deliberately NOT accepted here — state.ts documents `status: "ok"` iff
+ * baseTip/sourceTip/behindCount were ALL measured, so an ok record with an empty tip is a
+ * forged coupling that would replay as "0 behind (in sync)" evidence without a single OID.
+ * "" stays legal ONLY under status "unknown" (the partial-parse unknown below preserves it).
+ */
+function isMeasuredOid(value: unknown): value is string {
+	return typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
+}
+
+/**
  * audit-2 RF-26 — runtime-parse a persisted audit base snapshot before ANY of its fields are
  * interpolated into result text (verdict.ts's replay path): the persisted state file is
  * untrusted bytes, so the status/authority enums, the canonical ISO-8601 observedAt, the
- * 40-hex OID shape (or the documented "" unresolvable marker), the safe non-negative count,
+ * 40-hex OID shape (or the documented "" unresolvable marker — non-empty measured tips are
+ * REQUIRED under status "ok", audit-3 RF-32), the safe non-negative count,
  * and the control-freedom of baseBranch/error are re-verified here rather than trusted from
  * the decode cast. Undefined = not canonical → the caller emits a constant diagnostic, never
  * the raw record (the parseTerminalDispositionSummary precedent, mirrored).
@@ -254,6 +266,8 @@ export function parseAuditBaseSnapshot(raw: unknown): AuditBaseSnapshot | undefi
 	if (status === "ok") {
 		if (!isSafeNonNegativeCycle(behindCount)) return undefined;
 		if (error !== undefined) return undefined; // the interface documents error as present iff status === "unknown"
+		// audit-3 RF-32: "ok iff all measured" — "" is the unknown branch's marker only.
+		if (!isMeasuredOid(baseTip) || !isMeasuredOid(sourceTip)) return undefined;
 		return { baseBranch, baseTip, sourceTip, behindCount, status, authority, observedAt };
 	}
 	if (behindCount !== "unknown") return undefined;
