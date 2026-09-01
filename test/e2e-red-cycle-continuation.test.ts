@@ -41,8 +41,10 @@ import {
 	RUN_CHECK_MARKER,
 	completedTaskSpawnSeen,
 	debugSummary,
+	findSessionFileByPrompt,
 	readCraftStateFile,
 	runOmpPrint,
+	sessionTaskSpawns,
 	seedCraftedFeature,
 	setupFixtureProject,
 	streamMarkerCount,
@@ -245,7 +247,41 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — canonical red cycle continuation (audit 
 			// completion shapes satisfy this (audit-2 RF-28): commits landed → the with-commit
 			// branch below; nothing landed → the no-commit branch's snapshot-input/executed-OID
 			// evidence (see the file header).
-			expect(taskSpawnCount(postCraftResult), "§3.0's test-authoring spawn must run in the continuation cycle").toBeGreaterThanOrEqual(1);
+			// audit-3 RF-35(a) — the §3.0 spawn evidence, from the DURABLE parent-session JSONL
+			// instead of the stdout aggregate (`taskSpawnCount`: agent/assignment/OID-blind, and
+			// exposed to the 32MB rolling-tail truncation losing early-stream lines — check-6's
+			// :248 red could not distinguish an actual §3.0 omission from buffer loss). The
+			// post-craft process's own session file records every `task` toolCall with its parsed
+			// arguments: the EXACT agent (§3.0 mandates the flat `agent: "lsc-test-engineer"`
+			// form), the assignment (§3.0 mandates `{worktreeAbs}` — which carries this feature's
+			// slug), and whether the spawn's result was delivered (durable completion). Cycle
+			// binding is the auditCycle===1 state marker asserted above; OID binding is the branch
+			// evidence below (with-commit: new commits on top of B touching test/check; no-commit:
+			// a check log beyond process-1's red log at pinned HEAD=B). When the exact task is
+			// absent from this durable source, that IS a confirmed observation — an orchestration
+			// defect of the post-craft subprocess, not a harness artifact — and fails explicitly.
+			const postCraftSessionFile = findSessionFileByPrompt(sessionDir, "/skill:post-craft");
+			expect(
+			postCraftSessionFile,
+			`the post-craft process must leave a durable session file under ${sessionDir} whose user prompt carries /skill:post-craft (audit-3 RF-35(a) durable source)`,
+			).toBeDefined();
+			const durableSpawns = sessionTaskSpawns(postCraftSessionFile?.path ?? "");
+			const durableSpawnInventory =
+				durableSpawns.map((spawn, index) => `#${index}: agent=${spawn.agent ?? "<none requested>"} delivered=${spawn.resultDelivered} task=${JSON.stringify(spawn.taskText.slice(0, 160))}`).join("\n") ||
+				"<no task calls in the durable session record>";
+			const engineerSpawn = durableSpawns.find(spawn => spawn.agent === "lsc-test-engineer");
+			expect(
+			engineerSpawn,
+			`OBSERVED ORCHESTRATION DEFECT — §3.0's mandatory lsc-test-engineer spawn was OMITTED by the post-craft subprocess (audit-3 RF-35(a)): the durable session record (${postCraftSessionFile?.path}) shows no task call requesting that agent. This is confirmed from the durable source, NOT the bounded stdout buffer (stream taskSpawnCount=${taskSpawnCount(postCraftResult)} is corroborative only). Cycle marker auditCycle=1 was asserted above.\nDurable task-call inventory:\n${durableSpawnInventory}`,
+			).toBeDefined();
+			expect(
+			engineerSpawn?.taskText.includes(feature),
+			`the lsc-test-engineer assignment must carry this feature's worktree path — §3.0 mandates {worktreeAbs}, which contains the slug "${feature}". Durable assignment head:\n${JSON.stringify(engineerSpawn?.taskText.slice(0, 400))}`,
+			).toBe(true);
+			expect(
+			engineerSpawn?.resultDelivered,
+			`the lsc-test-engineer spawn must have COMPLETED — a toolResult delivered for its toolCall in the durable record. In-flight at stage end is not §3.0 completion.\nDurable task-call inventory:\n${durableSpawnInventory}`,
+			).toBe(true);
 			const headAfter = git(worktreeRoot, ["rev-parse", "HEAD"]);
 			if (headAfter !== commitB) {
 				// WITH-COMMIT branch (the observation the strengthened earlyExit waits for):
