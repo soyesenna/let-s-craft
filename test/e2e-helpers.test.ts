@@ -790,4 +790,57 @@ describe("sessionTaskSpawns / findSessionFileByPrompt / sessionEntryDigests (RF-
 		expect(digests[1]).toMatchObject({ role: "assistant", snippet: "thinking aloud", timestamp: "2026-09-01T00:05:00.000Z" });
 		expect(digests[2]).toMatchObject({ role: "toolResult", toolName: "task", snippet: "result text" });
 	});
+
+	it("sessionTaskSpawns skips the host's title-slot + session-header prefix (omp 18 JSONL physical layout) and pairs a mixed text+toolCall assistant block", () => {
+		const dir = tmpDir("lsc-session-prefix-");
+		const path = writeSessionFile(join(dir, "run.jsonl"), [
+			{ type: "title", v: 1, title: "post-craft", source: "auto", updatedAt: "2026-09-01T00:00:00.000Z", pad: "" },
+			{ type: "session", version: 3, id: "sess-1", timestamp: "2026-09-01T00:00:00.000Z", cwd: "/tmp/fixture" },
+			{ type: "message", ...entryBase, message: { role: "user", content: "/skill:post-craft .lsc/crafts/red-cycle/ go" } },
+			{
+				type: "message",
+				...entryBase,
+				id: "e2",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "text", text: "spawning the §3.0 engineer" },
+						{ type: "toolCall", id: "call_1", name: "task", arguments: { agent: "lsc-test-engineer", task: "author tests for red-cycle at abcdef0" } },
+					],
+				},
+			},
+			{ type: "message", ...entryBase, id: "e3", message: { role: "toolResult", toolCallId: "call_1", toolName: "task", content: [{ type: "text", text: "done" }], isError: false } },
+		]);
+
+		const spawns = sessionTaskSpawns(path);
+		expect(spawns).toHaveLength(1);
+		expect(spawns[0].agent).toBe("lsc-test-engineer");
+		expect(spawns[0].resultDelivered).toBe(true);
+		expect(findSessionFileByPrompt(dir, "/skill:post-craft")?.path).toBe(path);
+	});
+
+	it("sessionTaskSpawns does not pair a toolResult whose toolCallId is on the ENTRY rather than the message (host schema is message.toolCallId)", () => {
+		const dir = tmpDir("lsc-session-entry-id-");
+		const path = writeSessionFile(join(dir, "run.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "assistant", content: [{ type: "toolCall", id: "call_1", name: "task", arguments: { agent: "lsc-test-engineer", task: "author tests" } }] } },
+			{ type: "message", ...entryBase, id: "call_1", message: { role: "toolResult", toolName: "task", content: [{ type: "text", text: "done" }], isError: false } },
+		]);
+
+		const spawns = sessionTaskSpawns(path);
+		expect(spawns).toHaveLength(1);
+		expect(spawns[0].callId).toBe("call_1");
+		expect(spawns[0].resultDelivered).toBe(false);
+	});
+
+	it("sessionTaskSpawns still pairs when toolResult.content is a plain string (runtime variance vs TextContent[])", () => {
+		const dir = tmpDir("lsc-session-string-result-");
+		const path = writeSessionFile(join(dir, "run.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "assistant", content: [{ type: "toolCall", id: "call_1", name: "task", arguments: { agent: "lsc-test-engineer", task: "author tests" } }] } },
+			{ type: "message", ...entryBase, id: "e2", message: { role: "toolResult", toolCallId: "call_1", toolName: "task", content: "spawn finished", isError: false } },
+		]);
+
+		const spawns = sessionTaskSpawns(path);
+		expect(spawns[0].resultDelivered).toBe(true);
+		expect(spawns[0].resultIsError).toBe(false);
+	});
 });
