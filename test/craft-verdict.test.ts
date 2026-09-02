@@ -1411,6 +1411,28 @@ describe("RF-26 — a non-canonical persisted auditBaseSnapshot is never interpo
 		expect(readFileSync(statePath, "utf8")).toBe(bytesBeforeReplay); // state bytes 불변 across the replay
 	});
 
+	it.each([
+		["ok with an empty baseTip only (sourceTip measured)", { baseTip: "", sourceTip: "b".repeat(40) }],
+		["ok with an empty sourceTip only (baseTip measured)", { baseTip: "a".repeat(40), sourceTip: "" }],
+	])("%s — replay constant invalid-state, details suppressed, bytes stable (RF-32 각각)", (_name, tips) => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		const forged = { baseBranch: "main", behindCount: 0, status: "ok" as const, authority: "explicit-base" as const, observedAt: "2026-08-25T00:00:00.000Z", ...tips };
+		persistOnly({ ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: forged });
+		const statePath = craftStatePath(root, feature);
+		const bytesBeforeReplay = readFileSync(statePath, "utf8");
+
+		const replay = performAuditBegin(feature, root);
+
+		expect(replay.isError, JSON.stringify(replay)).toBeFalsy();
+		const text = firstText(replay);
+		expect(text).toContain("idempotent replay");
+		expect(text).toContain("invalid-state");
+		expect(text).not.toContain("in sync");
+		expect(replay.details?.base).toBeUndefined();
+		expect(readFileSync(statePath, "utf8")).toBe(bytesBeforeReplay);
+	});
+
 	it("a CANONICAL persisted snapshot still describes on replay (the parser is not a blanket suppression)", () => {
 		const root = tmpProject();
 		const feature = "my-feature";
