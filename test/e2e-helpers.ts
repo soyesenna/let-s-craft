@@ -808,9 +808,10 @@ export function toolCallSummaries(result: OmpRunResult, toolName: string): Array
 //   RUN_CHECK_RESULT_MARKER          ← run-check.ts:278 (passed), :279 (FAILED), :438 (failed
 //                                      to execute), :449 (empty transcript) — every
 //                                      lsc_run_check result text starts with this prefix.
-// The REPLACED `RUN_CHECK_MARKER = "script sha256: "` was a DEAD stream marker: run-check.ts:248
-// writes that line only into the persisted check/logs transcript file, which the result text
-// never echoes — no result-text producer existed (audit-4 RF-41(b) removed it).
+// The RETIRED script-hash transcript-header marker (run-check.ts:248's `script sha256:` line)
+// was a DEAD stream marker: that line is written only into the persisted check/logs transcript
+// file, which the result text never echoes — no result-text producer existed (audit-4 RF-41(b)
+// removed the constant and every consumer).
 export const AUDIT_BEGIN_ANY_MARKER = "lets-craft: audit "; // every lsc_audit_begin result (required/begun/refused/replay) starts here
 export const AUDIT_ESCALATION_REQUIRED_MARKER = "audit escalation required for";
 export const AUDIT_CYCLE_BEGUN_MARKER = (cycle: number) => `audit cycle ${cycle} begun for`; // (the feature name follows in quotes — deliberately excluded)
@@ -1088,8 +1089,7 @@ export function sessionEntryDigests(sessionJsonlPath: string): SessionEntryDiges
 
 // ---------------------------------------------------------------------------
 // audit-4 RF-39/RF-41 — durable stage observation. The 32MB rolling tail that earlyExit
-// predicates and post-hoc stream assertions read is a LOSSY view of a long run (early lines
-// are gone), and the retired `RUN_CHECK_MARKER` showed a stream marker can even be entirely
+// are gone), and the retired script-hash marker showed a stream marker can even be entirely
 // producer-less. These readers make the on-disk record — `.craft-state.json`,
 // check/logs/check-N.log, and the session JSONL's toolResult texts — the AUTHORITY the
 // long-run predicates and assertions evaluate first; stream counts survive only as
