@@ -57,8 +57,9 @@ const GLOBAL_PLUGIN_LINK = join(homedir(), ".omp", "plugins", "node_modules", "l
  * correct → no-op) and every refusal branch are unit-testable without the real global slot or
  * the `omp` binary.
  *
- * audit-2 RF-22: production `omp plugin link` (installed 18.0.11) fails with `symlink` EEXIST
- * when a REGULAR FILE occupies the slot — its unlink step only clears symlink/directory
+ * audit-2 RF-22: production `omp plugin link` (observed on 18.0.11; 18.1.14 installed at
+ * audit-4 — the normalization below stays unconditional either way) fails with `symlink`
+ * EEXIST when a REGULAR FILE occupies the slot — its unlink step only clears symlink/directory
  * shapes — so the helper normalizes that shape itself BEFORE entering the real link: the
  * regular file is removed by explicit policy, EACCES/EPERM (and every other removal error)
  * propagates, and directories are left to omp's own handling. Empirically pinned on this
@@ -520,6 +521,14 @@ export interface RunToCompletionResult {
 	completed: boolean;
 	/** The final attempt's result — same shape single-call sites already assert `timedOut` against and pass to `debugSummary`. */
 	last: OmpRunResult;
+	/**
+	 * audit-4 RF-40 — wall-clock duration of each attempt in ms, index-aligned with `attempts`
+	 * (index 0 = the initial run, the rest = resumes). Measured around each spawn call so a
+	 * green full-cycle run can pin its per-stage ACTUALS against the budget constants in the
+	 * stage-durations evidence artifact — the budgets are derived from sanctioned worst paths,
+	 * and only recorded actuals can tell the next sizing cycle whether the gap is real.
+	 */
+	attemptDurationsMs: number[];
 }
 
 /** The one piece of `runOmpPrint`'s signature `runToCompletionWith` actually calls — narrowed so tests can inject a fake without spawning a real `omp` process. */
@@ -541,15 +550,23 @@ type OmpPrintFn = (args: {
  */
 export async function runToCompletionWith(args: RunToCompletionArgs, spawn: OmpPrintFn): Promise<RunToCompletionResult> {
 	const maxResumes = args.maxResumes ?? 3;
-	const attempts: OmpRunResult[] = [
-		await spawn({ cwd: args.cwd, sessionDir: args.sessionDir, model: args.model, env: args.env, timeoutMs: args.timeoutMs, prompt: args.prompt }),
-	];
+	const attempts: OmpRunResult[] = [];
+	const attemptDurationsMs: number[] = [];
+	const timed = async (call: Parameters<OmpPrintFn>[0]): Promise<OmpRunResult> => {
+		const startedAt = Date.now();
+		const result = await spawn(call);
+		attemptDurationsMs.push(Date.now() - startedAt);
+		return result;
+	};
+	attempts.push(
+		await timed({ cwd: args.cwd, sessionDir: args.sessionDir, model: args.model, env: args.env, timeoutMs: args.timeoutMs, prompt: args.prompt }),
+	);
 
 	let resumes = 0;
 	while (!attempts[attempts.length - 1].timedOut && !args.isComplete() && resumes < maxResumes) {
 		resumes++;
 		attempts.push(
-			await spawn({
+			await timed({
 				cwd: args.cwd,
 				sessionDir: args.sessionDir,
 				model: args.model,
@@ -565,9 +582,8 @@ export async function runToCompletionWith(args: RunToCompletionArgs, spawn: OmpP
 		);
 	}
 
-	return { attempts, completed: args.isComplete(), last: attempts[attempts.length - 1] };
+	return { attempts, completed: args.isComplete(), last: attempts[attempts.length - 1], attemptDurationsMs };
 }
-
 export function runToCompletion(args: RunToCompletionArgs): Promise<RunToCompletionResult> {
 	return runToCompletionWith(args, runOmpPrint);
 }
@@ -775,18 +791,33 @@ export function toolCallSummaries(result: OmpRunResult, toolName: string): Array
 // Every marker MUST be free of double quotes: the raw NDJSON stream JSON-escapes them (`\"`),
 // so a quoted literal can never match raw stdout (observed in a real run — the escaped form
 // broke the first marker generation; these are the corrected, quote-free forms).
+//
+// audit-4 RF-41(b) producer/consumer audit (explore probe: every stream marker constant MUST
+// have a producer in the production RESULT TEXT — the `text` an lsc_* tool call resolves
+// with, not a line only the persisted transcript writer emits). Producers verified against
+// src/ at the audit-4 implementation HEAD:
+//   AUDIT_BEGIN_ANY_MARKER           ← verdict.ts begin-tool result texts: :451 (refused),
+//                                      :473 (escalation required), :507 (consume-begun),
+//                                      :542 (consume-terminal), :575 (idempotent replay),
+//                                      :595 (plain begun)
+//   AUDIT_ESCALATION_REQUIRED_MARKER ← verdict.ts:473
+//   AUDIT_CYCLE_BEGUN_MARKER(n)      ← verdict.ts:595 (plain begin) and :507 (escalation consume)
+//   AUDIT_ESCALATION_CONSUMED_MARKER ← verdict.ts:507
+//   AUDIT_TERMINAL_MARKER()          ← verdict.ts:542
+//   CRAFT_ABORTED_MARKER             ← abort.ts:64 and :76
+//   RUN_CHECK_RESULT_MARKER          ← run-check.ts:278 (passed), :279 (FAILED), :438 (failed
+//                                      to execute), :449 (empty transcript) — every
+//                                      lsc_run_check result text starts with this prefix.
+// The REPLACED `RUN_CHECK_MARKER = "script sha256: "` was a DEAD stream marker: run-check.ts:248
+// writes that line only into the persisted check/logs transcript file, which the result text
+// never echoes — no result-text producer existed (audit-4 RF-41(b) removed it).
 export const AUDIT_BEGIN_ANY_MARKER = "lets-craft: audit "; // every lsc_audit_begin result (required/begun/refused/replay) starts here
 export const AUDIT_ESCALATION_REQUIRED_MARKER = "audit escalation required for";
 export const AUDIT_CYCLE_BEGUN_MARKER = (cycle: number) => `audit cycle ${cycle} begun for`; // (the feature name follows in quotes — deliberately excluded)
 export const AUDIT_ESCALATION_CONSUMED_MARKER = "escalation consumed: Continue auditing";
 export const AUDIT_TERMINAL_MARKER = () => "NO audit cycle was begun"; // unique to the consume-terminal success text
 export const CRAFT_ABORTED_MARKER = `marked aborted — `;
-export const RUN_CHECK_MARKER = "script sha256: "; // lsc_run_check's transcript header — only that tool emits it
-
-/** earlyExit predicate: the marker text has streamed back in the raw NDJSON (toolName-independent). */
-export function streamTextEarlyExit(marker: string): (accumulatedStdout: string) => boolean {
-	return (stdout: string) => stdout.includes(marker);
-}
+export const RUN_CHECK_RESULT_MARKER = "lets-craft: run_check.sh "; // every lsc_run_check RESULT TEXT starts here (passed/FAILED/failed-to-execute/empty-transcript)
 
 /** Count tool_execution_end RESULT TEXTS containing `marker` — the toolName-independent execution count. Raw-substring counting over-counts (partial/update events and the model quoting a result each repeat the text), so only completed tool results count. */
 export function streamMarkerCount(result: OmpRunResult | string, marker: string): number {
@@ -857,34 +888,6 @@ export function taskSpawnCount(result: OmpRunResult): number {
 	return toolExecutions(result).filter(call => call.toolName === "task").length;
 }
 
-function parseToolEnds(stdout: string, toolName: string): Array<{ isError: boolean; text: string }> {
-	const calls: Array<{ isError: boolean; text: string }> = [];
-	for (const line of stdout.split("\n")) {
-		const trimmed = line.trim();
-		if (!trimmed) continue;
-		try {
-			const event = JSON.parse(trimmed) as { type?: string; toolName?: string; isError?: boolean; result?: { content?: Array<{ type?: string; text?: string }> } };
-			if (event.type !== "tool_execution_end" || event.toolName !== toolName) continue;
-			const text = (event.result?.content ?? []).map(block => block.text ?? "").join("\n");
-			calls.push({ isError: event.isError === true, text });
-		} catch {
-			// Partial/unterminated NDJSON line — not counted yet.
-		}
-	}
-	return calls;
-}
-
-/**
- * audit-0 RF-8 — earlyExit-safe "a `task` spawn has COMPLETED" probe: true only once a parsed
- * `tool_execution_end` event carries `toolName === "task"`. The raw `"toolName":"task"`
- * substring this replaces also matched `tool_execution_start` (and partial/update events), so
- * the old arm could kill the run the moment the §3.0 test-authoring spawn BEGAN — before its
- * result existed — a structural flake. Only a completed execution, or `RUN_CHECK_MARKER`, may
- * ever terminate a red-cycle continuation's early-exit.
- */
-export function completedTaskSpawnSeen(stdout: string): boolean {
-	return parseToolEnds(stdout, "task").length > 0;
-}
 
 // ---------------------------------------------------------------------------
 // audit-3 RF-33/RF-35 — durable parent-session JSONL readers.
@@ -1081,4 +1084,223 @@ export function sessionEntryDigests(sessionJsonlPath: string): SessionEntryDiges
 			snippet: snippet.slice(0, 200),
 		};
 	});
+}
+
+// ---------------------------------------------------------------------------
+// audit-4 RF-39/RF-41 — durable stage observation. The 32MB rolling tail that earlyExit
+// predicates and post-hoc stream assertions read is a LOSSY view of a long run (early lines
+// are gone), and the retired `RUN_CHECK_MARKER` showed a stream marker can even be entirely
+// producer-less. These readers make the on-disk record — `.craft-state.json`,
+// check/logs/check-N.log, and the session JSONL's toolResult texts — the AUTHORITY the
+// long-run predicates and assertions evaluate first; stream counts survive only as
+// corroborative evidence quoted next to the durable numbers.
+// ---------------------------------------------------------------------------
+
+/**
+ * audit-4 RF-41(b) — a ≥`minIntervalMs` gate for durable fs reads inside per-chunk earlyExit
+ * predicates. The cheap stream precondition runs on EVERY stdout chunk (substring scan, no
+ * fs); the durable read it gates costs a directory scan plus JSONL parse, so it runs at most
+ * once per interval — per-chunk fs thrash is the failure mode this avoids. A gated-out chunk
+ * simply returns false; the next chunk past the interval re-reads, so throttling can delay an
+ * early exit but never skip the observation (the natural-exit path still asserts everything).
+ */
+export function durableProbeThrottle(minIntervalMs = 1000): () => boolean {
+	let lastAllowedAt = 0;
+	return () => {
+		const now = Date.now();
+		if (now - lastAllowedAt < minIntervalMs) return false;
+		lastAllowedAt = now;
+		return true;
+	};
+}
+
+/**
+ * audit-4 RF-41(b) — the LAST (most recent) top-level session file whose user message carries
+ * `promptNeedle`, or undefined. `findSessionFileByPrompt` returns the FIRST match, which is the
+ * right process for "the stage's own record" — but a stall must be attributed to the process
+ * that was alive at the kill, i.e. the LAST matching file when resumes added later ones.
+ */
+export function lastSessionFileByPrompt(sessionDir: string, promptNeedle: string): { path: string; matchedUserText: string } | undefined {
+	let last: { path: string; matchedUserText: string } | undefined;
+	for (const entry of readdirSync(sessionDir, { withFileTypes: true })) {
+		if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+		const path = join(sessionDir, entry.name);
+		try {
+			for (const e of readSessionJsonl(path)) {
+				if (e.type !== "message" || !isJsonObject(e.message) || e.message.role !== "user") continue;
+				const text = extractMessageText(e.message.content);
+				if (text.includes(promptNeedle)) {
+					last = { path, matchedUserText: text };
+					break; // one match per file is enough — files, not messages, are the unit
+				}
+			}
+		} catch {
+			// Same skip-not-fatal rule as findSessionFileByPrompt: another process's corrupt
+			// file must not mask a healthy later match.
+		}
+	}
+	return last;
+}
+
+/** One completed tool result as the session file records it — the durable counterpart of a streamed `tool_execution_end`. */
+export interface SessionToolResult {
+	isError: boolean;
+	text: string;
+}
+
+/**
+ * audit-4 RF-41(b) — every `toolResult` message in a session file, in file (= chronological)
+ * order, as `{isError, text}`. Unlike the stdout parsers, this is immune to rolling-tail
+ * truncation and carries results of tools whose streamed toolName is generic.
+ */
+export function sessionToolResultTexts(sessionJsonlPath: string): SessionToolResult[] {
+	const results: SessionToolResult[] = [];
+	for (const entry of readSessionJsonl(sessionJsonlPath)) {
+		if (entry.type !== "message" || !isJsonObject(entry.message) || entry.message.role !== "toolResult") continue;
+		const message = entry.message;
+		const content = message.content;
+		const text = Array.isArray(content)
+			? content.map(block => (isJsonObject(block) && typeof block.text === "string" ? block.text : "")).join("\n")
+			: typeof content === "string"
+				? content
+				: "";
+		results.push({ isError: message.isError === true, text });
+	}
+	return results;
+}
+
+/** One durable lsc_run_check execution, from the session JSONL's own toolResult text. */
+export interface DurableRunCheckResult {
+	passed: boolean;
+	text: string;
+}
+
+/** The durable, stdout-independent observation of one pipeline stage's on-disk progress. */
+export interface DurableStageObservation {
+	/** `.craft-state.json`'s `auditCycle`, or undefined when the state file is absent/corrupt/not yet created. */
+	auditCycle: number | undefined;
+	/** The highest `check/logs/check-N.log` index (0 when no log exists yet) — the fresh-execution counter. */
+	checkLogIndex: number;
+	/** Every lsc_run_check result text the session file records, in order — the durable run-check execution record. */
+	runCheckResults: DurableRunCheckResult[];
+	/** The §3.0 lsc-test-engineer spawn for `feature` (agent + assignment + durable completion state), or undefined. */
+	engineerSpawn: SessionTaskSpawn | undefined;
+	/** The session file the session-derived fields were read from, or undefined when not found. */
+	sessionFile: string | undefined;
+}
+
+/**
+ * audit-4 RF-41(b) — read one stage's durable progress record. Sync and DELIBERATELY
+ * TOLERANT: this runs inside polling earlyExit predicates, so absent files (a stage that has
+ * not created them yet) and mid-write corruption resolve to undefined/0/[] instead of
+ * throwing — a throw here would kill a healthy run's predicate loop. Only a MATCHED session
+ * file's parse surfaces through the readers that document themselves as strict
+ * (readSessionJsonl); even that is caught here because a foreign corrupt file can share the
+ * sessionDir.
+ */
+export function durableStageObservation(args: {
+	worktreeRoot: string;
+	feature?: string;
+	sessionDir?: string;
+	promptNeedle?: string;
+}): DurableStageObservation {
+	const feature = args.feature;
+	let auditCycle: number | undefined;
+	let checkLogIndex = 0;
+	if (feature) {
+		try {
+			const state = readCraftStateFile(args.worktreeRoot, feature);
+			if (typeof state?.auditCycle === "number") auditCycle = state.auditCycle;
+		} catch {
+			// Corrupt/unparseable state mid-poll — tolerated, see the function comment.
+		}
+		try {
+			const logsDir = join(args.worktreeRoot, ".lsc", "crafts", feature, "check", "logs");
+			if (existsSync(logsDir)) {
+				for (const name of readdirSync(logsDir)) {
+					const index = /^check-(\d+)\.log$/.exec(name)?.[1];
+					if (index) checkLogIndex = Math.max(checkLogIndex, Number(index));
+				}
+			}
+		} catch {
+			// Unreadable logs dir mid-poll — tolerated.
+		}
+	}
+	const runCheckResults: DurableRunCheckResult[] = [];
+	let engineerSpawn: SessionTaskSpawn | undefined;
+	let sessionFile: string | undefined;
+	if (args.sessionDir) {
+		const found = lastSessionFileByPrompt(args.sessionDir, args.promptNeedle ?? "/skill:post-craft");
+		if (found) {
+			sessionFile = found.path;
+			try {
+				for (const result of sessionToolResultTexts(found.path)) {
+					if (result.text.includes(RUN_CHECK_RESULT_MARKER)) {
+						runCheckResults.push({ passed: result.text.includes("passed (exit 0)"), text: result.text });
+					}
+				}
+				if (feature) {
+					engineerSpawn = sessionTaskSpawns(found.path).find(spawn => spawn.agent === "lsc-test-engineer" && spawn.taskText.includes(feature));
+				}
+			} catch {
+				// A corrupt matched file mid-poll — tolerated (the strict readers still throw
+				// when the POST-HOC assertions read the same path, so corruption is not silent).
+			}
+		}
+	}
+	return { auditCycle, checkLogIndex, runCheckResults, engineerSpawn, sessionFile };
+}
+
+/** audit-4 RF-37 — the parent-JSONL preconditions every child provider/model assertion stands on. See `presetParentPreconditions`. */
+export interface PresetParentPreconditions {
+	ok: boolean;
+	/** One human-readable line per FAILED precondition, in evaluation order — empty when ok. */
+	failures: string[];
+	/** The requested agent of the marker-bound tracer/explore calls (undefined when the call itself is missing) — for composing richer child-assertion messages. */
+	tracerAgent: string | undefined;
+	exploreAgent: string | undefined;
+}
+
+/**
+ * audit-4 RF-37 — the parent-session preconditions that MUST hold before any CHILD
+ * provider/model assertion can mean anything: (1) the parent file records the preset's
+ * model_change (config-load completion — without it the child ran under whatever the host had,
+ * and an override miss is unprovable), and (2)+(3) the parent's own task calls requested the
+ * EXACT agents the preset keys its override/inheritance expectations to (a spawn that
+ * requested anything else legitimately inherits the default — check-4's explore-on-default
+ * red was indistinguishable from a routing defect until these were checked FIRST). Pure:
+ * no expect(), returns failures so the caller asserts and the reader-level unit regression
+ * (synthetic wrong-agent parent JSONL) can pin that the precondition fires BEFORE the model
+ * assertions it guards.
+ */
+export function presetParentPreconditions(args: {
+	parentEntries: Array<Record<string, unknown>>;
+	parentSpawns: SessionTaskSpawn[];
+	defaultBareModel: string;
+	tracerMarker: string;
+	exploreMarker: string;
+	tracerAgent: string;
+	exploreAgent: string;
+}): PresetParentPreconditions {
+	const failures: string[] = [];
+	const sawModelChange = args.parentEntries.some(entry => {
+		if (entry.type !== "model_change" || typeof entry.model !== "string") return false;
+		return (entry.model.split("/").pop() ?? entry.model) === args.defaultBareModel;
+	});
+	if (!sawModelChange) {
+		failures.push(`config-load completion observation missing: the parent session file records no model_change to the preset default ${args.defaultBareModel}`);
+	}
+	const tracerCall = args.parentSpawns.find(spawn => spawn.taskText.includes(args.tracerMarker));
+	if (!tracerCall) {
+		failures.push(`the parent session file records no marker-bound tracer spawn (a task call whose assignment carries ${args.tracerMarker})`);
+	} else if (tracerCall.agent !== args.tracerAgent) {
+		failures.push(`the marker-bound tracer spawn requested agent ${tracerCall.agent ?? "<none>"} — anything other than ${args.tracerAgent} legitimately inherits the preset default`);
+	}
+	const exploreCall = args.parentSpawns.find(spawn => spawn.taskText.includes(args.exploreMarker));
+	if (!exploreCall) {
+		failures.push(`the parent session file records no marker-bound explore spawn (a task call whose assignment carries ${args.exploreMarker}) — the preset's override is keyed to the exact task-agent name`);
+	} else if (exploreCall.agent !== args.exploreAgent) {
+		failures.push(`the marker-bound explore spawn requested agent ${exploreCall.agent ?? "<none>"} — anything other than ${args.exploreAgent} legitimately inherits the default`);
+	}
+	return { ok: failures.length === 0, failures, tracerAgent: tracerCall?.agent, exploreAgent: exploreCall?.agent };
 }

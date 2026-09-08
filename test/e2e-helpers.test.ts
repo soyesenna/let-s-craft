@@ -13,19 +13,23 @@ import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	REPO_ROOT,
 	appendBounded,
 	attachOmpRunHandlers,
 	auditBeginOutcomes,
-	completedTaskSpawnSeen,
+	durableProbeThrottle,
+	durableStageObservation,
 	findSessionFileByPrompt,
+	lastSessionFileByPrompt,
 	type OmpRunResult,
 	pinLetsCraftPluginToRepo,
+	presetParentPreconditions,
 	sessionEntryDigests,
 	sessionTaskSpawns,
+	sessionToolResultTexts,
 	preCraftArtifactsComplete,
 	type RunnableChild,
 	runToCompletionWith,
@@ -314,6 +318,19 @@ describe("runToCompletionWith", () => {
 		);
 		expect(timeouts).toEqual([777, 777]);
 	});
+
+	it("audit-4 RF-40 — reports one wall-clock duration per attempt, index-aligned with attempts", async () => {
+		const spawn = async () => fakeResult();
+		const result = await runToCompletionWith(
+			{ cwd: "/x", sessionDir: "/y", timeoutMs: 1000, prompt: "initial", isComplete: () => false, continuationPrompt: "resume", maxResumes: 2 },
+			spawn,
+		);
+		// One duration per attempt (initial + both resumes), each a non-negative wall-clock
+		// measurement — the stage-durations evidence artifact reads exactly this array.
+		expect(result.attemptDurationsMs).toHaveLength(result.attempts.length);
+		expect(result.attempts.length).toBe(3);
+		for (const duration of result.attemptDurationsMs) expect(duration).toBeGreaterThanOrEqual(0);
+	});
 });
 
 describe("preCraftArtifactsComplete", () => {
@@ -367,10 +384,11 @@ describe("preCraftArtifactsComplete", () => {
 });
 
 // ---------------------------------------------------------------------------
-// audit-0 RF-7/RF-8 — stream-predicate helpers the escalation/red-cycle E2E suites
+// audit-0 RF-7 — stream-predicate helpers the escalation/red-cycle E2E suites
 // early-exit on. Same no-real-process, `npm test`-runs philosophy as above: the
-// ordered-tuple parse (RF-7) and the completed-task probe (RF-8) are exercised
-// against synthetic NDJSON streams, never a real `omp` child.
+// ordered-tuple parse (RF-7) is exercised against synthetic NDJSON streams,
+// never a real `omp` child. (audit-4 RF-39 removed the RF-8 completed-task
+// probe together with its earlyExit arm — durable records replaced it.)
 // ---------------------------------------------------------------------------
 
 describe("auditBeginOutcomes (RF-7)", () => {
@@ -395,23 +413,6 @@ describe("auditBeginOutcomes (RF-7)", () => {
 			'{"type":"tool_execution_end","toolName":"write","isError":false,"result":{"content":[{"type":"text","text":"lets-craft: audit cycle 2 begun',
 		].join("\n");
 		expect(auditBeginOutcomes(stdout)).toEqual([true]);
-	});
-});
-
-describe("completedTaskSpawnSeen (RF-8)", () => {
-	it("is FALSE for a task execution START event alone — the raw toolName substring this replaces fired on exactly this line, before the spawn's result existed", () => {
-		const stdout = JSON.stringify({ type: "tool_execution_start", toolName: "task", args: { agent: "lsc-test-engineer" } });
-		// Reproduce the retired arm's false fire first, so the regression pins the actual difference.
-		expect(stdout.includes('"toolName":"task"')).toBe(true);
-		expect(completedTaskSpawnSeen(stdout)).toBe(false);
-	});
-
-	it("is TRUE once a task execution END event has streamed back", () => {
-		const stdout = [
-			JSON.stringify({ type: "tool_execution_start", toolName: "task", args: { agent: "lsc-test-engineer" } }),
-			JSON.stringify({ type: "tool_execution_end", toolName: "task", isError: false, result: { content: [{ type: "text", text: "spawn delivered" }] } }),
-		].join("\n");
-		expect(completedTaskSpawnSeen(stdout)).toBe(true);
 	});
 });
 
@@ -842,5 +843,293 @@ describe("sessionTaskSpawns / findSessionFileByPrompt / sessionEntryDigests (RF-
 		const spawns = sessionTaskSpawns(path);
 		expect(spawns[0].resultDelivered).toBe(true);
 		expect(spawns[0].resultIsError).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-4 RF-39/RF-41 — the durable stage-observation seam: last-wins toolResult pairing,
+// the throttle that keeps per-chunk earlyExit predicates off the filesystem, the last-match
+// session finder, session toolResult texts, durableStageObservation's tolerant reads, and
+// the RF-37 preset precondition function. Same no-real-process, `npm test`-runs philosophy:
+// synthetic session/state/log files shaped exactly like the host's persisted records.
+// ---------------------------------------------------------------------------
+
+describe("sessionTaskSpawns multi-toolResult last-wins (RF-39)", () => {
+	const tempDirs: string[] = [];
+	afterEach(() => {
+		while (tempDirs.length > 0) {
+			const dir = tempDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function writeSessionFile(path: string, entries: Array<Record<string, unknown>>): string {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+		return path;
+	}
+
+	const entryBase = { id: "e1", parentId: null, timestamp: "2026-09-01T00:00:00.000Z" };
+	const taskCall = (callId: string) => ({
+		type: "message",
+		...entryBase,
+		message: { role: "assistant", content: [{ type: "toolCall", id: callId, name: "task", arguments: { agent: "lsc-test-engineer", task: "author tests for red-cycle" } }] },
+	});
+	const toolResult = (callId: string, isError: boolean) => ({
+		type: "message",
+		...entryBase,
+		id: `r-${callId}-${isError}`,
+		message: { role: "toolResult", toolCallId: callId, toolName: "task", content: [{ type: "text", text: isError ? "spawn failed" : "spawn ok" }], isError },
+	});
+
+	it("a call with toolResults isError:false then isError:true resolves LAST-WINS to resultIsError===true", () => {
+		const dir = mkdtempSync(join(tmpdir(), "lsc-lastwins-a-"));
+		tempDirs.push(dir);
+		const path = writeSessionFile(join(dir, "run.jsonl"), [taskCall("call_1"), toolResult("call_1", false), toolResult("call_1", true)]);
+		const spawns = sessionTaskSpawns(path);
+		expect(spawns).toHaveLength(1);
+		expect(spawns[0].resultDelivered).toBe(true);
+		expect(spawns[0].resultIsError).toBe(true);
+		expect(spawns[0].resultText).toBe("spawn failed");
+	});
+
+	it("the reverse order (isError:true then isError:false) resolves to resultIsError===false — the LAST result is the durable one", () => {
+		const dir = mkdtempSync(join(tmpdir(), "lsc-lastwins-b-"));
+		tempDirs.push(dir);
+		const path = writeSessionFile(join(dir, "run.jsonl"), [taskCall("call_1"), toolResult("call_1", true), toolResult("call_1", false)]);
+		const spawns = sessionTaskSpawns(path);
+		expect(spawns).toHaveLength(1);
+		expect(spawns[0].resultDelivered).toBe(true);
+		expect(spawns[0].resultIsError).toBe(false);
+		expect(spawns[0].resultText).toBe("spawn ok");
+	});
+});
+
+describe("durableProbeThrottle / lastSessionFileByPrompt / sessionToolResultTexts (RF-41(b))", () => {
+	const tempDirs: string[] = [];
+	afterEach(() => {
+		while (tempDirs.length > 0) {
+			const dir = tempDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function writeSessionFile(path: string, entries: Array<Record<string, unknown>>): string {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+		return path;
+	}
+
+	const entryBase = { id: "e1", parentId: null, timestamp: "2026-09-01T00:00:00.000Z" };
+
+	it("durableProbeThrottle allows the first probe, gates probes inside the interval, and re-allows past it", () => {
+		const due = durableProbeThrottle(60_000);
+		expect(due()).toBe(true); // first probe is always allowed — no read has happened yet
+		expect(due()).toBe(false); // inside the interval → gated
+		expect(due()).toBe(false);
+		const fresh = durableProbeThrottle(0);
+		expect(fresh()).toBe(true);
+		expect(fresh()).toBe(true); // zero interval never gates
+	});
+
+	it("lastSessionFileByPrompt returns the MOST RECENT matching file, not the first (resumes add later files)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "lsc-lastfinder-"));
+		tempDirs.push(dir);
+		const first = writeSessionFile(join(dir, "20260901T0000_aaaa.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "user", content: "/skill:pre-craft do it" } },
+		]);
+		const second = writeSessionFile(join(dir, "20260901T0500_bbbb.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "user", content: "/skill:pre-craft resume it" } },
+		]);
+		// readdirSync order is name-alphabetical here (timestamps), so first<second; pin the
+		// LAST-match rule regardless of which the finder visits first.
+		expect(first < second).toBe(true);
+		expect(lastSessionFileByPrompt(dir, "/skill:pre-craft")?.path).toBe(second);
+		expect(lastSessionFileByPrompt(dir, "/skill:craft")).toBeUndefined();
+	});
+
+	it("sessionToolResultTexts carries every toolResult's isError and text, tolerating plain-string content", () => {
+		const dir = mkdtempSync(join(tmpdir(), "lsc-toolresults-"));
+		tempDirs.push(dir);
+		const path = writeSessionFile(join(dir, "run.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "user", content: "prompt" } },
+			{ type: "message", ...entryBase, id: "e2", message: { role: "toolResult", toolCallId: "c1", toolName: "write", content: [{ type: "text", text: "lets-craft: run_check.sh passed (exit 0). Log: /x/check-1.log." }], isError: false } },
+			{ type: "message", ...entryBase, id: "e3", message: { role: "toolResult", toolCallId: "c2", toolName: "write", content: "plain-string result", isError: true } },
+			{ type: "message", ...entryBase, id: "e4", message: { role: "assistant", content: [{ type: "text", text: "assistant text is not a toolResult" }] } },
+		]);
+		expect(sessionToolResultTexts(path)).toEqual([
+			{ isError: false, text: "lets-craft: run_check.sh passed (exit 0). Log: /x/check-1.log." },
+			{ isError: true, text: "plain-string result" },
+		]);
+	});
+});
+
+describe("durableStageObservation (RF-41(b))", () => {
+	const tempDirs: string[] = [];
+	afterEach(() => {
+		while (tempDirs.length > 0) {
+			const dir = tempDirs.pop();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function writeSessionFile(path: string, entries: Array<Record<string, unknown>>): string {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+		return path;
+	}
+
+	const entryBase = { id: "e1", parentId: null, timestamp: "2026-09-01T00:00:00.000Z" };
+
+	/** A seeded feature root: worktree/.lsc/crafts/{feature}/ with optional state/logs/sessionDir contents. */
+	function seedFeature(feature: string): { worktreeRoot: string; sessionDir: string } {
+		const base = mkdtempSync(join(tmpdir(), "lsc-durable-obs-"));
+		tempDirs.push(base);
+		const worktreeRoot = join(base, "wt");
+		const sessionDir = join(base, "sessions");
+		mkdirSync(join(worktreeRoot, ".lsc", "crafts", feature), { recursive: true });
+		mkdirSync(sessionDir, { recursive: true });
+		return { worktreeRoot, sessionDir };
+	}
+
+	it("tolerates total absence: no state file, no check logs, no session file → undefined / 0 / [] and no throw", () => {
+		const { worktreeRoot, sessionDir } = seedFeature("ghost");
+		const observation = durableStageObservation({ worktreeRoot, feature: "ghost", sessionDir, promptNeedle: "/skill:post-craft" });
+		expect(observation.auditCycle).toBeUndefined();
+		expect(observation.checkLogIndex).toBe(0);
+		expect(observation.runCheckResults).toEqual([]);
+		expect(observation.engineerSpawn).toBeUndefined();
+		expect(observation.sessionFile).toBeUndefined();
+	});
+
+	it("reads auditCycle from .craft-state.json, the MAX check-N.log index, run-check results and the engineer spawn from the session file", () => {
+		const feature = "red-cycle";
+		const { worktreeRoot, sessionDir } = seedFeature(feature);
+		writeFileSync(join(worktreeRoot, ".lsc", "crafts", feature, ".craft-state.json"), JSON.stringify({ stateVersion: 2, feature, auditCycle: 1 }));
+		const logsDir = join(worktreeRoot, ".lsc", "crafts", feature, "check", "logs");
+		mkdirSync(logsDir, { recursive: true });
+		for (const name of ["check-1.log", "check-3.log", "check-10.log", "not-a-log.txt", "check-2.log.bak"]) writeFileSync(join(logsDir, name), "x");
+		writeSessionFile(join(sessionDir, "20260901T0000_aaaa.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "user", content: "/skill:post-craft .lsc/crafts/red-cycle/ go" } },
+			{ type: "message", ...entryBase, id: "e2", message: { role: "assistant", content: [{ type: "toolCall", id: "call_1", name: "task", arguments: { agent: "lsc-test-engineer", task: "author tests at /wt/.lsc/worktrees/red-cycle" } }] } },
+			{ type: "message", ...entryBase, id: "e3", message: { role: "toolResult", toolCallId: "call_1", toolName: "task", content: [{ type: "text", text: "tests authored" }], isError: false } },
+			{ type: "message", ...entryBase, id: "e4", message: { role: "toolResult", toolCallId: "c9", toolName: "write", content: [{ type: "text", text: "lets-craft: run_check.sh passed (exit 0). Log: /wt/check-4.log." }], isError: false } },
+			{ type: "message", ...entryBase, id: "e5", message: { role: "toolResult", toolCallId: "c10", toolName: "write", content: [{ type: "text", text: "lets-craft: run_check.sh FAILED (exit 1). Full log: /wt/check-5.log." }], isError: true } },
+			{ type: "message", ...entryBase, id: "e6", message: { role: "toolResult", toolCallId: "c11", toolName: "write", content: [{ type: "text", text: "an unrelated tool result" }], isError: false } },
+		]);
+
+		const observation = durableStageObservation({ worktreeRoot, feature, sessionDir, promptNeedle: "/skill:post-craft" });
+		expect(observation.auditCycle).toBe(1);
+		expect(observation.checkLogIndex).toBe(10); // max N — not the count, not the latest mtime
+		expect(observation.runCheckResults.map(r => r.passed)).toEqual([true, false]);
+		expect(observation.engineerSpawn?.agent).toBe("lsc-test-engineer");
+		expect(observation.engineerSpawn?.resultDelivered).toBe(true);
+		expect(observation.engineerSpawn?.resultIsError).toBe(false);
+	});
+
+	it("treats a CORRUPT .craft-state.json as auditCycle undefined instead of throwing (polling-predicate tolerance)", () => {
+		const { worktreeRoot, sessionDir } = seedFeature("corrupt");
+		writeFileSync(join(worktreeRoot, ".lsc", "crafts", "corrupt", ".craft-state.json"), "{not json");
+		const observation = durableStageObservation({ worktreeRoot, feature: "corrupt", sessionDir });
+		expect(observation.auditCycle).toBeUndefined();
+		expect(observation.checkLogIndex).toBe(0);
+	});
+
+	it("does not match an engineer spawn for a DIFFERENT feature (the assignment must carry this feature's slug)", () => {
+		const { worktreeRoot, sessionDir } = seedFeature("alpha");
+		writeSessionFile(join(sessionDir, "20260901T0000_aaaa.jsonl"), [
+			{ type: "message", ...entryBase, message: { role: "user", content: "/skill:post-craft .lsc/crafts/alpha/ go" } },
+			{ type: "message", ...entryBase, id: "e2", message: { role: "assistant", content: [{ type: "toolCall", id: "call_1", name: "task", arguments: { agent: "lsc-test-engineer", task: "author tests at /wt/.lsc/worktrees/beta" } }] } },
+			{ type: "message", ...entryBase, id: "e3", message: { role: "toolResult", toolCallId: "call_1", toolName: "task", content: [{ type: "text", text: "done" }], isError: false } },
+		]);
+		const observation = durableStageObservation({ worktreeRoot, feature: "alpha", sessionDir, promptNeedle: "/skill:post-craft" });
+		expect(observation.engineerSpawn).toBeUndefined();
+	});
+});
+
+describe("presetParentPreconditions (RF-37)", () => {
+	const entryBase = { id: "e1", parentId: null, timestamp: "2026-09-01T00:00:00.000Z" };
+	const taskCallEntry = (callId: string, agent: string, taskText: string) => ({
+		type: "message",
+		...entryBase,
+		id: callId,
+		message: { role: "assistant", content: [{ type: "toolCall", id: callId, name: "task", arguments: { agent, task: taskText } }] },
+	});
+	const spawnsFor = (entries: Array<Record<string, unknown>>) =>
+		entries
+			.filter(entry => entry.type === "message")
+			.flatMap(entry => {
+				const message = entry.message as { content?: Array<{ type?: string; id?: string; name?: string; arguments?: { agent?: string; task?: string } }> };
+				return (message.content ?? []).filter(block => block.type === "toolCall" && block.name === "task").map(block => ({
+					callId: block.id ?? "",
+					agent: block.arguments?.agent,
+					taskText: block.arguments?.task ?? "",
+					resultDelivered: false,
+					resultIsError: undefined,
+					resultText: undefined,
+				}));
+			});
+
+	it("ok when the parent records the preset model_change and both marker-bound calls requested the exact agents", () => {
+		const entries = [
+			taskCallEntry("c1", "lsc-tracer", "TRACER-PING ack"),
+			taskCallEntry("c2", "lsc-explore", "EXPLORE-PING ack"),
+			{ type: "model_change", model: "zai/glm-4.5-flash" },
+		];
+		const result = presetParentPreconditions({
+			parentEntries: entries,
+			parentSpawns: spawnsFor(entries),
+			defaultBareModel: "glm-4.5-flash",
+			tracerMarker: "TRACER-PING",
+			exploreMarker: "EXPLORE-PING",
+			tracerAgent: "lsc-tracer",
+			exploreAgent: "lsc-explore",
+		});
+		expect(result.ok).toBe(true);
+		expect(result.failures).toEqual([]);
+		expect(result.tracerAgent).toBe("lsc-tracer");
+		expect(result.exploreAgent).toBe("lsc-explore");
+	});
+
+	it("reader-level regression: a synthetic parent JSONL seeded with the WRONG requested agent (lsc-scout instead of lsc-explore) fails the precondition — BEFORE any child model assertion could attribute an override miss", () => {
+		const entries = [
+			taskCallEntry("c1", "lsc-tracer", "TRACER-PING ack"),
+			taskCallEntry("c2", "lsc-scout", "EXPLORE-PING ack"),
+			{ type: "model_change", model: "zai/glm-4.5-flash" },
+		];
+		const result = presetParentPreconditions({
+			parentEntries: entries,
+			parentSpawns: spawnsFor(entries),
+			defaultBareModel: "glm-4.5-flash",
+			tracerMarker: "TRACER-PING",
+			exploreMarker: "EXPLORE-PING",
+			tracerAgent: "lsc-tracer",
+			exploreAgent: "lsc-explore",
+		});
+		expect(result.ok).toBe(false);
+		expect(result.failures).toHaveLength(1);
+		expect(result.failures[0]).toContain("lsc-scout");
+		expect(result.failures[0]).toContain("lsc-explore");
+		expect(result.exploreAgent).toBe("lsc-scout");
+	});
+
+	it("fails when the preset's model_change is absent even with correct agents — and reports every failed axis in evaluation order", () => {
+		const entries = [
+			taskCallEntry("c1", "lsc-tracer", "TRACER-PING ack"),
+			taskCallEntry("c2", "lsc-explore", "EXPLORE-PING ack"),
+			{ type: "model_change", model: "zai/some-other-model" },
+		];
+		const result = presetParentPreconditions({
+			parentEntries: entries,
+			parentSpawns: spawnsFor(entries),
+			defaultBareModel: "glm-4.5-flash",
+			tracerMarker: "TRACER-PING",
+			exploreMarker: "EXPLORE-PING",
+			tracerAgent: "lsc-tracer",
+			exploreAgent: "lsc-explore",
+		});
+		expect(result.ok).toBe(false);
+		expect(result.failures).toHaveLength(1);
+		expect(result.failures[0]).toContain("model_change");
 	});
 });
