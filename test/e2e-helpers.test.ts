@@ -1021,7 +1021,7 @@ describe("durableStageObservation (RF-41(b))", () => {
 		const observation = durableStageObservation({ worktreeRoot, feature, sessionDir, promptNeedle: "/skill:post-craft" });
 		expect(observation.auditCycle).toBe(1);
 		expect(observation.checkLogIndex).toBe(10); // max N — not the count, not the latest mtime
-		expect(observation.runCheckResults.map(r => r.passed)).toEqual([true, false]);
+		expect(observation.runCheckResults.map((r: { passed: boolean }) => r.passed)).toEqual([true, false]);
 		expect(observation.engineerSpawn?.agent).toBe("lsc-test-engineer");
 		expect(observation.engineerSpawn?.resultDelivered).toBe(true);
 		expect(observation.engineerSpawn?.resultIsError).toBe(false);
