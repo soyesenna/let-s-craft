@@ -61,7 +61,7 @@ export function performCraftAbort(reason: string, featureDir?: string, cwd: stri
 		markCraftAbortedAt(persisted.worktreeRoot ?? persisted.projectRoot, feature);
 		invalidatePreparedOperation();
 		return {
-			content: [{ type: "text", text: `lets-craft: craft "${feature}" marked aborted — ${reason}` }],
+			content: [{ type: "text", text: `lets-craft: craft "${feature}" marked aborted — ${controlSafeEcho(reason)}` }],
 			details: { feature, reason },
 		};
 	}
@@ -73,7 +73,7 @@ export function performCraftAbort(reason: string, featureDir?: string, cwd: stri
 	markCraftAborted();
 	invalidatePreparedOperation();
 	return {
-		content: [{ type: "text", text: `lets-craft: craft "${craft.feature}" marked aborted — ${reason}` }],
+			content: [{ type: "text", text: `lets-craft: craft "${craft.feature}" marked aborted — ${controlSafeEcho(reason)}` }],
 		details: { feature: craft.feature, reason },
 	};
 }

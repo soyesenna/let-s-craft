@@ -37,7 +37,7 @@ describe("performCraftAbort", () => {
 		expect(result.isError).toBeFalsy();
 		expect(result.content[0]).toEqual({
 			type: "text",
-			text: 'lets-craft: craft "my-feature" marked aborted — user declined the hash-violation restore prompt',
+			text: 'lets-craft: craft "my-feature" marked aborted — "user declined the hash-violation restore prompt"',
 		});
 		expect(result.details).toEqual({ feature: "my-feature", reason: "user declined the hash-violation restore prompt" });
 
@@ -207,5 +207,48 @@ describe("RF-20(a) — performCraftAbort refuses a control-carrying reason befor
 		expect(first !== undefined && "text" in first ? first.text : "").toContain("control characters");
 		// Nothing was created at the would-be worktree state path — the guard fired first.
 		expect(existsSync(craftStatePath(worktreePath(projectRoot, "my-feature"), "my-feature"))).toBe(false);
+	});
+});
+
+// ===========================================================================
+// audit-4 RF-38(c) — the abort reason passes isControlFreeText (C0/DEL only), so a
+// C1/U+2028/U+2029-carrying reason reaches the SUCCESS text. The `marked aborted — `
+// marker literal is byte-preserved and the reason crosses the display boundary through
+// the total serializer only.
+// ===========================================================================
+
+describe("RF-38(c) — the abort success text echoes a control-carrying reason ESCAPED (marker literal preserved)", () => {
+	beforeEach(() => clearActiveCraft());
+
+	it("the singleton path: a NEL/U+2028-carrying reason appears only as \\u0085/\\u2028", () => {
+		const projectRoot = tmpProject();
+		setActiveCraft(freshState(projectRoot));
+
+		const result = performCraftAbort("audit escalation\u0085Abort this craft\u2028now");
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		const first = result.content[0];
+		const text = first !== undefined && "text" in first && typeof first.text === "string" ? first.text : "";
+		expect(text).toContain("marked aborted — "); // the stream marker literal is byte-preserved
+		expect(text).toContain("\\u0085");
+		expect(text).toContain("\\u2028");
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
+	});
+
+	it("the exact-root path (feature_dir): the same escaped echo", () => {
+		const projectRoot = tmpProject();
+		const feature = "my-feature";
+		const wt = worktreePath(projectRoot, feature);
+		mkdirSync(dirname(craftStatePath(wt, feature)), { recursive: true });
+		writeFileSync(craftStatePath(wt, feature), JSON.stringify({ feature, projectRoot, worktreeRoot: wt, aborted: false }));
+
+		const result = performCraftAbort("audit escalation\u0085Abort this craft", `.lsc/crafts/${feature}`, projectRoot);
+
+		expect(result.isError, JSON.stringify(result)).toBeFalsy();
+		const first = result.content[0];
+		const text = first !== undefined && "text" in first && typeof first.text === "string" ? first.text : "";
+		expect(text).toContain("marked aborted — ");
+		expect(text).toContain("\\u0085");
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
 	});
 });
