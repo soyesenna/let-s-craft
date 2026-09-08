@@ -34,6 +34,10 @@ import { controlSafeEcho } from "./tool-text.js";
 
 const FAILURE_LINE_RE = /fail|error|✗|✘|not ok/i;
 const MAX_FAILURE_LINES = 40;
+/** audit-4 RF-38(d): per-line bound on the ESCAPED result string (escaping grows text, so the bound applies after controlSafeEcho, never to the raw line). */
+export const MAX_FAILURE_LINE_CHARS = 400;
+/** audit-4 RF-38(d): total bound on the joined failure summary — trailing lines drop past the cap with a constant suffix. */
+export const MAX_FAILURE_SUMMARY_CHARS = 4000;
 
 export type ExecFn = (command: string, args: string[], options?: ExecOptions) => Promise<ExecResult>;
 
@@ -42,16 +46,39 @@ export type ExecFn = (command: string, args: string[], options?: ExecOptions) =>
  * (max) and ESCAPED (audit-3 RF-34): each kept line is echoed through controlSafeEcho, so no
  * control character the child's raw output carries (C0/C1/DEL/U+2028/U+2029, including a lone CR
  * the newline split leaves inside a line) can reshape the model-facing failure summary. The raw
- * stdout/stderr halves stay in the durable check-N.log transcript (and details' documented raw
- * exec halves, isEmptyCheckTranscript's input) — the tool-result summary carries ONLY this
+ * stdout/stderr halves stay in the durable check-N.log transcript and runFeatureCheck's result
+ * `transcript` (isEmptyCheckTranscript's input) — the tool-result summary carries ONLY this
  * bounded escaped form.
+ *
+ * audit-4 RF-38(d): DOUBLE-bounded. Each escaped line longer than MAX_FAILURE_LINE_CHARS is cut
+ * to the cap with a fixed ASCII `[truncated N chars]` suffix (N = dropped chars), and the JOINED
+ * summary is bounded by MAX_FAILURE_SUMMARY_CHARS — trailing lines drop past the cap with a
+ * constant `[N more failure line(s) truncated]` suffix. A multi-MB transcript can never flood
+ * the model-facing text.
  */
 export function extractFailureLines(output: string, max = MAX_FAILURE_LINES): string[] {
-	return output
+	const escaped = output
 		.split(/\r?\n/)
 		.filter(line => FAILURE_LINE_RE.test(line))
 		.slice(0, max)
-		.map(controlSafeEcho);
+		.map(line => {
+			const echoed = controlSafeEcho(line);
+			if (echoed.length <= MAX_FAILURE_LINE_CHARS) return echoed;
+			return `${echoed.slice(0, MAX_FAILURE_LINE_CHARS)}[truncated ${echoed.length - MAX_FAILURE_LINE_CHARS} chars]`;
+		});
+	// Summary-level bound: track the joined length incrementally; the first line always stays
+	// (the per-line cap already bounds it far below the summary cap).
+	const bounded: string[] = [];
+	let joinedLength = 0;
+	for (const line of escaped) {
+		const candidate = bounded.length === 0 ? line.length : joinedLength + 1 + line.length;
+		if (bounded.length > 0 && candidate > MAX_FAILURE_SUMMARY_CHARS) break;
+		bounded.push(line);
+		joinedLength = candidate;
+	}
+	const dropped = escaped.length - bounded.length;
+	if (dropped > 0) bounded.push(`[${dropped} more failure line(s) truncated]`);
+	return bounded;
 }
 
 /** Next `check-N.log` index for a feature's check/logs/ directory (N starts at 1). */
@@ -71,9 +98,9 @@ export interface RunCheckDetails {
 	killed: boolean;
 	logPath: string;
 	failureLines: string[];
-	/** Raw exec halves (undecorated by the transcript's own headers) — isEmptyCheckTranscript's input. */
-	stdout: string;
-	stderr: string;
+	// audit-4 RF-38(e): the raw stdout/stderr halves are deliberately NOT public details —
+	// they live on RunFeatureCheckResult.transcript (isEmptyCheckTranscript's input) and in the
+	// durable check-N.log transcript only.
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +225,8 @@ export interface RunFeatureCheckArgs {
 export interface RunFeatureCheckResult {
 	details: RunCheckDetails;
 	text: string;
+	/** Raw exec halves (undecorated by the transcript's own headers) — isEmptyCheckTranscript's input; deliberately outside the public RunCheckDetails (audit-4 RF-38(e)). */
+	transcript: { stdout: string; stderr: string };
 }
 
 /**
@@ -266,8 +295,6 @@ export async function runFeatureCheck(args: RunFeatureCheckArgs): Promise<RunFea
 		killed: result.killed,
 		logPath,
 		failureLines,
-		stdout: result.stdout,
-		stderr: result.stderr,
 	};
 
 	const selfModifiedNote = scriptSelfModified
@@ -281,7 +308,7 @@ export async function runFeatureCheck(args: RunFeatureCheckArgs): Promise<RunFea
 				}Full log: ${controlSafeEcho(logPath)}.`
 	}${selfModifiedNote}`;
 
-	return { details, text };
+	return { details, text, transcript: { stdout: result.stdout, stderr: result.stderr } };
 }
 
 /** Structured failure summary handed to the next reader. */
@@ -439,7 +466,7 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 		};
 	}
 
-	if (isEmptyCheckTranscript(outcome.details.stdout, outcome.details.stderr)) {
+	if (isEmptyCheckTranscript(outcome.transcript.stdout, outcome.transcript.stderr)) {
 		return {
 			isError: true,
 			content: [
