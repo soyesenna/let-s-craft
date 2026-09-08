@@ -1433,6 +1433,39 @@ describe("RF-26 — a non-canonical persisted auditBaseSnapshot is never interpo
 		expect(readFileSync(statePath, "utf8")).toBe(bytesBeforeReplay);
 	});
 
+	// audit-4 RF-36: the two producer-impossible couplings (parseAuditBaseSnapshot's accepted-
+	// shape table) must be refused on replay exactly like the RF-32 empty-tip forgeries — the
+	// forged drift/unknown prose is NOT reproduced, details.base stays suppressed, state bytes
+	// are untouched. Same it.each axis pattern as the RF-32 block above.
+	it.each([
+		[
+			"ok with equal tips and a nonzero behindCount (false drift — rev-list X..X is always 0)",
+			{ baseBranch: "main", baseTip: "a".repeat(40), sourceTip: "a".repeat(40), behindCount: 5, status: "ok" as const, authority: "explicit-base" as const, observedAt: "2026-08-25T00:00:00.000Z" },
+			"base drift",
+		],
+		[
+			"unknown with an empty baseTip but a measured sourceTip (inverse partial — base resolves first)",
+			{ baseBranch: "main", baseTip: "", sourceTip: "b".repeat(40), behindCount: "unknown", status: "unknown" as const, authority: "explicit-base" as const, observedAt: "2026-08-25T00:00:00.000Z", error: "behind-count unavailable" },
+			"could not be measured",
+		],
+	])("%s — replay constant invalid-state, details suppressed, bytes stable (RF-36)", (_name, forged, notReproduced) => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		persistOnly({ ...freshState(root, feature), auditCycle: 0, auditBaseSnapshot: forged });
+		const statePath = craftStatePath(root, feature);
+		const bytesBeforeReplay = readFileSync(statePath, "utf8");
+
+		const replay = performAuditBegin(feature, root);
+
+		expect(replay.isError, JSON.stringify(replay)).toBeFalsy();
+		const text = firstText(replay);
+		expect(text).toContain("idempotent replay");
+		expect(text).toContain("invalid-state");
+		expect(text).not.toContain(notReproduced); // the forged prose is NOT reproduced as canonical evidence
+		expect(replay.details?.base).toBeUndefined(); // details suppressed
+		expect(readFileSync(statePath, "utf8")).toBe(bytesBeforeReplay); // state bytes 불변 across the replay
+	});
+
 	it("a CANONICAL persisted snapshot still describes on replay (the parser is not a blanket suppression)", () => {
 		const root = tmpProject();
 		const feature = "my-feature";

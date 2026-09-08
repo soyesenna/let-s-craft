@@ -566,6 +566,14 @@ describe("parseAuditBaseSnapshot (RF-26 — canonical persisted base snapshots)"
 		expect(parseAuditBaseSnapshot(partial)).toEqual(partial);
 	});
 
+	// audit-4 RF-36 boundary: equal tips with count 0 IS a producer shape — `git rev-list
+	// --count <oid>..<same oid>` returns 0 — so the equal-tips coupling must reject only the
+	// nonzero-count forgery, never the genuine in-sync observation.
+	it("accepts ok with EQUAL tips and count 0 (RF-36 — the in-sync shape rev-list actually records)", () => {
+		const inSync = { ...OK, sourceTip: "a".repeat(40), behindCount: 0 };
+		expect(parseAuditBaseSnapshot(inSync)).toEqual(inSync);
+	});
+
 	it.each([
 		["not an object", "nope"],
 		["non-string baseBranch", { ...OK, baseBranch: 7 }],
@@ -583,6 +591,10 @@ describe("parseAuditBaseSnapshot (RF-26 — canonical persisted base snapshots)"
 		// non-empty exact 40-hex tips on BOTH axes ("ok iff all measured", state.ts's contract).
 		["ok with an empty baseTip (RF-32 — the '' marker is unknown-only)", { ...OK, baseTip: "" }],
 		["ok with an empty sourceTip (RF-32 — the '' marker is unknown-only)", { ...OK, sourceTip: "" }],
+		// audit-4 RF-36: producer-impossible couplings — `git rev-list --count X..X` is always 0,
+		// and the base is resolved BEFORE the source (an unmeasured base never pairs a measured source).
+		["ok with equal tips but a nonzero count (RF-36 — false drift no producer arm can write)", { ...OK, sourceTip: "a".repeat(40), behindCount: 1 }],
+		["unknown with an empty baseTip but a measured sourceTip (RF-36 — inverse partial; the base resolves first)", { ...UNKNOWN, sourceTip: "b".repeat(40) }],
 		["unknown without an error", { ...UNKNOWN, error: undefined }],
 		["unknown with a control-carrying error", { ...UNKNOWN, error: "boom\tEVIL" }],
 	])("rejects %s", (_name, raw) => {
