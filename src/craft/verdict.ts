@@ -425,7 +425,8 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 		state = readPersistedCraftState(root, feature);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
+		// audit-4 RF-38(c): the decode failure message is untrusted fs/host text — escaped echo.
+		return { isError: true, content: [{ type: "text", text: controlSafeEcho(message) }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
 	}
 	if (!state) {
 		return {
@@ -460,7 +461,7 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 					applyAuditBeginOutcome(root, feature, { kind: "escalation-pending", pending: gate.pending });
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
-					return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
+				return { isError: true, content: [{ type: "text", text: controlSafeEcho(message) }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
 				}
 			}
 			const options_ = AUDIT_ESCALATION_DISPOSITIONS;
@@ -497,7 +498,7 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 				});
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
+				return { isError: true, content: [{ type: "text", text: controlSafeEcho(message) }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
 			}
 			return {
 				content: [
@@ -524,7 +525,7 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 				applyAuditBeginOutcome(root, feature, { kind: "escalation-terminal", decision: gate.decision });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
+				return { isError: true, content: [{ type: "text", text: controlSafeEcho(message) }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart, escalation: { status: "invalid-state" } } };
 			}
 			// A terminal disposition invalidates any pending approval/prepared operation — it ended
 			// the loop; no live destructive capability may survive it.
@@ -585,7 +586,7 @@ export function performAuditBegin(feature: string, cwd: string, options: AuditBe
 				applyAuditBeginOutcome(root, feature, { kind: "audit-cycle", auditCycle: candidateCycle, checkLogAtCycleStart, baseSnapshot: options.baseSnapshot });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return { isError: true, content: [{ type: "text", text: message }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart } };
+				return { isError: true, content: [{ type: "text", text: controlSafeEcho(message) }], details: { feature, auditCycle: candidateCycle, checkLogAtCycleStart } };
 			}
 			return {
 				content: [
@@ -718,7 +719,7 @@ export function performAuditValidate(feature: string, cwd: string): AgentToolRes
 		auditMarkdown = readFileSync(auditPath, "utf8");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		return { isError: true, content: [{ type: "text", text: `lets-craft: could not read ${auditPath} — ${message}.` }] };
+		return { isError: true, content: [{ type: "text", text: `lets-craft: could not read ${auditPath} — ${controlSafeEcho(message)}.` }] };
 	}
 
 	const verdict = parseAuditVerdict(auditMarkdown);
@@ -791,7 +792,7 @@ export function performAuditValidate(feature: string, cwd: string): AgentToolRes
 		recordAuditValidated(root, feature, auditNumber, verdict, new Date().toISOString());
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		markerNote = ` (warning: could not record the durable auditValidated marker — ${message})`;
+		markerNote = ` (warning: could not record the durable auditValidated marker — ${controlSafeEcho(message)})`;
 	}
 
 	// Review LOW-2: a non-APPROVE-family verdict (REJECT / APPROVE-WITH-CHANGE) reaches this point

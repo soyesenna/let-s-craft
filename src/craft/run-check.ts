@@ -275,10 +275,10 @@ export async function runFeatureCheck(args: RunFeatureCheckArgs): Promise<RunFea
 		: "";
 	const text = `${
 		passed
-			? `lets-craft: run_check.sh passed (exit 0). Log: ${logPath}.`
+			? `lets-craft: run_check.sh passed (exit 0). Log: ${controlSafeEcho(logPath)}.`
 			: `lets-craft: run_check.sh FAILED (exit ${result.code}${result.killed ? ", killed" : ""}).${
 					failureLines.length > 0 ? ` ${failureLines.length} failure line(s):\n${failureLines.join("\n")}\n` : " "
-				}Full log: ${logPath}.`
+				}Full log: ${controlSafeEcho(logPath)}.`
 	}${selfModifiedNote}`;
 
 	return { details, text };
@@ -390,7 +390,7 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 						type: "text",
 						text:
 							`lets-craft: the persisted craft state for "${args.feature}" claims the identity ${controlSafeEcho(claimed)}, ` +
-							`which is not the canonical form for this invocation (expected feature ${controlSafeEcho(args.feature)}, projectRoot ${args.cwd}, worktreeRoot absent or ${expectedWorktree}) — ` +
+							`which is not the canonical form for this invocation (expected feature ${controlSafeEcho(args.feature)}, projectRoot ${controlSafeEcho(args.cwd)}, worktreeRoot absent or ${controlSafeEcho(expectedWorktree)}) — ` +
 							`refusing to run check/run_check.sh against a foreign root (audit-1 RF-20, audit-2 RF-24).`,
 					},
 				],
@@ -447,7 +447,7 @@ export async function performRunCheck(args: PerformRunCheckArgs): Promise<AgentT
 					type: "text",
 					text:
 						`lets-craft: run_check.sh produced no output at all (empty-transcript) despite exit ${outcome.details.exitCode} — a ` +
-						`script that never ran a real command cannot back a check result. Log: ${outcome.details.logPath}. Re-author check/run_check.sh.`,
+						`script that never ran a real command cannot back a check result. Log: ${controlSafeEcho(outcome.details.logPath)}. Re-author check/run_check.sh.`,
 				},
 			],
 		};

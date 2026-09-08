@@ -526,15 +526,53 @@ describe("performRunCheck (B-1 target resolution + AC11 non-degeneracy gates, to
 		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
 	});
 
+	// audit-4 RF-38(b): the pass/fail/empty-transcript texts echo the log path through the total
+	// serializer (quoted + escaped). The `lets-craft: run_check.sh passed (exit 0). Log: ` and
+	// `lets-craft: run_check.sh FAILED (exit ` prefix literals stay byte-preserved — only the
+	// interpolated path crosses the serializer.
+	it("RF-38(b): the Log:/Full log: path echo is serializer-quoted in every result text", async () => {
+		const root = tmpProject();
+		const feature = "my-feature";
+		seedScript(root, feature);
+		setActiveCraft(freshCraftState(root, feature));
+		const firstLine = (result: { content: Array<{ type: string; text?: string }> }): string => {
+			const first = result.content[0];
+			return first !== undefined && "text" in first && typeof first.text === "string" ? first.text : "";
+		};
+
+		const passing = await performRunCheck({ feature, activeCraft: getActiveCraft(), persisted: undefined, exec: passExec });
+		expect(firstLine(passing)).toMatch(/^lets-craft: run_check\.sh passed \(exit 0\)\. Log: ".+"\.$/);
+
+		const failingExec = async () => ({ stdout: "FAIL boom", stderr: "", code: 1, killed: false });
+		const failing = await performRunCheck({ feature, activeCraft: getActiveCraft(), persisted: undefined, exec: failingExec });
+		expect(firstLine(failing)).toMatch(/^lets-craft: run_check\.sh FAILED \(exit 1\)\. 1 failure line\(s\):\n"FAIL boom"\nFull log: ".+"\.$/);
+
+		const emptyExec = async () => ({ stdout: "", stderr: "", code: 0, killed: false });
+		const emptyRun = await performRunCheck({ feature, activeCraft: getActiveCraft(), persisted: undefined, exec: emptyExec });
+		expect(firstLine(emptyRun)).toMatch(/empty-transcript[\s\S]*Log: ".+"\./);
+	});
+
 	// audit-1 RF-20(d) — the shared slug boundary (audit-0 RF-13's guard, which lsc_run_check
 	// was missing) and the persisted-root identity exact-match: an audit-evidence run executes
 	// against a root read out of the persisted state file (untrusted bytes), so that root must
 	// be exactly the invocation's cwd or the worktree computed from it.
 	it("RF-20(d): a non-slug feature is refused with the shared kebab-slug message before any fs access", async () => {
-		for (const forged of ["bad\nfeature", "Shout Case", "semi;colon"]) {
+		// audit-4 RF-38: DEL/C1 axes added so the core slug refusal's (run-check.ts:361)
+		// escaped-containment axis is actually discriminated, not just \n/ASCII.
+		for (const [forged, escaped] of [
+			["bad\nfeature", undefined],
+			["Shout Case", undefined],
+			["semi;colon", undefined],
+			["del\u007ffeature", "\\u007f"],
+			["nel\u0085feature", "\\u0085"],
+		] as Array<[string, string | undefined]>) {
 			const result = await performRunCheck({ feature: forged, activeCraft: undefined, persisted: undefined, exec: passExec });
 			expect(result.isError, `feature ${JSON.stringify(forged)} must be refused`).toBe(true);
-			expect((result.content[0] as { text: string }).text).toContain("kebab-case slug");
+			const first = result.content[0];
+			const text = first !== undefined && "text" in first && typeof first.text === "string" ? first.text : "";
+			expect(text).toContain("kebab-case slug");
+			expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // escaped echo only
+			if (escaped !== undefined) expect(text).toContain(escaped);
 		}
 	});
 
@@ -633,24 +671,32 @@ describe("RF-24 — registerRunCheckTool execute: slug guard before any state re
 
 	it("① an invalid slug is refused at the WRAPPER — the candidate state file is never read (much less decoded), exec never runs, no log is written", async () => {
 		const root = tmpProject();
-		const forged = "bad\nfeature";
 		// A MALFORMED state file sits exactly where the invalid slug's candidate lookup would read:
 		// WITHOUT the wrapper guard, findPersistedCraftState decodes it and the execute promise
 		// REJECTS (decodeCraftState's JSON.parse throws) — the discriminator that proves the guard.
-		const statePath = join(root, ".lsc", "crafts", forged, ".craft-state.json");
-		mkdirSync(dirname(statePath), { recursive: true });
-		writeFileSync(statePath, "{ not valid json");
-		const runCheck = captureRunCheckExecute();
+		// audit-4 RF-38: DEL/C1 axes added so the wrapper refusal's (run-check.ts:502) escaped-
+		// containment axis is discriminated at this seam too.
+		for (const [forged, escaped] of [
+			["bad\nfeature", undefined],
+			["del\u007ffeature", "\\u007f"],
+			["nel\u0085feature", "\\u0085"],
+		] as Array<[string, string | undefined]>) {
+			const statePath = join(root, ".lsc", "crafts", forged, ".craft-state.json");
+			mkdirSync(dirname(statePath), { recursive: true });
+			writeFileSync(statePath, "{ not valid json");
+			const runCheck = captureRunCheckExecute();
 
-		const result = await runCheck.execute("t", { feature_dir: forged }, undefined, undefined, { cwd: root });
+			const result = await runCheck.execute("t", { feature_dir: forged }, undefined, undefined, { cwd: root });
 
-		expect(result.isError, "the wrapper must return a clean refusal, not a decode throw").toBe(true);
-		const text = firstText(result);
-		expect(text).toContain("kebab-case slug");
-		expect(text).not.toMatch(/[\u0000-\u001f\u007f]/); // control-marker 무-raw-payload (escaped echo only)
-		expect(runCheck.execCalls, "exec must never run").toBe(0);
-		expect(existsSync(join(root, ".lsc", "crafts", forged, "check")), "no log dir may be created").toBe(false);
-		expect(readFileSync(statePath, "utf8")).toBe("{ not valid json"); // untouched — never read or rewritten
+			expect(result.isError, "the wrapper must return a clean refusal, not a decode throw").toBe(true);
+			const text = firstText(result);
+			expect(text).toContain("kebab-case slug");
+			expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // control-marker 무-raw-payload (escaped echo only)
+			if (escaped !== undefined) expect(text).toContain(escaped);
+			expect(runCheck.execCalls, "exec must never run").toBe(0);
+			expect(existsSync(join(root, ".lsc", "crafts", forged, "check")), "no log dir may be created").toBe(false);
+			expect(readFileSync(statePath, "utf8")).toBe("{ not valid json"); // untouched — never read or rewritten
+		}
 	});
 
 	it.each([

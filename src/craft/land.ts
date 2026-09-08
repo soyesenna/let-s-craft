@@ -285,8 +285,9 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 			feature,
 			mode,
 			`the persisted craft state's identity fields do not match this invocation's anchor ` +
-				`(persisted: ${JSON.stringify({ feature: state.feature, projectRoot: state.projectRoot, worktreeRoot: state.worktreeRoot })}, ` +
-				`anchor: ${JSON.stringify(anchor)}).`,
+				// audit-4 RF-38(c): the persisted identity is untrusted state bytes — escaped echo.
+				`(persisted: ${controlSafeEcho({ feature: state.feature, projectRoot: state.projectRoot, worktreeRoot: state.worktreeRoot })}, ` +
+				`anchor: ${controlSafeEcho(anchor)}).`,
 		);
 	}
 
@@ -448,7 +449,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 					"added-path-unknown",
 					feature,
 					mode,
-					`the added-path overlap could not be computed (git failure: ${error.message}) — refusing to merge rather than assuming no overlap. ` +
+					`the added-path overlap could not be computed (git failure: ${controlSafeEcho(error.message)}) — refusing to merge rather than assuming no overlap. ` +
 						`The [Land] nonce was consumed; a fresh approval is required after resolving the git issue.`,
 				);
 			}
@@ -472,8 +473,8 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 					"merge-aborted",
 					feature,
 					mode,
-					`merging ${shortOID(operation.sourceOID)} failed (${message.split("\n")[0]}); \`git merge --abort\` ran and the post-state verification ` +
-						`confirmed the repository was restored to "${operation.targetBranch}" @ ${shortOID(operation.targetOID)} (원복). ` +
+					`merging ${shortOID(operation.sourceOID)} failed (${controlSafeEcho(message.split("\n")[0])}); \`git merge --abort\` ran and the post-state verification ` +
+						`confirmed the repository was restored to ${controlSafeEcho(operation.targetBranch)} @ ${shortOID(operation.targetOID)} (원복). ` +
 						`The single-use [Land] nonce was consumed — resolve the conflict source and re-approve to retry.`,
 				);
 			}
@@ -513,7 +514,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 				"merged-but-not-cleaned",
 				feature,
 				mode,
-				`worktree force-removal failed: ${message.split("\n")[0]}. A locked worktree resists a single --force and land never ` +
+				`worktree force-removal failed: ${controlSafeEcho(message.split("\n")[0])}. A locked worktree resists a single --force and land never ` +
 					`double-forces (git owns lock semantics) — unlock it manually (\`git worktree unlock\`) and re-approve.`,
 			);
 		}
@@ -521,7 +522,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 			"merged-but-not-cleaned",
 			feature,
 			mode,
-			`the merge completed (${mergeCommit ? shortOID(mergeCommit) : "n/a"}) but no-force worktree removal failed: ${message.split("\n")[0]}. ` +
+			`the merge completed (${mergeCommit ? shortOID(mergeCommit) : "n/a"}) but no-force worktree removal failed: ${controlSafeEcho(message.split("\n")[0])}. ` +
 				`The worktree is preserved (uncommitted/untracked content is never silently discarded). To force-remove it, obtain a FRESH [Land] ` +
 				`approval scoped to mode "force-clean-only" and re-call lsc_land with mode: "force-clean-only".`,
 			{ mergeCommit },
@@ -537,7 +538,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 			feature,
 			mode,
 			`the merge and worktree removal completed${mergeCommit ? ` (${shortOID(mergeCommit)})` : ""} but \`git worktree prune\` failed: ` +
-				`${message.split("\n")[0]}. Run \`git worktree prune\` manually to reclaim the stale metadata.`,
+				`${controlSafeEcho(message.split("\n")[0])}. Run \`git worktree prune\` manually to reclaim the stale metadata.`,
 			{ mergeCommit },
 		);
 	}
@@ -545,7 +546,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 	const summary =
 		mode === "force-clean-only"
 			? `lets-craft: force-clean-only land for "${feature}" complete — the worktree at ${worktreeRoot} was force-removed and pruned (no merge).`
-			: `lets-craft: landed "${feature}" — merged approved ${shortOID(operation.sourceOID)} ("${operation.sourceBranch}") into "${operation.targetBranch}" ` +
+			: `lets-craft: landed "${feature}" — merged approved ${shortOID(operation.sourceOID)} (${controlSafeEcho(operation.sourceBranch)}) into ${controlSafeEcho(operation.targetBranch)} ` +
 				`as ${shortOID(mergeCommit ?? "")} (--no-ff), removed the worktree at ${worktreeRoot}, and pruned stale metadata.` +
 				(markerWarn ? `\n${markerWarn}` : "");
 	return { content: [{ type: "text", text: summary }], details: { feature, mode, mergeCommit } };
@@ -583,7 +584,7 @@ export function registerLandTool(pi: ExtensionAPI, effects?: Partial<LandEffects
 				return await performLand(feature, mode, ctx.cwd, effects);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				return { isError: true, content: [{ type: "text", text: `lsc_land: unexpected failure — ${message}` }], details: { feature, mode } };
+				return { isError: true, content: [{ type: "text", text: `lsc_land: unexpected failure — ${controlSafeEcho(message)}` }], details: { feature, mode } };
 			}
 		},
 	});

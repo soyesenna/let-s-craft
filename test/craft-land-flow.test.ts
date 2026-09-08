@@ -1454,3 +1454,45 @@ describe("RF-38(a) — performLand's slug-refusal echo is escaped for DEL/C1/U+2
 		expect(git(projectRoot, ["status", "--porcelain"])).toBe(""); // nothing touched the repo
 	});
 });
+
+// ===========================================================================
+// audit-4 RF-38(c) — land's display-boundary interpolations of untrusted values (the
+// persisted identity echo, and the merge/remove/prune effect-error messages) cross the
+// total serializer. Two deterministic injection seams: a control-carrying persisted
+// projectRoot (evidence-mismatch arm) and an injected prune failure message.
+// ===========================================================================
+
+describe("RF-38(c) — land's untrusted echoes are escaped at the display boundary", () => {
+	it("evidence-mismatch: a DEL/U+2028-carrying persisted identity echoes only as \\u007f/\\u2028", async () => {
+		const tools = buildTools();
+		const fx = setupLandableFeature({ feature: "mismatch-ctrl", stateProjectRoot: "/nonexistent\u007froot\u2028payload" });
+
+		const result = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+
+		expect(result.isError, textOf(result)).toBe(true);
+		const text = textOf(result);
+		expect(text).toContain("evidence-mismatch");
+		expect(text).toContain("\\u007f"); // the persisted identity's ONLY echo is the escaped form
+		expect(text).toContain("\\u2028");
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // no raw reshaping character
+	});
+
+	it("cleaned-but-not-pruned: an injected NEL/U+2028-carrying prune failure message echoes escaped", async () => {
+		const tools = buildTools({
+			prune: () => {
+				throw new Error("injected\u0085prune\u2028failure");
+			},
+		});
+		const fx = setupLandableFeature({ feature: "prune-ctrl" });
+		await issueLandApproval(tools, fx);
+
+		const result = await callTool(tools, "lsc_land", { feature: fx.feature }, makeCtx(fx.projectRoot));
+
+		expect(result.isError, textOf(result)).toBe(true);
+		const text = textOf(result);
+		expect(text).toContain("cleaned-but-not-pruned");
+		expect(text).toContain("\\u0085");
+		expect(text).toContain("\\u2028");
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
+	});
+});

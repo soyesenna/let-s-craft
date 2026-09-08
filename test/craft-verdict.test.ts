@@ -981,14 +981,19 @@ function firstText(result: { content?: Array<Record<string, unknown>> }): string
 // ---------------------------------------------------------------------------
 
 describe("RF-13 — kebab-slug boundary guard on the audit lifecycle tools", () => {
-	const INJECTIONS = ["bad\nfeature", "weird/../traversal", "Shout Case", "feature;", "tab\tfeature"];
+	const INJECTIONS = ["bad\nfeature", "weird/../traversal", "Shout Case", "feature;", "tab\tfeature", "del\u007ffeature", "nel\u0085feature"];
 
 	it("performAuditBegin refuses every non-slug feature before touching the filesystem", () => {
 		const root = tmpProject();
 		for (const forged of INJECTIONS) {
 			const result = performAuditBegin(forged, root);
 			expect(result.isError, `feature ${JSON.stringify(forged)} must be refused`).toBe(true);
-			expect(firstText(result)).toContain("kebab-case slug");
+			const text = firstText(result);
+			expect(text).toContain("kebab-case slug");
+			// audit-4 RF-38: DEL/C1 axes in the seed table — escaped echo only, never raw.
+			expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
+			if (forged.includes("\u007f")) expect(text).toContain("\\u007f");
+			if (forged.includes("\u0085")) expect(text).toContain("\\u0085");
 		}
 	});
 
@@ -997,7 +1002,12 @@ describe("RF-13 — kebab-slug boundary guard on the audit lifecycle tools", () 
 		for (const forged of INJECTIONS) {
 			const result = performAuditValidate(forged, root);
 			expect(result.isError, `feature ${JSON.stringify(forged)} must be refused`).toBe(true);
-			expect(firstText(result)).toContain("kebab-case slug");
+			const text = firstText(result);
+			expect(text).toContain("kebab-case slug");
+			// audit-4 RF-38: the validate arm (:698) gets the same escaped-containment axis.
+			expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
+			if (forged.includes("\u007f")) expect(text).toContain("\\u007f");
+			if (forged.includes("\u0085")) expect(text).toContain("\\u0085");
 		}
 	});
 
@@ -1332,12 +1342,22 @@ describe("RF-25 — lsc_audit_begin refuses a non-slug resolved feature before A
 		const execute = captureBeginExecute();
 		vi.mocked(runGitText).mockClear();
 
-		const result = await execute("t", { feature_dir: "bad\nfeature" }, undefined, undefined, { cwd: root });
+		// audit-4 RF-38: the wrapper's slug refusal (verdict.ts:659) gets the DEL/C1 escaped-
+		// containment axes too — the seed previously carried only \n, so the serializer's raw
+		// axes were never discriminated at this seam.
+		for (const [forged, escaped] of [
+			["bad\nfeature", undefined],
+			["del\u007ffeature", "\\u007f"],
+			["nel\u0085feature", "\\u0085"],
+		] as Array<[string, string | undefined]>) {
+			const result = await execute("t", { feature_dir: forged }, undefined, undefined, { cwd: root });
 
-		expect(result.isError).toBe(true);
-		const text = firstText(result);
-		expect(text).toContain("kebab-case slug");
-		expect(text).not.toMatch(/[\u0000-\u001f\u007f]/); // escaped echo — never the raw payload
+			expect(result.isError).toBe(true);
+			const text = firstText(result);
+			expect(text).toContain("kebab-case slug");
+			expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // escaped echo — never the raw payload
+			if (escaped !== undefined) expect(text).toContain(escaped);
+		}
 		expect(vi.mocked(runGitText), "observeAuditBase must not have run (RF-25: the slug guard precedes the wrapper's git observation)").not.toHaveBeenCalled();
 		expect(readFileSync(craftStatePath(root, feature), "utf8")).toBe(bytes); // 무-effect
 	});
@@ -1519,5 +1539,34 @@ describe("RF-34 — a C1/separator-carrying base snapshot is described ESCAPED o
 		expect(text).toContain("could not be measured");
 		expect(text).toContain("\\u0085");
 		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// audit-4 RF-38(c) — the decode/write error messages performAuditBegin surfaces as its whole
+// result text are untrusted fs/host bytes: they must cross the display boundary through the
+// total serializer, never raw. Seeded via the state file's PATH carrying U+2028 (a legal
+// filename byte) so decodeCraftState's stateVersion refusal message itself carries the
+// separator — the message is the interpolation under test, not the path.
+// ---------------------------------------------------------------------------
+
+describe("RF-38(c) — performAuditBegin's decode-error echo is escaped, never raw", () => {
+	afterEach(() => clearActiveCraft());
+
+	it("a stateVersion refusal whose message carries U+2028 (via the state path) surfaces only as \\u2028", () => {
+		const base = tmpProject();
+		const root = join(base, "proj\u2028root"); // the throw message interpolates this path verbatim
+		const feature = "my-feature";
+		mkdirSync(join(root, ".lsc", "crafts", feature), { recursive: true });
+		const statePath = craftStatePath(root, feature);
+		writeFileSync(statePath, JSON.stringify({ stateVersion: 99, feature, projectRoot: root, aborted: false }));
+
+		const result = performAuditBegin(feature, root);
+
+		expect(result.isError).toBe(true);
+		const text = firstText(result);
+		expect(text).toContain("stateVersion 99");
+		expect(text).toContain("\\u2028"); // the separator's ONLY echo is the escaped form
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // no raw reshaping character anywhere
 	});
 });
