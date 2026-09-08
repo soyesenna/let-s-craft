@@ -38,9 +38,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	AUDIT_CYCLE_BEGUN_MARKER,
 	E2E_MAIN_MODEL,
-	RUN_CHECK_MARKER,
-	completedTaskSpawnSeen,
 	debugSummary,
+	durableProbeThrottle,
+	durableStageObservation,
 	findSessionFileByPrompt,
 	readCraftStateFile,
 	runOmpPrint,
@@ -192,8 +192,36 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — canonical red cycle continuation (audit 
 			).toEqual([]);
 
 			// ==================== Process 2 — normal, fresh post-craft (LSC_FIXTURE env only) ====================
-			// audit-2 RF-28: the early-exit observation below polls the WORKTREE, not just the
-			// stream — see the comment on the earlyExit arm.
+			// audit-4 RF-39 — the kill authority is the DURABLE record, not the stream. The two
+			// retired stream arms sampled the buffer at the wrong moments (check-3: the dead
+			// RUN_CHECK_MARKER "script sha256: " arm fired before §3.0 had even run; check-4: the
+			// completed-spawn arm fired after the spawn but before any commit), and long runs lose
+			// early lines to the 32MB rolling tail outright. Early exit now requires, in order:
+			//   (보조, per-chunk cheap) the cycle-1 begin RESULT TEXT streamed back — also the
+			//     guard that keeps the durable reads off the filesystem until the gate roundtrip is
+			//     actually underway (plus the ≥1s durableProbeThrottle below);
+			//   (authority, throttled durable read) .craft-state.json.auditCycle === 1 — the
+			//     cycle binding, durable-first per RF-39;
+			//   the parent session file's §3.0 spawn record: agent === "lsc-test-engineer" ∧
+			//     assignment carries the feature slug ∧ resultDelivered ∧ resultIsError === false;
+			//   executed-on-top-of-B evidence (either branch): continuationCommitLanded()
+			//     (with-commit) OR a fresh check-log index beyond the process-2 baseline below
+			//     (no-commit — with HEAD pinned at B that execution ran at exactly B's OID).
+			// Natural exit (or timeout) with the exact call still absent from the durable record
+			// is the ONLY orchestration-omission failure path — the post-hoc block below asserts it.
+			const baselineCheckLogIndex = (() => {
+				try {
+					return Math.max(
+						0,
+						...readdirSync(checkLogsDir)
+							.map(name => /^check-(\d+)\.log$/.exec(name)?.[1])
+							.filter((n): n is string => n !== undefined)
+							.map(Number),
+					);
+				} catch {
+					return 0; // logs dir unreadable at this instant — keep the conservative baseline
+				}
+			})();
 			const continuationCommitLanded = (): boolean => {
 				try {
 					if (git(worktreeRoot, ["rev-parse", "HEAD"]) === commitB) return false;
@@ -204,40 +232,35 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — canonical red cycle continuation (audit 
 					return false; // not descended from B, or git not ready — keep waiting
 				}
 			};
+			const durableDue = durableProbeThrottle(1000);
 			const postCraftResult = await runOmpPrint({
 				cwd: projectDir,
 				sessionDir,
 				model: E2E_MAIN_MODEL,
 				env: { LSC_FIXTURE: join(fixtureDir, "answers.json") },
 				timeoutMs: POST_CRAFT_TIMEOUT_MS,
-				// §3.0's completion is the observable that evidence is being re-established on top
-				// of B: either §3.1's lsc_run_check ran (its TS-authored transcript header), or the
-				// §3.0 test-authoring spawn COMPLETED (a parsed `tool_execution_end` event for the
-				// builtin `task` tool — one of the few tools whose NDJSON toolName is its own).
-				// The raw `"toolName":"task"` substring this replaces also matched the spawn's
-				// START event (audit-0 RF-8), killing the run before the result existed — a
-				// structural flake. Only a completed execution, or the run-check marker, may
-				// ever exit early here.
-				//
-				// audit-2 RF-28: those arms alone sampled the stream BEFORE §8's finalization
-				// commits the very observations asserted below (check-3: the RUN_CHECK_MARKER arm
-				// fired before the §3.0 spawn had even run; check-4: the completed-spawn arm fired
-				// after the spawn but before any commit). Early exit is now permitted ONLY once
-				// the asserted observation itself holds — a new commit on top of B touching test/
-				// or check/run_check.sh — or the subprocess ends naturally (the no-commit
-				// legitimate-completion path, branch-handled in the assertions below).
-				earlyExit: (stdout: string) =>
-					stdout.includes(AUDIT_CYCLE_BEGUN_MARKER(1)) && (stdout.includes(RUN_CHECK_MARKER) || completedTaskSpawnSeen(stdout)) && continuationCommitLanded(),
+				earlyExit: (stdout: string) => {
+					if (!stdout.includes(AUDIT_CYCLE_BEGUN_MARKER(1))) return false;
+					if (!durableDue()) return false;
+					const observation = durableStageObservation({ worktreeRoot, feature, sessionDir, promptNeedle: "/skill:post-craft" });
+					if (observation.auditCycle !== 1) return false;
+					const engineer = observation.engineerSpawn;
+					if (!(engineer && engineer.resultDelivered && engineer.resultIsError === false)) return false;
+					return continuationCommitLanded() || observation.checkLogIndex > baselineCheckLogIndex;
+				},
 				prompt: `/skill:post-craft .lsc/crafts/${feature}/ ${FIXTURE_NOTE}`,
 			});
 			expect(postCraftResult.timedOut, `red-cycle post-craft timed out.\n${debugSummary(postCraftResult)}`).toBe(false);
 
-			// The next audit cycle was issued by a separate, normal post-craft process.
+			// audit-4 RF-39 — cycle binding, durable-first: the persisted `.craft-state.json`
+			// marker is the authority; the stream marker count below it is corroborative only
+			// (the 32MB rolling tail can drop the begin line on a long run — the durable marker
+			// cannot be lost).
+			expect(readCraftStateFile(worktreeRoot, feature)?.auditCycle, "the persisted marker must advance to the issued cycle (durable authority)").toBe(1);
 			expect(
 				streamMarkerCount(postCraftResult, AUDIT_CYCLE_BEGUN_MARKER(1)),
-				`lsc_audit_begin must issue the next cycle (candidate 1, under the fixture cap).\n${debugSummary(postCraftResult)}`,
+				`lsc_audit_begin must issue the next cycle (candidate 1, under the fixture cap) — stream count, corroborative to the durable auditCycle=1 above.\n${debugSummary(postCraftResult)}`,
 			).toBeGreaterThanOrEqual(1);
-			expect(readCraftStateFile(worktreeRoot, feature)?.auditCycle, "the persisted marker must advance to the issued cycle").toBe(1);
 
 			// "B 관측": §3.0 read B's production snapshot as input (a real test-authoring spawn ran
 			// in this worktree) and executed at subsequent test/check commit OIDs — new commits on
@@ -257,35 +280,48 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — canonical red cycle continuation (audit 
 			// slug), and whether the spawn's result was delivered (durable completion). Cycle
 			// binding is the auditCycle===1 state marker asserted above; OID binding is the branch
 			// evidence below (with-commit: new commits on top of B touching test/check; no-commit:
-			// a check log beyond process-1's red log at pinned HEAD=B). When the exact task is
-			// absent from this durable source, that IS a confirmed observation — an orchestration
-			// defect of the post-craft subprocess, not a harness artifact — and fails explicitly.
+			// a check log beyond process-1's red log at pinned HEAD=B). audit-4 RF-39: when the
+			// exact call is absent from this durable source after the process ended NATURALLY (or
+			// was killed at the harness timeout), that IS a confirmed observation — an
+			// orchestration omission of the post-craft subprocess, not a harness artifact — and
+			// fails explicitly here.
 			const postCraftSessionFile = findSessionFileByPrompt(sessionDir, "/skill:post-craft");
 			expect(
-			postCraftSessionFile,
-			`the post-craft process must leave a durable session file under ${sessionDir} whose user prompt carries /skill:post-craft (audit-3 RF-35(a) durable source)`,
+				postCraftSessionFile,
+				`the post-craft process must leave a durable session file under ${sessionDir} whose user prompt carries /skill:post-craft (audit-3 RF-35(a) durable source)`,
 			).toBeDefined();
 			const durableSpawns = sessionTaskSpawns(postCraftSessionFile?.path ?? "");
 			const durableSpawnInventory =
-				durableSpawns.map((spawn, index) => `#${index}: agent=${spawn.agent ?? "<none requested>"} delivered=${spawn.resultDelivered} task=${JSON.stringify(spawn.taskText.slice(0, 160))}`).join("\n") ||
+				durableSpawns.map((spawn, index) => `#${index}: agent=${spawn.agent ?? "<none requested>"} delivered=${spawn.resultDelivered}${spawn.resultIsError === undefined ? "" : ` isError=${spawn.resultIsError}`} task=${JSON.stringify(spawn.taskText.slice(0, 160))}`).join("\n") ||
 				"<no task calls in the durable session record>";
 			const engineerSpawn = durableSpawns.find(spawn => spawn.agent === "lsc-test-engineer");
 			expect(
-			engineerSpawn,
-			`OBSERVED ORCHESTRATION DEFECT — §3.0's mandatory lsc-test-engineer spawn was OMITTED by the post-craft subprocess (audit-3 RF-35(a)): the durable session record (${postCraftSessionFile?.path}) shows no task call requesting that agent. This is confirmed from the durable source, NOT the bounded stdout buffer (stream taskSpawnCount=${taskSpawnCount(postCraftResult)} is corroborative only). Cycle marker auditCycle=1 was asserted above.\nDurable task-call inventory:\n${durableSpawnInventory}`,
+				engineerSpawn,
+				`OBSERVED ORCHESTRATION DEFECT — §3.0's mandatory lsc-test-engineer spawn was OMITTED by the post-craft subprocess (audit-3 RF-35(a) / audit-4 RF-39): the process ran to natural exit (or the harness timeout) and the durable session record (${postCraftSessionFile?.path}) still shows no task call requesting that agent — orchestration omission, NOT a harness artifact (stream taskSpawnCount=${taskSpawnCount(postCraftResult)} is corroborative only). Cycle marker auditCycle=1 was asserted above.\nDurable task-call inventory:\n${durableSpawnInventory}`,
 			).toBeDefined();
 			expect(
-			engineerSpawn?.taskText.includes(feature),
-			`the lsc-test-engineer assignment must carry this feature's worktree path — §3.0 mandates {worktreeAbs}, which contains the slug "${feature}". Durable assignment head:\n${JSON.stringify(engineerSpawn?.taskText.slice(0, 400))}`,
+				engineerSpawn?.taskText.includes(feature),
+				`the lsc-test-engineer assignment must carry this feature's worktree path — §3.0 mandates {worktreeAbs}, which contains the slug "${feature}". Durable assignment head:\n${JSON.stringify(engineerSpawn?.taskText.slice(0, 400))}`,
 			).toBe(true);
 			expect(
-			engineerSpawn?.resultDelivered,
-			`the lsc-test-engineer spawn must have COMPLETED — a toolResult delivered for its toolCall in the durable record. In-flight at stage end is not §3.0 completion.\nDurable task-call inventory:\n${durableSpawnInventory}`,
+				engineerSpawn?.resultDelivered,
+				`the lsc-test-engineer spawn must have COMPLETED — a toolResult delivered for its toolCall in the durable record. In-flight at stage end is not §3.0 completion.\nDurable task-call inventory:\n${durableSpawnInventory}`,
 			).toBe(true);
+			// audit-4 RF-39 — the same durable spawn record must show a NON-ERROR result: an
+			// errored spawn is not §3.0 completion either (the earlyExit arm requires exactly
+			// this conjunction; post-hoc it must hold regardless of how the process ended).
+			expect(
+				engineerSpawn?.resultIsError,
+				`the lsc-test-engineer spawn's delivered result must be a SUCCESS (resultIsError===false) — an errored §3.0 spawn is an omission-equivalent defect.\nDurable task-call inventory:\n${durableSpawnInventory}`,
+			).toBe(false);
 			const headAfter = git(worktreeRoot, ["rev-parse", "HEAD"]);
 			if (headAfter !== commitB) {
 				// WITH-COMMIT branch (the observation the strengthened earlyExit waits for):
 				// continuation commits exist — assert descent and the test/check artifact surface.
+				// audit-4 RF-39 OID binding (explicit): the execution OID evidence here is the pair
+				// `commitB --is-ancestor HEAD` ∧ `git diff commitB..HEAD` touching test/ or
+				// check/run_check.sh — §3.0's test/check work landed at OIDs STRICTLY AFTER B, which
+				// consumed B's production snapshot as input by construction (the worktree's base was B).
 				expect(() => execFileSync("git", ["merge-base", "--is-ancestor", commitB, "HEAD"], { cwd: worktreeRoot }), "the new work must descend from B").not.toThrow();
 				const continuationDiff = git(worktreeRoot, ["diff", "--name-only", `${commitB}..HEAD`]);
 				expect(
