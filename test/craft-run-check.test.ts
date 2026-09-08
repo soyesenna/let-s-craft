@@ -10,6 +10,8 @@ import {
 	evaluateCheckScriptShape,
 	extractExecutionLines,
 	extractFailureLines,
+	MAX_FAILURE_LINE_CHARS,
+	MAX_FAILURE_SUMMARY_CHARS,
 	failureSummaryFor,
 	isEmptyCheckTranscript,
 	nextLogNumber,
@@ -64,6 +66,29 @@ describe("extractFailureLines", () => {
 		const lines = extractFailureLines(output);
 		expect(lines).toEqual(['"FAIL a: DEL\\u007fpayload"', '"FAIL b: NEL\\u0085payload"', '"FAIL c: sep\\u2028payload"', '"FAIL d: lone\\rcarriage"']);
 		expect(lines.every(line => !/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/.test(line)), "no raw control character may reach the model-facing summary").toBe(true);
+	});
+
+	// audit-4 RF-38(d): a multi-MB single failure line is byte-bounded with a fixed ASCII
+	// truncation suffix; the bound applies to the ESCAPED result string.
+	it("RF-38(d): a multi-MB single failure line is cut to MAX_FAILURE_LINE_CHARS with a fixed suffix and no raw control character", () => {
+		const line = `FAIL: ${"x".repeat(3 * 1024 * 1024)}\u007f`;
+		const lines = extractFailureLines(line);
+		expect(lines).toHaveLength(1);
+		const [summary] = lines;
+		expect(summary.length).toBeLessThanOrEqual(MAX_FAILURE_LINE_CHARS + "[truncated 9999999 chars]".length);
+		expect(summary.startsWith('"FAIL: ')).toBe(true);
+		expect(summary).toContain("[truncated ");
+		expect(summary).toContain(" chars]");
+		expect(summary).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // no raw control anywhere
+	});
+
+	it("RF-38(d): many failure lines are summary-bounded — trailing lines drop with a constant suffix", () => {
+		const output = Array.from({ length: 100 }, (_, i) => `Error: case ${i} ${"y".repeat(100)}`).join("\n");
+		const lines = extractFailureLines(output);
+		const last = lines.at(-1);
+		expect(last).toMatch(/^\[\d+ more failure line\(s\) truncated\]$/);
+		expect(lines.slice(0, -1).join("\n").length).toBeLessThanOrEqual(MAX_FAILURE_SUMMARY_CHARS);
+		expect(lines.join("\n").length).toBeLessThanOrEqual(MAX_FAILURE_SUMMARY_CHARS + (last?.length ?? 0) + 1);
 	});
 });
 
@@ -255,6 +280,26 @@ describe("runFeatureCheck", () => {
 		expect(text).not.toContain("[NOTE]");
 		const logContent = readFileSync(details.logPath, "utf8");
 		expect(logContent).toMatch(/post-exec script sha256: [0-9a-f]{64} \(unchanged\)/);
+	});
+
+	// audit-4 RF-38(e): the raw exec halves leave the public details — they live ONLY on
+	// RunFeatureCheckResult.transcript and inside the durable check-N.log.
+	it("RF-38(e): details carries NO stdout/stderr key; the raw halves ride result.transcript and the durable log", async () => {
+		const logsDir = tmpLogsDir();
+		const outcome = await runFeatureCheck({
+			feature: "my-feature",
+			scriptPath: "/repo/.lsc/crafts/my-feature/check/run_check.sh",
+			scriptText: DEFAULT_SCRIPT,
+			execCwd: "/repo",
+			logsDir,
+			exec: async () => ({ stdout: "raw\u007fout", stderr: "err\u2028half", code: 1, killed: false }),
+		});
+
+		expect(outcome.details, "no raw exec half may ride the public details").not.toHaveProperty("stdout");
+		expect(outcome.details).not.toHaveProperty("stderr");
+		expect(Object.keys(outcome.details).sort()).toEqual(["exitCode", "failureLines", "feature", "killed", "logPath", "passed"]);
+		expect(outcome.transcript).toEqual({ stdout: "raw\u007fout", stderr: "err\u2028half" }); // isEmptyCheckTranscript's input
+		expect(readFileSync(outcome.details.logPath, "utf8")).toContain("raw\u007fout"); // the durable log keeps the raw bytes
 	});
 });
 
