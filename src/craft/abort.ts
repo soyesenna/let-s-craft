@@ -17,7 +17,7 @@ import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { FEATURE_SLUG_RE, resolveFeatureName } from "../artifacts/paths.js";
 import { invalidatePreparedOperation } from "./destructive-approval.js";
 import { findPersistedCraftState, getActiveCraft, markCraftAborted, markCraftAbortedAt } from "./state.js";
-import { controlCharRefusalText } from "./tool-text.js";
+import { controlCharRefusalText, controlSafeEcho } from "./tool-text.js";
 
 export interface CraftAbortDetails {
 	feature: string;
@@ -48,7 +48,7 @@ export function performCraftAbort(reason: string, featureDir?: string, cwd: stri
 		if (!FEATURE_SLUG_RE.test(feature)) {
 			return {
 				isError: true,
-				content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+			content: [{ type: "text", text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${controlSafeEcho(feature)}) — path separators, traversal segments, and special characters are refused.` }],
 			};
 		}
 		const persisted = findPersistedCraftState(cwd, feature);

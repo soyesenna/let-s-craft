@@ -9,6 +9,7 @@ import type { AgentToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { ensureCheckLogsGitignored, ensureCraftStateGitignored } from "../artifacts/gitignore.js";
 import { FEATURE_SLUG_RE, craftDir, resolveFeatureName, worktreePath } from "../artifacts/paths.js";
 import { setActiveCraft } from "./state.js";
+import { controlSafeEcho } from "./tool-text.js";
 
 export interface CraftInitDetails {
 	feature: string;
@@ -69,7 +70,7 @@ export function registerCraftInitTool(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.`,
+							text: `lets-craft: feature_dir must resolve to a bare kebab-case slug (got ${controlSafeEcho(feature)}) — path separators, traversal segments, and special characters are refused.`,
 						},
 					],
 				};

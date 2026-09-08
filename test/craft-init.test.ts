@@ -178,6 +178,28 @@ describe("RF-13 — lsc_craft_init refuses a non-slug resolved feature_dir befor
 	});
 });
 
+// audit-4 RF-38(a): the invalid-slug echo goes through the shared total serializer — a
+// DEL/C1/U+2028-carrying slug surfaces ONLY as its escaped \uXXXX form.
+describe("RF-38(a) — lsc_craft_init's slug-refusal echo is escaped for DEL/C1/U+2028 payloads", () => {
+	it.each([
+		["DEL (U+007F)", "del\u007ffeature", "\\u007f"],
+		["C1 NEL (U+0085)", "nel\u0085feature", "\\u0085"],
+		["line separator (U+2028)", "sep\u2028feature", "\\u2028"],
+	])("a %s-carrying feature_dir is refused with an ESCAPED echo", async (_axis, forged, escaped) => {
+		const execute = captureCraftInitExecute();
+		const projectRoot = mkdtempSync(join(tmpdir(), "lsc-init-rf38a-"));
+		tempDirs.push(projectRoot);
+		const result = await execute("t", { feature_dir: forged }, undefined, undefined, ctxFor(projectRoot));
+		expect(result.isError).toBe(true);
+		const first = result.content[0];
+		const text = first !== undefined && "text" in first && typeof first.text === "string" ? first.text : "";
+		expect(text).toContain("kebab-case slug");
+		expect(text).toContain(escaped); // the payload's ONLY echo is the escaped form
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // single-line refusal, no raw control
+		expect(existsSync(join(projectRoot, ".lsc"))).toBe(false); // still refused before any fs access
+	});
+});
+
 // audit-1 RF-19 — lsc_craft_init's strict setActiveCraft is the single preservation authority,
 // so a preservation-read decode failure must propagate OUT of the real tool path: the
 // undecodable on-disk state is never overwritten, and no active craft is published.
