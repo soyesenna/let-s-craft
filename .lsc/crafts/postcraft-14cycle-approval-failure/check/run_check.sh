@@ -16,10 +16,15 @@
 #   lint       — omitted: package.json has no "lint" script
 #   typecheck  — omitted as a separate step: no dedicated script; `npm run build` already runs `tsc`
 #
-# Expected wall-clock (for §3.1 timeout_ms; that knob is the main session's, not this script's):
-#   `npm run e2e` runs 4 files with --no-file-parallelism and --testTimeout=10200000
-#   (10200000ms × 4 files, sequential). Worst-case budget is therefore on the order of
-#   4 × 10200s plus hookTimeout=120000 per file; size timeout_ms to that, not to `npm test`.
+# Expected wall-clock (for §3.1 timeout_ms; that knob is the main session's, not this script's;
+# audit-4 RF-40 corrected sizing note): `npm run e2e` runs 4 files with --no-file-parallelism,
+# and the sizing AUTHORITY for these files is each file's own per-`it` TEST_TIMEOUT_MS local
+# override (e.g. test/e2e-full-cycle.test.ts passes it as the vitest `it(..., timeout)` third
+# argument — 19,020,000ms at the RF-40 re-derivation). package.json's `--testTimeout=10200000`
+# NEVER overrides a per-it local timeout; it only bounds files whose `it` calls carry no local
+# override. Worst-case budget is therefore the SUM of the per-file local overrides (sequential,
+# --no-file-parallelism) plus hookTimeout=120000 per file — not 4 × --testTimeout, and not
+# `npm test` (E2E files skip there).
 #
 # Commands go through `npm run` so the package.json scripts stay the SSOT
 # (tokens `npm` satisfy evaluateCheckScriptShape's package.json runner check).
