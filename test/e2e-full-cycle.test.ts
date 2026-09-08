@@ -173,7 +173,7 @@ function stageStallEvidence(stage: E2EStage, result: OmpRunResult, sessionDir: s
 		observation = durableStageObservation({ worktreeRoot: join(projectDir, ".lsc", "worktrees", effectiveFeature ?? ""), feature: effectiveFeature, sessionDir, promptNeedle: needle });
 	}
 	sections.push(
-		`durable stage observation (authority — feature=${effectiveFeature ?? "<unknown>"}): auditCycle=${observation.auditCycle ?? "<none>"} checkLogIndex=${observation.checkLogIndex} runCheckResults=${observation.runCheckResults.length}(passed=${observation.runCheckResults.filter(r => r.passed).length}) engineerSpawn=${observation.engineerSpawn ? `delivered=${observation.engineerSpawn.resultDelivered} isError=${String(observation.engineerSpawn.resultIsError)}` : "<none>"} sessionFile=${observation.sessionFile ?? "NOT FOUND"}`,
+		`durable stage observation (authority — feature=${effectiveFeature ?? "<unknown>"}): auditCycle=${observation.auditCycle ?? "<none>"} checkLogIndex=${observation.checkLogIndex} runCheckResults=${observation.runCheckResults.length}(passed=${observation.runCheckResults.filter((r: { passed: boolean }) => r.passed).length}) engineerSpawn=${observation.engineerSpawn ? `delivered=${observation.engineerSpawn.resultDelivered} isError=${String(observation.engineerSpawn.resultIsError)}` : "<none>"} sessionFile=${observation.sessionFile ?? "NOT FOUND"}`,
 	);
 	sections.push(
 		`stage markers (stream, corroborative — 32MB rolling tail may have lost early lines): audit-begin-any = ${stageMarkers.auditBeginAny}, run-check = ${stageMarkers.runCheck}`,
