@@ -39,12 +39,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	AUDIT_CYCLE_BEGUN_MARKER,
+	AUDIT_BEGIN_ANY_MARKER,
 	E2E_MAIN_MODEL,
 	type OmpRunResult,
-	RUN_CHECK_MARKER,
+	RUN_CHECK_RESULT_MARKER,
 	debugSummary,
-	findSessionFileByPrompt,
+	durableStageObservation,
 	listCraftFeatures,
 	listWorktreeFeatures,
 	preCraftArtifactsComplete,
@@ -62,37 +62,43 @@ const RUN_E2E = process.env.LSC_E2E === "1";
 
 // Generous, independent per-stage kill timeouts (harness-level) — pre-craft is the heaviest
 // stage (trace's 3 lanes + brownfield explore, interview, one architect/critic consensus loop
-// capped at 2 iterations in fixture mode per skills/pre-craft/SKILL.md §1.7). All bounded per plan
-// §Phase 7 (b)(c) — see the cheap-model preset setupFixtureProject() seeds and the fixture-mode
-// caps documented in the SKILL.md files.
+// capped at 2 iterations in fixture mode per skills/pre-craft/SKILL.md §1.7). All bounded per
+// plan §Phase 7 (b)(c) — see the cheap-model preset setupFixtureProject() seeds and the
+// fixture-mode caps documented in the SKILL.md files.
 //
-// Sized and re-sized across three actual timed-out runs (pre-C5/C6/C7, back when pre-craft still
-// had a 4th test-authoring sub-stage and craft still ran a bounded executor loop), each still
-// validly progressing (not stuck) at the moment it ran out of budget. C8 lowers the pre-craft
-// budget from 90 to 60 minutes to reflect the now-3-sub-stage pipeline (trace → interview → plan,
-// C5) — a conservative reduction, not a re-derivation from fresh timing data, since a live E2E run
-// is Non-Goal for this refactor.
-const PRE_CRAFT_TIMEOUT_MS = 60 * 60_000;
+// audit-4 RF-40 — budgets are derived from the skill-SANCTIONED WORST PATH, not from one
+// measured green run:
+//
+//   PRE_CRAFT_TIMEOUT_MS = 90 min (restored): C8's 90→60 cut had no fresh timing basis (a
+//     conservative reduction by its own comment), and check-7 :221 killed a run at 60 min
+//     while plan consensus was still validly progressing — the minimum legal value is the
+//     pre-cut 90 min, which three timed-out-but-progressing runs had already been sized
+//     against.
+//   POST_CRAFT_TIMEOUT_MS = 112 min = 47 min observed pre-respawn (check-8's durable
+//     timestamps 08:56:56 → 09:43:52) + 50 min sanctioned internal wait class
+//     (3,000,000ms — skills/post-craft/SKILL.md §1 Common contract's Wait-timeoutMs
+//     paragraph mandates it for EVERY internal wait) + 15 min finalization slack. A harness
+//     kill below the stage's own sanctioned wait class is structurally guaranteed to fire on
+//     a legitimate in-skill wait (the audit-3 25-→50-minute re-derivation's own argument,
+//     now extended by the actually-observed 47-minute pre-respawn span).
+//   TEST_TIMEOUT_MS = PRE_CRAFT + 3×RESUME + CRAFT + POST_CRAFT + 15 min slack
+//     = 90 + 60 + 40 + 112 + 15 = 317 min = 19,020,000 ms. The `it(..., TEST_TIMEOUT_MS)`
+//     call at the bottom of this file is the AUTHORITY for this file's per-test timeout;
+//     package.json's `--testTimeout` flag never overrides a per-it local timeout, so it only
+//     bounds files that pass no local override (irrelevant here).
+const PRE_CRAFT_TIMEOUT_MS = 90 * 60_000;
 const CRAFT_TIMEOUT_MS = 40 * 60_000;
-// audit-3 RF-35(b) — re-derived from measured runs. The old 25-minute budget died at :241
-// (post-craft timed out) in check-5 AND check-6 consecutively, while check-4's green run
-// measured the whole FILE at 3,201s — the stage's slow tail is past 25 minutes. The new 50
-// minutes is not an arbitrary doubling: post-craft's own skill MANDATES the 3,000,000ms
-// (50-minute) wait class for every internal wait (skills/post-craft/SKILL.md §1 Common
-// contract's Wait-timeoutMs paragraph), so a harness kill-timeout below the stage's own
-// sanctioned internal wait was structurally guaranteed to kill legitimate in-skill waits.
-// (50 min = 2× the measured-insufficient 25, this harness's existing slow-tail sizing rule,
-// and matches the skill's own single-wait class so the kill never fires on a sanctioned wait).
-const POST_CRAFT_TIMEOUT_MS = 50 * 60_000;
+const POST_CRAFT_TIMEOUT_MS = 6_720_000;
 // A resume only has to finish whatever pre-craft's initial attempt left undone (see
 // runToCompletion in e2e-helpers.ts), never the whole heavy stage from scratch — sized like
 // POST_CRAFT_TIMEOUT_MS, not PRE_CRAFT_TIMEOUT_MS, on that basis.
 const PRE_CRAFT_RESUME_TIMEOUT_MS = 20 * 60_000;
 const PRE_CRAFT_MAX_RESUMES = 3;
 // Worst case (every stage maxes its budget, plus all PRE_CRAFT_MAX_RESUMES resumes each also
-// maxing PRE_CRAFT_RESUME_TIMEOUT_MS) plus the pre-existing 15-minute slack.
+// maxing PRE_CRAFT_RESUME_TIMEOUT_MS) plus the pre-existing 15-minute slack. See the RF-40
+// derivation above — and note the green path RECORDS its per-stage actuals in the
+// stage-durations evidence artifact so the next sizing cycle can pin actual-vs-budget gaps.
 const TEST_TIMEOUT_MS = PRE_CRAFT_TIMEOUT_MS + PRE_CRAFT_MAX_RESUMES * PRE_CRAFT_RESUME_TIMEOUT_MS + CRAFT_TIMEOUT_MS + POST_CRAFT_TIMEOUT_MS + 15 * 60_000;
-
 const cleanupDirs: string[] = [];
 afterEach(() => {
 	while (cleanupDirs.length > 0) {
@@ -124,31 +130,59 @@ function git(cwd: string, args: string[]): string {
 }
 
 /**
- * audit-3 RF-35(b) — post-craft timeout stall-attribution evidence. check-5 and check-6 both
- * died at the post-craft timeout assertion with nothing but `exitCode=null timedOut=true`
- * (debugSummary showed empty last messages), leaving provider stall / budget exhaustion /
- * orchestration hang indistinguishable. Called ONLY on an actual timeout; assembles the
- * attribution tuple from DURABLE sources and preserves it two ways: bounded sections in the
- * vitest failure message, and a full JSON artifact written OUTSIDE the afterEach-cleanup
- * fixture tree (the fixture base itself is rmSynced before anyone could read it) whose path
- * the message quotes.
+ * audit-3 RF-35(b) / audit-4 RF-41(a) — stage-parameterized timeout stall-attribution
+ * evidence. check-5 and check-6 both died at the post-craft timeout assertion with nothing
+ * but `exitCode=null timedOut=true` (debugSummary showed empty last messages), and check-7
+ * :221 died at the PRE-CRAFT timeout with ZERO attributed evidence because no such builder
+ * existed for that stage — leaving provider stall / budget exhaustion / orchestration hang
+ * indistinguishable. Called ONLY on an actual timeout (or a never-completed resume loop);
+ * assembles the attribution tuple from DURABLE sources and preserves it two ways: bounded
+ * sections in the vitest failure message, and a full JSON artifact written OUTSIDE the
+ * afterEach-cleanup fixture tree (the fixture base itself is rmSynced before anyone could
+ * read it) whose path the message quotes. `feature` may be unknown pre-worktree-creation
+ * (pre-craft can time out before listWorktreeFeatures can name it) — then a single existing
+ * worktree is adopted, and if even that is ambiguous the state/log sections degrade to
+ * session-file-only evidence instead of vanishing.
  */
-function postCraftStallEvidence(result: OmpRunResult, sessionDir: string, feature: string): string {
+type E2EStage = "pre-craft" | "pre-craft-resume" | "craft" | "post-craft";
+
+/** The prompt needles that identify a stage's process session file — first match wins, in order (the pre-craft resume prompt is Korean free text, not a /skill: invocation). */
+const STAGE_PROMPT_NEEDLES: Record<E2EStage, string[]> = {
+	"pre-craft": ["/skill:pre-craft", "이어서 pre-craft"],
+	"pre-craft-resume": ["이어서 pre-craft", "/skill:pre-craft"],
+	craft: ["/skill:craft"],
+	"post-craft": ["/skill:post-craft"],
+};
+
+function stageStallEvidence(stage: E2EStage, result: OmpRunResult, sessionDir: string, projectDir: string, feature?: string): string {
+	const effectiveFeature = feature ?? (listWorktreeFeatures(projectDir).length === 1 ? listWorktreeFeatures(projectDir)[0] : undefined);
 	const stageMarkers = {
-		auditBeginCycle0: streamMarkerCount(result, AUDIT_CYCLE_BEGUN_MARKER(0)),
-		runCheck: streamMarkerCount(result, RUN_CHECK_MARKER),
+		auditBeginAny: streamMarkerCount(result, AUDIT_BEGIN_ANY_MARKER),
+		runCheck: streamMarkerCount(result, RUN_CHECK_RESULT_MARKER),
 	};
-	const sections: string[] = [
-		`stage markers (stream): audit-begin cycle-0 = ${stageMarkers.auditBeginCycle0}, run-check = ${stageMarkers.runCheck}`,
-	];
+	const sections: string[] = [];
 	let spawns: SessionTaskSpawn[] = [];
 	let entryTail: SessionEntryDigest[] = [];
-	const sessionFile = findSessionFileByPrompt(sessionDir, "/skill:post-craft");
-	if (sessionFile) {
-		spawns = sessionTaskSpawns(sessionFile.path);
-		entryTail = sessionEntryDigests(sessionFile.path).slice(-30);
+	// audit-4 RF-41(a)/(b) — DURABLE-first: the state marker, the check-log counter, the
+	// run-check result texts, and the session file come from durableStageObservation (the
+	// rolling-tail stream counts below are corroborative and quoted next to it, never instead
+	// of it). The needle list retries so a resume-only pre-craft stage still finds its process.
+	let observation = durableStageObservation({ worktreeRoot: join(projectDir, ".lsc", "worktrees", effectiveFeature ?? ""), feature: effectiveFeature, sessionDir, promptNeedle: STAGE_PROMPT_NEEDLES[stage][0] });
+	for (const needle of STAGE_PROMPT_NEEDLES[stage].slice(1)) {
+		if (observation.sessionFile !== undefined) break;
+		observation = durableStageObservation({ worktreeRoot: join(projectDir, ".lsc", "worktrees", effectiveFeature ?? ""), feature: effectiveFeature, sessionDir, promptNeedle: needle });
+	}
+	sections.push(
+		`durable stage observation (authority — feature=${effectiveFeature ?? "<unknown>"}): auditCycle=${observation.auditCycle ?? "<none>"} checkLogIndex=${observation.checkLogIndex} runCheckResults=${observation.runCheckResults.length}(passed=${observation.runCheckResults.filter(r => r.passed).length}) engineerSpawn=${observation.engineerSpawn ? `delivered=${observation.engineerSpawn.resultDelivered} isError=${String(observation.engineerSpawn.resultIsError)}` : "<none>"} sessionFile=${observation.sessionFile ?? "NOT FOUND"}`,
+	);
+	sections.push(
+		`stage markers (stream, corroborative — 32MB rolling tail may have lost early lines): audit-begin-any = ${stageMarkers.auditBeginAny}, run-check = ${stageMarkers.runCheck}`,
+	);
+	if (observation.sessionFile) {
+		spawns = sessionTaskSpawns(observation.sessionFile);
+		entryTail = sessionEntryDigests(observation.sessionFile).slice(-30);
 		sections.push(
-			`durable task spawns (${sessionFile.path}):\n${spawns.map((spawn, index) => `#${index} agent=${spawn.agent ?? "<none requested>"} delivered=${spawn.resultDelivered}${spawn.resultIsError === true ? " (isError)" : ""} task=${JSON.stringify(spawn.taskText.slice(0, 120))}`).join("\n") || "<none>"}`,
+			`durable task spawns (${observation.sessionFile}):\n${spawns.map((spawn, index) => `#${index} agent=${spawn.agent ?? "<none requested>"} delivered=${spawn.resultDelivered}${spawn.resultIsError === true ? " (isError)" : ""} task=${JSON.stringify(spawn.taskText.slice(0, 120))}`).join("\n") || "<none>"}`,
 		);
 		sections.push(
 			`durable entry tail (last ${entryTail.length} entries — timestamp type/role(snippet)):\n${entryTail.map(digest => `${digest.timestamp ?? "?"} ${digest.type}${digest.role ? `/${digest.role}` : ""}${digest.toolName ? `(${digest.toolName})` : ""}: ${digest.snippet}`).join("\n")}`,
@@ -162,22 +196,23 @@ function postCraftStallEvidence(result: OmpRunResult, sessionDir: string, featur
 			);
 		}
 	} else {
-		sections.push(`durable session file: NOT FOUND under ${sessionDir} (no user prompt carrying /skill:post-craft)`);
+		sections.push(`durable session file: NOT FOUND under ${sessionDir} (no user prompt carrying any of ${JSON.stringify(STAGE_PROMPT_NEEDLES[stage])})`);
 	}
 	sections.push(`stderr(tail): ${result.stderr.slice(-500)}`);
 	sections.push(`stdout(tail, bounded 4k): ${result.stdout.slice(-4000)}`);
-	const artifactPath = join(tmpdir(), `lsc-e2e-postcraft-timeout-${feature}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+	const artifactPath = join(tmpdir(), `lsc-e2e-${stage}-timeout-${effectiveFeature ?? "unknown"}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
 	try {
 		writeFileSync(
 			artifactPath,
 			JSON.stringify(
 				{
-					feature,
+					stage,
+					feature: effectiveFeature,
 					killedAt: new Date().toISOString(),
 					exitCode: result.exitCode,
 					timedOut: result.timedOut,
+					durableObservation: observation,
 					stageMarkers,
-					durableSessionFile: sessionFile?.path,
 					taskSpawns: spawns,
 					entryTail,
 					stderrTail: result.stderr.slice(-10_000),
@@ -204,6 +239,12 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 
 			const baseBranch = git(projectDir, ["rev-parse", "--abbrev-ref", "HEAD"]);
 
+			// audit-4 RF-40 — per-stage wall-clock actuals, recorded for the green path's
+			// stage-durations evidence artifact below (budgets are sanctioned-worst-path
+			// derivations; only recorded actuals can pin the actual-vs-budget gap per cycle).
+			const stageDurations: Array<{ stage: string; totalMs: number; attemptsMs?: number[] }> = [];
+			let stageClockStart = Date.now();
+
 			// ==================== Stage ① pre-craft ====================
 			const preCraftRun = await runToCompletion({
 				cwd: projectDir,
@@ -217,11 +258,25 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 				resumeTimeoutMs: PRE_CRAFT_RESUME_TIMEOUT_MS,
 				maxResumes: PRE_CRAFT_MAX_RESUMES,
 			});
+			stageDurations.push({ stage: "pre-craft", totalMs: Date.now() - stageClockStart, attemptsMs: [...preCraftRun.attemptDurationsMs] });
+			stageClockStart = Date.now();
 			const preCraftResult = preCraftRun.last;
-			expect(preCraftResult.timedOut, `pre-craft timed out (attempt ${preCraftRun.attempts.length}).\n${debugSummary(preCraftResult)}`).toBe(false);
+			// audit-4 RF-41(a) — the stall-evidence builder is stage-parameterized and covers the
+			// pre-craft (and resume) arm too: check-7 :221 red with ZERO attributed evidence was
+			// exactly this arm lacking a builder. feature is still unknown here (the worktree
+			// name is only derivable after the stage) — stageStallEvidence adopts a single
+			// existing worktree or degrades gracefully.
+			expect(
+				preCraftResult.timedOut,
+				preCraftResult.timedOut
+					? `pre-craft timed out (attempt ${preCraftRun.attempts.length}).\n${stageStallEvidence(preCraftRun.attemptDurationsMs.length > 1 ? "pre-craft-resume" : "pre-craft", preCraftResult, sessionDir, projectDir)}`
+					: `pre-craft timed out (attempt ${preCraftRun.attempts.length}).\n${debugSummary(preCraftResult)}`,
+			).toBe(false);
 			expect(
 				preCraftRun.completed,
-				`pre-craft never produced the worktree plus all of trace.md/spec.md/plan.md inside it, even after ${preCraftRun.attempts.length - 1} resume(s).\n${debugSummary(preCraftResult)}`,
+				preCraftRun.completed
+					? `pre-craft never produced the worktree plus all of trace.md/spec.md/plan.md inside it, even after ${preCraftRun.attempts.length - 1} resume(s).\n${debugSummary(preCraftResult)}`
+					: `pre-craft never produced the worktree plus all of trace.md/spec.md/plan.md inside it, even after ${preCraftRun.attempts.length - 1} resume(s).\n${stageStallEvidence("pre-craft-resume", preCraftResult, sessionDir, projectDir)}`,
 			).toBe(true);
 
 			const features = listWorktreeFeatures(projectDir);
@@ -297,6 +352,7 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 			const worktreeTipShaBeforeCraft = git(worktreePath, ["rev-parse", "HEAD"]);
 
 			// ==================== Stage ② craft (single-shot, C6) ====================
+			stageClockStart = Date.now();
 			const craftResult = await runOmpPrint({
 				cwd: projectDir,
 				sessionDir,
@@ -305,7 +361,16 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 				timeoutMs: CRAFT_TIMEOUT_MS,
 				prompt: `/skill:craft .lsc/crafts/${feature}/ ${FIXTURE_NOTE}`,
 			});
-			expect(craftResult.timedOut, `craft timed out.\n${debugSummary(craftResult)}`).toBe(false);
+			stageDurations.push({ stage: "craft", totalMs: Date.now() - stageClockStart });
+			// audit-4 RF-41(a) — the craft timeout arm carries the same durable stall evidence
+			// the post-craft arm has had since RF-35(b) (ternary: the green path pays only
+			// debugSummary).
+			expect(
+				craftResult.timedOut,
+				craftResult.timedOut
+					? `craft timed out.\n${stageStallEvidence("craft", craftResult, sessionDir, projectDir, feature)}`
+					: `craft timed out.\n${debugSummary(craftResult)}`,
+			).toBe(false);
 
 			// Indirect assert (per the Phase 7 handoff): the implementation commit(s) landed on
 			// the WORKTREE's branch, not the project root's working tree (which never checked out
@@ -320,6 +385,7 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 			expect(worktreeTipShaAfterCraft, "craft must have committed something new on the worktree branch").not.toBe(worktreeTipShaBeforeCraft);
 
 			// ==================== Stage ③ post-craft (authors tests + check/run_check.sh, then audits; land if approved) ====================
+			stageClockStart = Date.now();
 			const postCraftResult = await runOmpPrint({
 				cwd: projectDir,
 				sessionDir,
@@ -328,14 +394,16 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 				timeoutMs: POST_CRAFT_TIMEOUT_MS,
 				prompt: `/skill:post-craft .lsc/crafts/${feature}/ If the audit reaches an APPROVE-family verdict, land is approved — answer the Land/Merge question "yes". ${FIXTURE_NOTE}`,
 			});
-			// audit-3 RF-35(b) — on a timeout the plain debugSummary is not enough (check-5/6
-			// both failed with empty last messages); the stall-evidence builder runs only in the
-			// timedOut arm of the ternary, so the green path pays nothing.
+			stageDurations.push({ stage: "post-craft", totalMs: Date.now() - stageClockStart });
+			// audit-3 RF-35(b) / audit-4 RF-41(a) — on a timeout the plain debugSummary is not
+			// enough (check-5/6 both failed with empty last messages); the stage-parameterized
+			// stall-evidence builder runs only in the timedOut arm of the ternary, so the green
+			// path pays nothing.
 			expect(
-			postCraftResult.timedOut,
-			postCraftResult.timedOut
-				? `post-craft timed out.\n${postCraftStallEvidence(postCraftResult, sessionDir, feature)}`
-				: `post-craft timed out.\n${debugSummary(postCraftResult)}`,
+				postCraftResult.timedOut,
+				postCraftResult.timedOut
+					? `post-craft timed out.\n${stageStallEvidence("post-craft", postCraftResult, sessionDir, projectDir, feature)}`
+					: `post-craft timed out.\n${debugSummary(postCraftResult)}`,
 			).toBe(false);
 
 			// post-craft's authoring+audit and its §7 land run in the *same* omp invocation: on an
@@ -413,6 +481,34 @@ describe.skipIf(!RUN_E2E)("full cycle E2E (AC4/AC5/AC7): pre-craft (always-workt
 			// ==================== Stage ④ land ====================
 			const verdict = verdictMatch?.[1];
 			const landEligible = verdict === "APPROVE" || verdict === "APPROVE-WITH-COMMENT";
+
+			// audit-4 RF-40 — GREEN-path stage actuals, written BEFORE the land branch so both
+			// land-eligible and preserved outcomes record them (all four stages are measured by
+			// the time the verdict is read). The artifact lives OUTSIDE the cleaned fixture tree
+			// (same rule as the stall-evidence artifact) and its path is surfaced in the test
+			// output so the next sizing cycle can pin actual-vs-budget gaps per stage.
+			const stageDurationsPath = join(tmpdir(), `lsc-e2e-stage-durations-${feature}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+			try {
+				writeFileSync(
+					stageDurationsPath,
+					JSON.stringify(
+						{
+							feature,
+							recordedAt: new Date().toISOString(),
+							verdict,
+							budgets: { PRE_CRAFT_TIMEOUT_MS, PRE_CRAFT_RESUME_TIMEOUT_MS, PRE_CRAFT_MAX_RESUMES, CRAFT_TIMEOUT_MS, POST_CRAFT_TIMEOUT_MS },
+							stages: stageDurations,
+						},
+						null,
+						2,
+					),
+				);
+				// biome-ignore lint/suspicious/noConsole: evidence-path surfacing — same soft-check precedent as the stage-keyword warning above.
+				console.info(`lets-craft E2E stage durations (actual vs budget, audit-4 RF-40): ${stageDurationsPath}`);
+			} catch (error) {
+				// biome-ignore lint/suspicious/noConsole: evidence-path surfacing — failure to record must not mask the test's own result.
+				console.info(`lets-craft E2E stage durations artifact WRITE FAILED (${(error as Error).message}) — durations were: ${JSON.stringify(stageDurations)}`);
+			}
 
 			if (!landEligible) {
 				// §7.1: APPROVE-WITH-CHANGE/REJECT are not land-eligible this cycle — the worktree
