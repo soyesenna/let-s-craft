@@ -194,7 +194,7 @@ describe.skipIf(!RUN_E2E)("PR-5 E2E — canonical red cycle continuation (audit 
 			// ==================== Process 2 — normal, fresh post-craft (LSC_FIXTURE env only) ====================
 			// audit-4 RF-39 — the kill authority is the DURABLE record, not the stream. The two
 			// retired stream arms sampled the buffer at the wrong moments (check-3: the dead
-			// RUN_CHECK_MARKER "script sha256: " arm fired before §3.0 had even run; check-4: the
+			// retired script-hash transcript-header marker arm fired before §3.0 had even run; check-4: the
 			// completed-spawn arm fired after the spawn but before any commit), and long runs lose
 			// early lines to the 32MB rolling tail outright. Early exit now requires, in order:
 			//   (보조, per-chunk cheap) the cycle-1 begin RESULT TEXT streamed back — also the
