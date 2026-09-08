@@ -1435,3 +1435,22 @@ describe("RF-13 — lsc_land refuses a non-slug feature before any git access", 
 		expect(git(projectRoot, ["status", "--porcelain"])).toBe(""); // nothing touched the repo
 	});
 });
+
+// audit-4 RF-38(a): the invalid-slug echo goes through the shared total serializer — a
+// DEL/C1/U+2028-carrying slug surfaces ONLY as its escaped \uXXXX form.
+describe("RF-38(a) — performLand's slug-refusal echo is escaped for DEL/C1/U+2028 payloads", () => {
+	it.each([
+		["DEL (U+007F)", "del\u007ffeature", "\\u007f"],
+		["C1 NEL (U+0085)", "nel\u0085feature", "\\u0085"],
+		["line separator (U+2028)", "sep\u2028feature", "\\u2028"],
+	])("a %s-carrying feature is refused with an ESCAPED echo", async (_axis, forged, escaped) => {
+		const projectRoot = tmpGitRepo();
+		const result = await performLand(forged, "merge-and-clean", projectRoot);
+		expect(result.isError).toBe(true);
+		const text = textOf(result);
+		expect(text).toContain("kebab-case slug");
+		expect(text).toContain(escaped); // the payload's ONLY echo is the escaped form
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // single-line refusal, no raw control
+		expect(git(projectRoot, ["status", "--porcelain"])).toBe(""); // nothing touched the repo
+	});
+});

@@ -50,6 +50,7 @@ import {
 } from "./destructive-approval.js";
 import { parseTerminalDispositionSummary } from "./audit-policy.js";
 import { type CraftState, craftStateCandidates, decodeCraftState } from "./state.js";
+import { controlSafeEcho } from "./tool-text.js";
 import { validateLandAuditEvidence } from "./verdict.js";
 
 /** The destructive gate tags lsc_land consumes — owned by the consumer, not the issuance infra (D1, release-gate CS1). */
@@ -223,7 +224,7 @@ export async function performLand(feature: string, mode: LandMode, cwd: string, 
 	if (!FEATURE_SLUG_RE.test(feature)) {
 		return {
 			isError: true,
-			content: [{ type: "text", text: `lsc_land: feature must be a bare kebab-case slug (got ${JSON.stringify(feature)}) — path separators, traversal segments, and special characters are refused.` }],
+			content: [{ type: "text", text: `lsc_land: feature must be a bare kebab-case slug (got ${controlSafeEcho(feature)}) — path separators, traversal segments, and special characters are refused.` }],
 			details: { feature, mode },
 		};
 	}

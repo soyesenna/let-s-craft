@@ -155,6 +155,23 @@ describe("RF-13 — performCraftAbort refuses a non-slug resolved feature_dir be
 			expect(first !== undefined && "text" in first ? first.text : "").toContain("kebab-case slug");
 		}
 	});
+
+	// audit-4 RF-38(a): the invalid-slug echo goes through the shared total serializer — a
+	// DEL/C1/U+2028-carrying slug surfaces ONLY as its escaped \uXXXX form.
+	it.each([
+		["DEL (U+007F)", "del\u007ffeature", "\\u007f"],
+		["C1 NEL (U+0085)", "nel\u0085feature", "\\u0085"],
+		["line separator (U+2028)", "sep\u2028feature", "\\u2028"],
+	])("a %s-carrying feature_dir is refused with an ESCAPED echo (RF-38a)", (_axis, forged, escaped) => {
+		const projectRoot = tmpProject();
+		const result = performCraftAbort("user stop", forged, projectRoot);
+		expect(result.isError).toBe(true);
+		const first = result.content[0];
+		const text = first !== undefined && "text" in first && typeof first.text === "string" ? first.text : "";
+		expect(text).toContain("kebab-case slug");
+		expect(text).toContain(escaped); // the payload's ONLY echo is the escaped form
+		expect(text).not.toMatch(/[\u0000-\u001f\u007f\u0080-\u009f\u2028\u2029]/); // single-line refusal, no raw control
+	});
 });
 
 // ===========================================================================
