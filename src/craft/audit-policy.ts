@@ -254,6 +254,25 @@ function isMeasuredOid(value: unknown): value is string {
  * and the control-freedom of baseBranch/error are re-verified here rather than trusted from
  * the decode cast. Undefined = not canonical → the caller emits a constant diagnostic, never
  * the raw record (the parseTerminalDispositionSummary precedent, mirrored).
+ *
+ * audit-4 RF-36 — the accepted set is EXACTLY the shapes the ONE producer (`observeAuditBase`,
+ * verdict.ts: base resolve → source resolve → `rev-list --count`) can persist, for either
+ * authority ("explicit-base" / "legacy-current-branch"):
+ *
+ *   1. ok      — baseTip/sourceTip both non-empty 40-hex, safe non-negative count, no error
+ *                (equal tips ⇒ the count is 0: `git rev-list --count <oid>..<same oid>` is 0).
+ *   2. unknown — baseTip ""/sourceTip "", behindCount "unknown", control-free error
+ *                (base resolve failed, or a detached/unborn legacy current branch).
+ *   3. unknown — baseTip measured/sourceTip "", behindCount "unknown", control-free error
+ *                (the source tip resolve failed).
+ *   4. unknown — baseTip/sourceTip both measured, behindCount "unknown", control-free error
+ *                (`rev-list` failed or returned a non-integer — a legitimate degraded anchor).
+ *
+ * Two couplings are therefore REJECTED as forgeries no producer arm can write — the fixed-set
+ * table the next audit cycle validates against: `ok` with equal tips and a NONZERO count
+ * (false drift — rev-list over an empty range is always 0), and `unknown` with an empty
+ * baseTip but a MEASURED sourceTip (inverse partial — the producer resolves the base first,
+ * so an unmeasured base never pairs a measured source).
  */
 export function parseAuditBaseSnapshot(raw: unknown): AuditBaseSnapshot | undefined {
 	if (!isPlainObject(raw)) return undefined;
@@ -268,10 +287,16 @@ export function parseAuditBaseSnapshot(raw: unknown): AuditBaseSnapshot | undefi
 		if (error !== undefined) return undefined; // the interface documents error as present iff status === "unknown"
 		// audit-3 RF-32: "ok iff all measured" — "" is the unknown branch's marker only.
 		if (!isMeasuredOid(baseTip) || !isMeasuredOid(sourceTip)) return undefined;
+		// audit-4 RF-36: `git rev-list --count <oid>..<same oid>` is always 0 — an ok record
+		// claiming drift between identical tips is a false-drift forgery no producer arm writes.
+		if (baseTip === sourceTip && behindCount !== 0) return undefined;
 		return { baseBranch, baseTip, sourceTip, behindCount, status, authority, observedAt };
 	}
 	if (behindCount !== "unknown") return undefined;
 	if (typeof error !== "string" || !isControlFreeText(error)) return undefined;
+	// audit-4 RF-36: the producer resolves the base BEFORE the source — an unmeasured base
+	// paired with a measured source is an inverse-partial shape no producer arm writes.
+	if (baseTip === "" && sourceTip !== "") return undefined;
 	return { baseBranch, baseTip, sourceTip, behindCount, status, authority, observedAt, error };
 }
 
@@ -327,7 +352,7 @@ export function validateEscalationLedger(
 		} else {
 			const prev = history[i - 1];
 			if (prev.disposition !== "Continue auditing" || prev.nextDueCycle !== parsed.scheduledCycle) {
-			return { error: `auditEscalations[${i}]: scheduledCycle ${parsed.scheduledCycle} does not chain to the previous Continue's nextDueCycle (${prev.disposition === "Continue auditing" ? controlSafeEcho(prev.nextDueCycle) : "n/a — previous record is terminal"})` };
+				return { error: `auditEscalations[${i}]: scheduledCycle ${parsed.scheduledCycle} does not chain to the previous Continue's nextDueCycle (${prev.disposition === "Continue auditing" ? controlSafeEcho(prev.nextDueCycle) : "n/a — previous record is terminal"})` };
 			}
 		}
 		history.push(parsed);
