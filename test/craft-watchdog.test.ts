@@ -33,7 +33,7 @@ const FIXTURE_RATE_LIMIT_429 =
 const FIXTURE_OVERLOADED = "Provider requested 415000ms wait, exceeds retry.maxDelayMs (300000ms). Original error: overloaded_error: Overloaded";
 const FIXTURE_NULL_YIELD = "Assistant returned empty stop after retry cap";
 const FIXTURE_CANCELLED = "Retry cancelled";
-// Real observed value from _docs/429-pattern-analysis.md §3 (Smoody-platform worktree,
+// Real observed value from _docs/429-pattern-analysis.md §3 (회사 프로젝트 worktree,
 // 2026-07-17T01-25-33 session) — 169,716,000ms = 47.14h, well past the CS-8 cutoff.
 const FIXTURE_HUGE_RETRY_AFTER =
 	"Provider requested 169716000ms wait, exceeds retry.maxDelayMs (300000ms). Original error: rate_limit_error: weekly usage limit retry-after-ms=169716000";
