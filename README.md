@@ -1,6 +1,6 @@
 # lets-craft
 
-`lets-craft`는 [omp](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent)(`@oh-my-pi/pi-coding-agent`) 코딩 에이전트 CLI 위에서 동작하는 구조화 개발 파이프라인 플러그인입니다. "아이디어를 던지면 알아서 구현되는" 방식 대신, **조사 → 합의된 사양/계획/테스트 확보 → 테스트가 통과할 때까지 강제되는 구현 루프 → 적대적 감사 후 병합**이라는 명시적 단계를 거치도록 설계되었습니다.
+`lets-craft`는 [omp](https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent)(`@oh-my-pi/pi-coding-agent`) 코딩 에이전트 CLI 위에서 동작하는 구조화 개발 파이프라인 플러그인입니다. "아이디어를 던지면 알아서 구현되는" 방식 대신, **조사 → 사양과 계획 합의 → 단발 구현 → 회귀 테스트 저작과 결정적 체크, 적대적 감사 → 사용자 승인 후 병합**이라는 명시적 단계를 거치도록 설계되었습니다. 감사가 수정을 요구하면(`REJECT`, `APPROVE-WITH-CHANGE`) 감사 문서를 입력으로 craft를 다시 실행하도록 제안합니다.
 
 이 플러그인은 `pre-craft` / `craft` / `post-craft`라는 3단계 철학으로 구성됩니다.
 
@@ -14,15 +14,15 @@
 
 ### 요구사항
 
-- **omp CLI(`@oh-my-pi/pi-coding-agent`)**: `package.json`의 devDependency로 `16.4.0`이 고정되어 있습니다. 소스 주석(`src/preset/spike.ts`)에도 이 버전에 대해 실제 동작이 검증되었다는 기록이 있습니다. `package.json`은 별도의 `engines` 필드를 선언하지 않으므로, 리포지토리 자체에 명시된 최소 버전 하한은 없습니다 — 실제로 검증·고정된 버전은 `16.4.0`입니다.
+- **omp CLI(`@oh-my-pi/pi-coding-agent`)**: `package.json`의 devDependency로 `17.0.5`가 고정되어 있고, 런타임 의존성 `@oh-my-pi/pi-ai`, `@oh-my-pi/pi-tui`도 같은 `17.0.5`로 맞춰져 있습니다. `package.json`은 별도의 `engines` 필드를 선언하지 않으므로 리포지토리에 명시된 최소 버전 하한은 없습니다. `src/preset/spike.ts` 주석의 실제 동작 확인 기록은 초기 버전 `16.4.0` 기준입니다.
 - **Node.js**: `package.json`에 `engines` 필드가 없어 리포지토리에 명시된 최소 버전은 없습니다. `tsconfig.json`이 `target: ES2022`, `module`/`moduleResolution: NodeNext`로 컴파일하므로, ESM과 NodeNext 모듈 해석을 지원하는 비교적 최신 Node 런타임이 필요합니다.
-- 그 외 devDependencies: `typescript ^5.7.3`, `vitest ^3.0.5`. dependencies: `yaml ^2.9.0` (models.yaml 파싱용).
+- 그 외 devDependencies: `typescript ^5.7.3`, `vitest ^3.0.5`. dependencies: 위 두 omp 패키지와 `yaml ^2.9.0` (models.yaml 파싱용).
 
 ### 설치 절차
 
 ```bash
 npm install
-npm run build      # tsc — src/**/*.ts를 dist/ 로 컴파일 (package.json "build" 스크립트)
+npm run build      # scripts/gen-version.mjs 로 버전 파일을 만든 뒤 tsc 로 src/**/*.ts 를 dist/ 로 컴파일 (package.json "build" 스크립트)
 omp plugin link .   # 이 리포지토리를 omp 플러그인으로 심볼릭 링크 연결
 ```
 
@@ -175,7 +175,7 @@ presets:
 
 ### 항상 워크트리 (all-in-worktree)
 
-pre-craft는 사용자에게 워크트리 사용 여부를 묻지 않고, 모든 feature에 대해 무조건 `.lsc/worktrees/{feature}/`에 git worktree를 만들고 `.gitignore`에 `.lsc/worktrees/`를 자동으로 등록합니다. trace/spec/plan/test(pre-craft)와 구현(craft), 감사(post-craft)까지 파이프라인 전체가 이 워크트리 내부의 `.lsc/crafts/{feature}/`에서만 진행되며, 원래(base) 브랜치는 post-craft의 land 단계에서 명시적으로 병합 승인하기 전까지 완전히 무오염 상태로 유지됩니다. land가 완료되면 워크트리는 제거되고, 산출물·구현·감사가 base 브랜치에 병합되어 나타납니다.
+pre-craft는 사용자에게 워크트리 사용 여부를 묻지 않고, 모든 feature에 대해 무조건 `.lsc/worktrees/{feature}/`에 git worktree를 만들고 `.gitignore`에 `.lsc/worktrees/`를 자동으로 등록합니다. trace/spec/plan(pre-craft)과 구현(craft), 회귀 테스트 저작과 감사(post-craft)까지 파이프라인 전체가 이 워크트리 내부의 `.lsc/crafts/{feature}/`에서만 진행되며, 원래(base) 브랜치는 post-craft의 land 단계에서 명시적으로 병합 승인하기 전까지 완전히 무오염 상태로 유지됩니다. land가 완료되면 워크트리는 제거되고, 산출물·구현·감사가 base 브랜치에 병합되어 나타납니다.
 
 ### 산출물 디렉터리 구조
 
@@ -302,8 +302,8 @@ pre-craft/craft/post-craft가 사람에게 묻는 모든 질문은 `lsc_ask`/`ls
 3. `"craft"`로 단발 구현을 진행합니다 — plan.md가 서로소 작업으로 분해되면 병렬 executor 레인을, 아니면 단일 executor를 스폰합니다. 더 이상 해시 불변성·중단 방지 백스톱 같은 강제 규칙은 적용되지 않습니다(테스트는 다음 단계인 post-craft가 구현 완료 후에 저작·실행합니다).
 4. `"post-craft"`로 적대적 감사를 거쳐 판정을 기록하고, 승인 시 병합합니다.
 
-이 저장소에는 위 절차를 거쳐 생성된 `.lsc/crafts/` 산출물이 아직 커밋되어 있지 않습니다(v1 자체는 이 파이프라인이 완성되기 전에 별도로 구현되었습니다) — 다음 기능부터 이 절차를 실제로 적용하는 것이 dogfooding의 첫걸음입니다.
+v1 자체는 이 파이프라인이 완성되기 전에 별도로 구현되었고, 그 뒤 기능 6개(`model-preset-session-default`, `ask-tool-enhancement`, `provider-usage-status-bar`, `release-gate`, `deferred-pool`, `ask-readability-option-chat`)를 이 절차로 개발해 병합했습니다. 각 기능의 trace, spec, plan과 감사 기록(`audit/audit-N.md`)이 `.lsc/crafts/{feature}/`에 커밋되어 있습니다. 이 6개는 2026년 7월, 테스트를 구현 전에 먼저 저작하던 이전 설계로 진행되어 산출물에 테스트 폴더가 함께 들어 있습니다.
 
 ## 라이선스
 
-`package.json`은 `"license": "MIT"`를 선언하고 있습니다. 이 저장소에는 별도의 `LICENSE` 파일이 아직 포함되어 있지 않습니다.
+MIT 라이선스입니다([LICENSE](LICENSE), `package.json`의 `"license": "MIT"`).
